@@ -1,0 +1,29 @@
+{
+  "name": "abstain_self_signaled",
+  "description": "Model self-abstain at engine/assessor.py:986-1006 \u2014 the LLM emitted abstain=True (the explicit 'I can't pick a status without guessing; conflicting evidence' contract documented in the LlmProposal docstring at engine/assessor.py:79-84). The single-pass abstain shortcut fires before validation. Expected: source='abstain', needs_review=True, the proposed status (if any) is preserved on the Decision, review_reason starts with 'llm-abstain:'. NOTE: the original plan named this 'abstain_dual_pass_disagreement', but DUAL_PASS_ENABLED defaults to False (engine/assessor.py:373) so the dual-pass disagreement path doesn't fire on a default-configured Assessor. Self-signaled abstain exercises the same precision-over-recall outcome (Decision lands as needs_review, exporters filter it out) without requiring the case file to monkey-patch a module-level knob \u2014 if/when dual-pass is re-enabled by default, add a sibling 'abstain_dual_pass_disagreement.json' that queues two distinct proposals.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.7",
+    "cci_id": "CCI-002111",
+    "guidance": "The organization monitors the use of information system accounts.",
+    "procedures": "Examine evidence of account monitoring.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00066666 Audit Plan Rev A \u2014 references account monitoring obligations but the listed cadence (weekly) conflicts with USD00077778 which states monthly.\n- USD00077778 Account Management SOP \u2014 states account-use review occurs monthly.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Conflicting cadence between USD00066666 (weekly) and USD00077778 (monthly); cannot determine compliant state from the artifacts alone.",
+      "confidence": 0.4,
+      "abstain": true
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "llm-abstain"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "acct_mgmt_policy_demo",
+  "description": "Policy-prose case modeled on Information_System_Account_Management_Policy_USD20240315.docx — policy docs are LESS host-dense than SSPs/architecture docs. Pins the lower-token-count, lower-confidence floor: a generic AC-2 procedure should still emit role + lifecycle vocabulary but not invent hostnames.",
+  "fixture_docs": [
+    {
+      "filename": "Information_System_Account_Management_Policy_USD20240315.docx",
+      "boundary_doc_kind": "Policy",
+      "title": "Information System Account Management Policy USD20240315",
+      "text": "1.0 PURPOSE\n\nThis policy establishes the requirements for creating, modifying, disabling, and removing information-system accounts on Example information systems. It implements NIST SP 800-53 Rev 5 controls in the AC-2 family.\n\n2.0 SCOPE\n\nApplies to all Example information systems holding or processing federal information, including but not limited to FedRAMP-authorized cloud services and on-premises systems hosting CUI.\n\n3.0 ROLES\n\n  * Information System Owner (ISO) -- authorizes account creation\n  * Information System Security Officer (ISSO) -- approves privileged accounts\n  * System Administrator -- executes creates/modifies/disables in target system\n  * Account Holder -- end user with assigned credentials\n\n4.0 ACCOUNT LIFECYCLE\n\n4.1 Initial provisioning requires a documented business justification approved by the ISO.\n4.2 Privileged accounts require ISSO approval and quarterly re-attestation.\n4.3 Inactive accounts must be disabled within 35 days; accounts of separated personnel within 24 hours of HR notification.\n4.4 All account creation, modification, and removal events shall be logged centrally."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "ac-2",
+      "iso",
+      "isso",
+      "fedramp",
+      "cui",
+      "nist sp 800-53"
+    ],
+    "confidence": 0.55
+  },
+  "expected": {
+    "expected_tokens": [
+      "ac-2",
+      "iso",
+      "isso",
+      "fedramp"
+    ],
+    "banned_tokens": [
+      "the system",
+      "users",
+      "example.com",
+      "tbd"
+    ],
+    "snapshot_tokens": [
+      "ac-2",
+      "iso",
+      "isso",
+      "fedramp",
+      "cui",
+      "nist sp 800-53"
+    ],
+    "min_confidence": 0.4,
+    "max_unattributed_ratio": 0.10
+  },
+  "live_llm_boundary": {
+    "expected_tokens": [
+      "ac-2",
+      "isso"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd"
+    ],
+    "min_confidence": 0.3
+  }
+}

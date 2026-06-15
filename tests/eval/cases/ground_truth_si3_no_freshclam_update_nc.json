@@ -1,0 +1,46 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_si3_no_freshclam_update_nc",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 307, CCI-002620, assessed 2026-05-27). Non-Compliant verdict \u2014 no in-boundary artifact demonstrating automatic antivirus definition updates. Narrative uses 'Examined/Finding' structure. Sibling to the SI-3.1 entry-point case \u2014 same control, different CCI, same boundary-scoping gap pattern. Tests that NC findings about missing update-schedule artifacts are handled correctly.",
+  "ccis_row": {
+    "control_id": "SI-3",
+    "ap_acronym": "SI-3.2",
+    "cci_id": "CCI-002620",
+    "guidance": "002620: The organization employs malicious code protection mechanisms at information system exit points to detect malicious code.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system architecture as well as the organization's documentation of information system exit points and verifies that malicious code protection mechanisms are implemented.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Prior assessment notes \u2014 reference antivirus definition updates and scan schedule (scoped to DSO environment).\n- Configuration repository search \u2014 no definition-update schedule or update logs located for the EI boundary.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing antivirus with definition updates, and the in-boundary configuration repository.\n\nFinding:\nNo in-boundary artifact demonstrating automatic update of malicious code protection mechanisms (definition update schedule, update logs) was located.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing antivirus with definition updates, and the in-boundary configuration repository.\n\nFinding:\nNo in-boundary artifact demonstrating automatic update of malicious code protection mechanisms (definition update schedule, update logs) was located.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing antivirus with definition updates, and the in-boundary configuration repository.\n\nFinding:\nNo in-boundary artifact demonstrating automatic update of malicious code protection mechanisms (definition update schedule, update logs) was located.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Non-Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": [
+      "status_narrative_mismatch"
+    ]
+  }
+}

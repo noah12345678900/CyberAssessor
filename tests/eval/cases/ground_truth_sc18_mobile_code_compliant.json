@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_sc18_mobile_code_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 289, CCI-001164, assessed 2026-05-27). Compliant verdict based on software approval process and platform verification that mobile code is not used. Narrative uses 'Reviewed' and 'confirmed' affirming phrases. Evidence type: software verification documentation + development plan. Tests acceptance of a 'control not exercised but documented' narrative pattern \u2014 mobile code is not used, but processes are in place for future use.",
+  "ccis_row": {
+    "control_id": "SC-18",
+    "ap_acronym": "SC-18.5",
+    "cci_id": "CCI-001164",
+    "guidance": "001164: The organization monitors the use of mobile code within the information system.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the documented process as well as any artifacts applicable to monitoring of mobile code to ensure the organization being inspected/assessed monitors the use of mobile code within the information system.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Software Verification Document (SVD) \u2014 documents approved code within the base installation; SDA-mission additions follow the Software Approval Process.\n- Software Development Plan section 3.7.3 \u2014 requires cyber review and approval before any mobile code implementation.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined SVD and Software Approval Process; confirmed via the SVD that approved code is documented in the base installation and mission additions follow the Software Approval Process. Mobile code is not used on the platform; per Software Development Plan section 3.7.3, any future mobile code would require cyber review and approval prior to implementation.",
+      "confidence": 0.88
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "na_external_csp_rule_8b",
+  "description": "Rule 8a CSP-inheritance short-circuit (v0.11.0 NA-recovery contract) -- the human-authored rationale in col Q (results) carries the literal phrase 'implemented by AWS GovCloud', which classify_row step 3b (rules.py:230-241) matches against _R8A_CSP_INHERIT_PHRASES and routes to COMPLIANT_8A. Under v0.11.0 an inherited/CSP-provided control is COMPLIANT, NOT Not Applicable: the provider implements it, so the control objective IS satisfied -- it would be indefensible to a 3PAO to call a control with a working cloud implementation 'not applicable'. The orchestrator returns Compliant BEFORE consulting the LLM (rule decisions are cheap to recompute and not cached); the empty stub queue confirms the LLM is not called -- any call would raise from StubLlmClient.\n\nWhy the CSP phrase lives in col Q, not col K: v0.11.0 reads the CSP/scope recognizers ONLY from col Q (results) / col U (previous_results), the human-authored rationale columns -- never from the DISA template text of col K (procedures) / col J (guidance). CSP attribution sitting in col K now yields NO_AUTO_RULE (it is boilerplate, not an assessor decision). This case pins the col-Q path; a regression that re-broadened the CSP recognizer to scan K/J, or that mistakenly mapped CSP attribution to NOT_APPLICABLE_8B again, fails here.\n\nMechanism trace:\n  - row.results (col Q) = 'This control is implemented by AWS GovCloud at the platform layer; no on-prem flow enforcement is in scope for the customer.'\n  - row.procedures (col K) = neutral DISA examine text -- no 8a/8c trigger.\n  - classify_row steps 1/2 (8a explicit + qualified inheritance in K/J) find nothing.\n  - step 3a (NA scope-exclusion in Q/U) finds no _R8B_NA_SCOPE_PHRASES hit -- note 'no ... in scope for the customer' is NOT one of the scope-exclusion phrases, so NA does not fire.\n  - step 3b matches 'implemented by aws' (substring of 'implemented by AWS GovCloud') in col Q -> COMPLIANT_8A, rule='8a', trigger_column='Q', narrative via _format_csp_compliant_narrative -> provider inferred 'AWS' -> 'Compliant -- control is satisfied through inherited provider implementation (AWS); confirmed via Assessment Results (col Q).'\n  - source stamped 'rule_8a'; needs_review False; zero LLM calls.\n\nSubstrate: AC-4 (Information Flow Enforcement) / CCI-001414 -- a canonical control where the platform-layer flow enforcement is genuinely a CSP responsibility, so 'implemented by AWS GovCloud' is a realistic col-Q rationale rather than a contrived trigger.\n\nThe assertion uses status='Compliant', source_in=['rule_8a'], needs_review=false, llm_calls=0, narrative_contains_regex='AWS'. Orthogonal pin points -- a regression that flipped the verdict back to NA, mis-stamped the source, dropped the needs_review clear, accidentally reached the LLM, or stopped paraphrasing the provider into the narrative all fail loudly.",
+  "ccis_row": {
+    "control_id": "AC-4",
+    "ap_acronym": "AC-4.1",
+    "cci_id": "CCI-001414",
+    "guidance": "The organization enforces approved authorizations for controlling the flow of information within the system and between interconnected systems based on organization-defined information flow control policies.",
+    "procedures": "Examine the information flow control policy and enforcement mechanisms and confirm approved authorizations are enforced.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null,
+    "results": "This control is implemented by AWS GovCloud at the platform layer; no on-prem flow enforcement is in scope for the customer."
+  },
+  "tagged_evidence": "## Tagged evidence\n- placeholder \u2014 rule 8a should fire before this is examined.\n",
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["rule_8a"],
+    "needs_review": false,
+    "llm_calls": 0,
+    "narrative_contains_regex": "AWS"
+  }
+}

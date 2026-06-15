@@ -1,0 +1,42 @@
+{
+  "name": "unsupported_cross_reference_citation",
+  "description": "Pins the FOREIGN-cite rejection branch of _verify_cites for the CCI and control-ID regex classes -- the two halves of the cite-verifier that compliant_self_cite_exempt.json pins in the POSITIVE direction (row's own CCI / control_id exempted). unsupported_doc_citation.json covers the negative direction for the USD class; this case completes coverage by hallucinating both a foreign CCI and a foreign control ID in one narrative. Without this case, a regression that broke the foreign-cite check while leaving the USD check intact (e.g. someone refactored the per-class loop at validator.py:897-902 and only re-tested USD) would silently let an LLM ship a narrative like 'enforces password policy per CCI-002041 (IA-5)' on an AC-2 row -- the kind of helpful-looking cross-reference that creates audit traceability gaps because the cited CCI/control isn't actually in the evidence pile.\n\nMechanism trace:\n  - row.cci_id = CCI-000015, row.control_id = AC-2.\n  - status = COMPLIANT.\n  - Narrative contains 'Examined ', 'confirmed via', 'documented in' (_AFFIRMING_PHRASES at validator.py:43-60) -> classify_narrative returns COMPLIANCE_AFFIRMING.\n  - _expected_status_for_class(COMPLIANCE_AFFIRMING) returns COMPLIANT -> status match passes, no STATUS_NARRATIVE_MISMATCH cascade.\n  - _verify_cites (validator.py:858-914) walks the per-class regexes:\n      * _CITE_USD_RE: USD00099999 -- IN evidence_text -> verified.\n      * _CITE_STIG_RE: no SV-#####r#_rule tokens.\n      * _CITE_CCI_RE: CCI-002041 -- NOT in evidence, NOT in row_exemptions (row.cci_id is CCI-000015) -> unverified.\n      * _CITE_CONTROL_ID_RE: IA-5 -- NOT in evidence, NOT in row_exemptions (row.control_id is AC-2) -> unverified. AC-2 also matches but it's row.control_id -> exempted at validator.py:909, skipped.\n  - _verify_cites returns ['CCI-002041', 'IA-5'] -> UNSUPPORTED_DOC_CITATION fires at validator.py:604-613.\n  - Three identical proposals exhaust the retry budget -> _abstain with reason 'validator-exhausted: ... unsupported_doc_citation: Narrative cites tokens not found in tagged evidence: CCI-002041, IA-5 ...'.\n\nLoad-bearing details that ISOLATE the foreign-cite branch:\n  - Narrative DOES cite USD00099999 AND that USD IS in evidence -- this isolates the failure to the CCI + control_id classes. If the USD weren't in evidence, the rejection would still fire but for the wrong reason (regression in the USD branch wouldn't be caught here).\n  - Narrative cites AC-2 implicitly via 'AC-2 row' context AND cites IA-5 as the foreign control. AC-2 IS row.control_id -> exempted. IA-5 IS NOT -> unverified. This pins both halves of the row_exemptions set at validator.py:888-893 (the cci_id half AND the control_id half) in their NEGATIVE direction -- one exempted (AC-2), one rejected (IA-5).\n  - Symmetric for CCI: row.cci_id CCI-000015 is exempted (narrative doesn't cite it, but the exemption set still contains it); CCI-002041 is the foreign cite that triggers rejection.\n  - Narrative DOES NOT match _RESTATEMENT_REGEXES (validator.py:117-122). Opens with 'Examined USD00099999' -- none of the four restatement openers fire.\n  - Narrative token-set Jaccard vs procedures stays well below _OVERLAP_THRESHOLD=0.70. Procedures: 'Examine the account management plan and confirm account types are enumerated.' Narrative ~22 distinct content tokens; intersection ~5 (examine/examined, account, management, plan, confirm/confirmed); Jaccard ~0.23. _is_requirement_restatement returns False -> REQUIREMENT_RESTATEMENT does NOT cascade.\n  - No 'inherited from' substring -> MISSING_INHERITANCE_MARKER skipped (validator.py:508-516).\n  - No SV-#####r#_rule citation -> UNCORROBORATED_STIG_PASS skipped (validator.py:570-587).\n  - Narrative does NOT match _FUTURE_TENSE_RE (validator.py:187-198). All verbs present-tense ('is documented', 'cross-references').\n  - No NA-phrase hits ('implemented by aws/azure/gcp/csp', etc.) -- the bare word 'implemented' is not in _NA_PHRASES; only the 'implemented by [csp]' compounds are.\n  - No gap-phrase hits (no 'no documentation', no 'POA&M', no 'missing', no 'remediation').\n  - No hybrid-split markers ('On-prem:', 'Cloud:', '## responsibility_split') -> single-narrative classification path.\n\nThree identical proposals (not three variants): the stub does not consume corrective_context, so the orchestrator's job is just to keep retrying until the budget is gone. Same retry-exhaustion contract pinned by unsupported_doc_citation / status_narrative_mismatch_cross_status / future_tense_rejection / uncorroborated_stig_pass_rejection.\n\nThe assertion uses BOTH rejection_classes_contains AND review_reason_contains_regex. Unlike requirement_restatement_rejection (where review_reason can't distinguish primary from cascaded mechanism), this case has a single rejection per attempt so the review_reason 'validator-exhausted: unsupported_doc_citation: ...' uniquely identifies the path. Pinning both surfaces guards the assessor.py review-reason builder AND the rejection_log walker against silent regressions.\n\nControl AC-2 / CCI-000015 substrate is realistic: an LLM assessing account management often 'helpfully' cross-references the related IA-5 password / IA-2 authenticator controls because the training data couples those concepts. When the cross-reference isn't grounded in the evidence pile the assessor actually attached, it's a hallucinated cite -- exactly the failure mode _verify_cites was written to catch.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization identifies and selects the following types of information system accounts to support organizational missions/business functions.",
+    "procedures": "Examine the account management plan and confirm account types are enumerated.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev B \u2014 enumerates privileged, service, and standard user account types and the approval workflow for each.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 4 that privileged account workflow is documented in the plan, which cross-references IA-5 password policy per CCI-002041 for credential issuance to each account type.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 4 that privileged account workflow is documented in the plan, which cross-references IA-5 password policy per CCI-002041 for credential issuance to each account type.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 4 that privileged account workflow is documented in the plan, which cross-references IA-5 password policy per CCI-002041 for credential issuance to each account type.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Compliant",
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "review_reason_contains_regex": "validator-exhausted.*unsupported_doc_citation",
+    "rejection_classes_contains": ["unsupported_doc_citation"]
+  }
+}

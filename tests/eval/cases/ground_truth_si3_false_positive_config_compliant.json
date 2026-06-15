@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_si3_false_positive_config_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 317, CCI-001245, assessed 2026-05-27). Compliant verdict based on ClamAV scan.conf review for false-positive handling. Narrative uses 'Reviewed' and 'confirmed' affirming phrases. Evidence type: antivirus configuration file. Tests that a short, tool-specific configuration narrative is accepted.",
+  "ccis_row": {
+    "control_id": "SI-3",
+    "ap_acronym": "SI-3.12",
+    "cci_id": "CCI-001245",
+    "guidance": "001245: The organization addresses the receipt of false positives during malicious code detection and eradication, and the resulting potential impact on the availability of the information system.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to address the receipt of false positives during malicious code detection and eradication, and the resulting potential impact on the availability of the information system.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Antivirus scan configuration file \u2014 scan.conf settings for error and false-positive minimization.\n- SIEM integration documentation \u2014 confirms scan output is forwarded for centralized monitoring.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Reviewed antivirus scan configuration; confirmed it is configured to minimize the recording of errors and false-positives, enabling effective monitoring of scan output in the SIEM.",
+      "confidence": 0.88
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

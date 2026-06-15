@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1"
+           xmlns:cdf="http://checklists.nist.gov/xccdf/1.1"
+           id="xccdf_mil.disa.stig_benchmark_Application_Security_and_Development_STIG"
+           xml:lang="en"
+           style="SCAP_1.1">
+  <status date="2026-01-24">accepted</status>
+  <title>Application Security and Development Security Technical Implementation Guide</title>
+  <description>This Security Technical Implementation Guide is published as a tool to improve the security of Department of Defense (DoD) information systems.</description>
+  <notice id="terms-of-use" xml:lang="en"></notice>
+  <front-matter xml:lang="en"></front-matter>
+  <rear-matter xml:lang="en"></rear-matter>
+  <reference href="https://public.cyber.mil">DISA STIG</reference>
+  <plain-text id="release-info">Release: 6 Benchmark Date: 24 Jan 2026</plain-text>
+  <version>5.1</version>
+
+  <Group id="V-222397">
+    <title>SRG-APP-000033</title>
+    <description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description>
+    <Rule id="SV-222397r879530_rule" weight="10.0" severity="high">
+      <version>APSC-DV-000460</version>
+      <title>The application must enforce approved authorizations for logical access to information and system resources in accordance with applicable access control policies.</title>
+      <description>&lt;VulnDiscussion&gt;Strong access controls are critical to securing application data. Access controls are designed to permit authorized users access to applications and deny access to unauthorized users.&lt;/VulnDiscussion&gt;</description>
+      <reference href="DPMS Target Application Security and Development">
+        <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">DPMS Target Application Security and Development</dc:title>
+      </reference>
+      <ident system="http://cyber.mil/cci">CCI-000213</ident>
+      <fixtext fixref="F-21598r615922_fix">Design and configure applications to enforce DoD approved authorizations for logical access to information and resources.</fixtext>
+      <check system="C-23612r615921_chk">
+        <check-content>Review the application architecture documentation and validate that role-based access control (RBAC) is enforced for all sensitive operations. Validate access enforcement against the access control policy.</check-content>
+      </check>
+    </Rule>
+  </Group>
+
+  <Group id="V-222608">
+    <title>SRG-APP-000516</title>
+    <description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description>
+    <Rule id="SV-222608r879887_rule" weight="10.0" severity="medium">
+      <version>APSC-DV-003235</version>
+      <title>Application audit tools must be cryptographically signed in order to provide tamper resistance.</title>
+      <description>&lt;VulnDiscussion&gt;Protecting the integrity of the tools used for auditing purposes is a critical step to ensuring the integrity of audit information.&lt;/VulnDiscussion&gt;</description>
+      <reference href="DPMS Target Application Security and Development">
+        <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">DPMS Target Application Security and Development</dc:title>
+      </reference>
+      <ident system="http://cyber.mil/cci">CCI-001496</ident>
+      <fixtext fixref="F-21810r616134_fix">Configure the application to use cryptographically signed audit tools.</fixtext>
+      <check system="C-23834r616133_chk">
+        <check-content>Review the application design documentation. Verify the application uses cryptographically signed audit tools to ensure tamper resistance.</check-content>
+      </check>
+    </Rule>
+  </Group>
+
+  <Group id="V-222423">
+    <title>SRG-APP-000131</title>
+    <description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description>
+    <Rule id="SV-222423r879588_rule" weight="10.0" severity="medium">
+      <version>APSC-DV-000650</version>
+      <title>The application must prevent the installation of patches, service packs, or application components without verification the software component has been digitally signed using a certificate that is recognized and approved by the organization.</title>
+      <description>&lt;VulnDiscussion&gt;Changes to any software components can have significant effects on the overall security of the application.&lt;/VulnDiscussion&gt;</description>
+      <reference href="DPMS Target Application Security and Development">
+        <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">DPMS Target Application Security and Development</dc:title>
+      </reference>
+      <ident system="http://cyber.mil/cci">CCI-001749</ident>
+      <fixtext fixref="F-21625r615949_fix">Configure the application to prevent installation of unsigned software.</fixtext>
+      <check system="C-23639r615948_chk">
+        <check-content>Review application configuration. Verify that only digitally signed patches are accepted, and that signatures are validated against the organization's trusted CA.</check-content>
+      </check>
+    </Rule>
+  </Group>
+
+  <TestResult id="xccdf_org.open-scap_testresult_EXAMPLE-SYSTEM-DEMO-APP01"
+              start-time="2026-05-20T09:14:32"
+              end-time="2026-05-20T09:18:11"
+              version="5.1">
+    <benchmark href="U_ASD_STIG_V5R1_Manual-xccdf.xml" id="xccdf_mil.disa.stig_benchmark_Application_Security_and_Development_STIG"/>
+    <title>OpenSCAP Evaluation of Application Security and Development STIG on EXAMPLE-SYSTEM-DEMO-APP01</title>
+    <identity authenticated="true" privileged="false">scap-scan-svc</identity>
+    <profile idref="xccdf_mil.disa.stig_profile_MAC-1_Sensitive"/>
+    <target>example-system-demo-app01.demo.local</target>
+    <target-address>10.10.5.74</target-address>
+    <rule-result idref="SV-222397r879530_rule" time="2026-05-20T09:15:01" severity="high" weight="10.0">
+      <result>pass</result>
+    </rule-result>
+    <rule-result idref="SV-222608r879887_rule" time="2026-05-20T09:16:22" severity="medium" weight="10.0">
+      <result>fail</result>
+    </rule-result>
+    <rule-result idref="SV-222423r879588_rule" time="2026-05-20T09:17:10" severity="medium" weight="10.0">
+      <result>pass</result>
+    </rule-result>
+    <score system="urn:xccdf:scoring:default" maximum="100.000000">66.666667</score>
+  </TestResult>
+</Benchmark>

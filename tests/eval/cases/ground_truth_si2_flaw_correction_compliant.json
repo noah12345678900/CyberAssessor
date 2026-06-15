@@ -1,0 +1,32 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_si2_flaw_correction_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 296, CCI-001227, assessed 2026-05-27). Compliant verdict based on multiple procedural documents including USD-numbered DevSecOps Guide and Software Development Plan. Narrative uses 'Reviewed' and 'confirmed' affirming phrases with multiple document citations. Evidence type: procedural documentation (vulnerability management SOPs, DevSecOps guide). Tests multi-document citation narrative acceptance.",
+  "ccis_row": {
+    "control_id": "SI-2",
+    "ap_acronym": "SI-2.3",
+    "cci_id": "CCI-001227",
+    "guidance": "001227: The organization corrects information system flaws.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the information system and ensures the organization being inspected/assessed corrects information system flaws.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Vulnerability Scanning Analysis and Reporting Procedures \u2014 defines flaw identification and reporting workflow.\n- Vulnerability Tracking and Remediation Procedures \u2014 defines flaw correction timeline and tracking.\n- USD00011570 DevSecOps Guide \u2014 organizational process for flaw remediation in the CI/CD pipeline.\n- USD00008630 Software Development Plan \u2014 flaw remediation integration into configuration management.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined Vulnerability Scanning Analysis and Reporting Procedures, Vulnerability Tracking SOP, DevSecOps Guide (USD00011570), and Software Development Plan (USD00008630); confirmed via the cited SOPs that a documented process exists to correct identified information system flaws.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false,
+    "narrative_contains_regex": "USD\\d{8}"
+  }
+}

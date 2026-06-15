@@ -1,0 +1,29 @@
+{
+  "appId": "com.nuon.cybersecurity-assessor",
+  "productName": "Cybersecurity Assessor",
+  "copyright": "Copyright © 2026 Nuon",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../backend/dist/cybersec-server",
+      "to": "cybersec-server",
+      "filter": ["**/*"]
+    }
+  ],
+  "win": {
+    "target": "nsis",
+    "icon": "build/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": false
+  }
+}

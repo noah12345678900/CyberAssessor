@@ -1,0 +1,39 @@
+{
+  "name": "llm_after_retry",
+  "description": "Forces the validator-rejection \u2192 retry \u2192 accept path so source='llm_after_retry' is exercised. Attempt 0 is a status=Compliant proposal whose narrative omits every phrase in validator._AFFIRMING_PHRASES (engine/validator.py:43-60), so classify_narrative returns AMBIGUOUS and the status/narrative-class check at validator.py:343-352 fires STATUS_NARRATIVE_MISMATCH. Orchestrator builds corrective_context and loops; attempt 1 pops a clean affirming proposal which passes the validator on first try. assessor.py:1161 sets source='llm' when attempt_no==0 and 'llm_after_retry' otherwise \u2014 the case pins the boundary at attempt_no==1. Existing compliant_doc_citation accepts source='llm' OR 'llm_after_retry'; this case forces the retry branch so a regression that silently never retries (e.g. _build_corrective_context returning None and breaking the loop) is caught directly.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization identifies and selects the following types of information system accounts to support organizational missions/business functions.",
+    "procedures": "Examine the account management plan and confirm account types are enumerated.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev B \u2014 enumerates privileged, service, and standard user account types and the approval workflow for each.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Per USD00099999, all required account types are present.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 3 that privileged, service, and standard account types are documented in the plan with approval workflows for each.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 2,
+    "narrative_contains_regex": "USD\\d{8}"
+  },
+  "live_llm": {
+    "expected_status": "Compliant",
+    "expected_needs_review": false,
+    "expected_source_in": ["llm", "llm_after_retry"]
+  }
+}

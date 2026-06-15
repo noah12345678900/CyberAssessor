@@ -1,0 +1,36 @@
+{
+  "name": "tier3_control_id_in_filename",
+  "description": "RE-RECORDED 2026-06-07 — converted from a positive 'filename match earns a Tier 3 tag' case to a negative 'filename match alone earns NO tag' case as part of the path-only deceptive-filename fix. Body text mentions no control IDs ('Generic policy text with no control identifiers.'); the filename 'AC-2_account_policy.pdf' contains AC-2 but the path is no longer scanned by Tier 3. Expected outcome: zero tags. Sibling case to pin_control_id_in_path_only — that pin uses empty text + path_override, this one uses non-empty unrelated text + a natural filename. Together they cover both shapes of the same attack surface (empty body / unrelated body) so a regression that re-adds path scanning trips both.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the account baseline."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "AC-2_account_policy.pdf",
+    "text": "Generic policy text with no control identifiers."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

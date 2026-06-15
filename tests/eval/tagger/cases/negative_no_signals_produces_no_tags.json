@@ -1,0 +1,36 @@
+{
+  "name": "negative_no_signals_produces_no_tags",
+  "description": "Negative case: no doc_number, empty text, no stig_findings, no evidence_type, no control ID in filename/path. Every tier should miss. Pins the floor — if a regression introduces a default tag (e.g. tagging the first Objective when no signals fire), this case fails loudly.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "notes.pdf",
+    "text": ""
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "status_narrative_mismatch_na_with_affirming",
+  "description": "Pins the OPPOSITE direction of the STATUS_NARRATIVE_MISMATCH cross-status branch at engine/validator.py:481-490 already pinned by status_narrative_mismatch_cross_status.json. That sibling case covers GAP_DESCRIBING-narrative + COMPLIANT-status (LLM writes gap language but marks Compliant). This case covers COMPLIANCE_AFFIRMING-narrative + NOT_APPLICABLE-status -- the LLM writes assessment-act language proving the control IS implemented locally, then mislabels the verdict as Not Applicable. Realistic substrate: a program team that inherits physical security from a tenant building MIGHT mark PE-3.1 as NA, but the LLM retrieves a local Physical Security Plan describing badge readers and reflexively writes affirming prose -- a 3PAO red flag because the verdict and the narrative contradict each other.\n\nThe cross-status branch (validator.py:481-490) is symmetric -- `if status is not None and status != expected_status` -- so a regression in either direction would silently flip one branch while leaving the other passing. Without this case, breaking only the COMPLIANCE_AFFIRMING-vs-NA direction would let the sibling case still pass and a misclassified NA verdict could ship.\n\nMechanism trace:\n  - status = NOT_APPLICABLE.\n  - Narrative contains three _AFFIRMING_PHRASES (validator.py:43-60): 'Examined ' (line 57), 'confirmed via' (line 44), 'documented in' (line 54).\n  - Narrative contains zero _NA_PHRASES (validator.py:63-80): no 'not applicable because', no 'system does not have', no 'implemented by aws/azure/gcp/csp', no 'outside system boundary', etc. The narrative DESCRIBES local implementation, the opposite of NA-justifying.\n  - Narrative contains zero _GAP_PHRASES (validator.py:93-113): no 'no documentation', no 'poa&m', no 'remediation', no 'missing', no 'has not been'.\n  - classes_hit = 1 (affirming only), so classify_narrative returns COMPLIANCE_AFFIRMING unambiguously (not AMBIGUOUS, which would route to the OTHER branch at validator.py:471-480).\n  - _expected_status_for_class(COMPLIANCE_AFFIRMING) returns COMPLIANT (validator.py:736-737).\n  - status (NOT_APPLICABLE) != expected_status (COMPLIANT) -> cross-status branch fires at validator.py:481-490.\n  - Three identical proposals exhaust the retry budget -> _abstain with reason 'validator-exhausted: ... status_narrative_mismatch ...'.\n  - Per Fix 3 (KERNEL_VERSION 0.5.0): hard-abstain coerces status to None and preserves the LLM's intended verdict on proposed_status. expected.proposed_status='Not Applicable' guards that coercion path for the NA direction (sibling case pins it for the COMPLIANT direction).\n\nLoad-bearing details that ISOLATE the cross-status branch from cascades:\n  - Narrative does NOT match _RESTATEMENT_REGEXES (validator.py:117-122). Opens with 'Examined USD00088888' -- none of the four restatement openers fire.\n  - Narrative token-set Jaccard vs procedures stays well below _OVERLAP_THRESHOLD=0.70. Procedures: 'Examine documented physical access authorizations and entry/exit point listings.' Narrative tokens (after _TOKEN_RE filter at validator.py:779 [a-z0-9]{3,}): examined, usd00088888, example-system, physical, security, plan, rev, confirmed, via, section, badge-reader, access, controls, documented, plan, example-system, sterling, heights, facility, entry, exit, points -- ~20 distinct content tokens. Procedures tokens: examine, documented, physical, access, authorizations, and, entry, exit, point, listings -- ~10 distinct. Intersection: documented, physical, access, entry, exit -- 5 tokens. Jaccard = 5/20 = 0.25, well below 0.70. _is_requirement_restatement returns False -> REQUIREMENT_RESTATEMENT does NOT cascade.\n  - Same Jaccard check passes for guidance (different vocabulary: 'enforces', 'authorizations', 'facility', 'resides') -- no cascade.\n  - Narrative does NOT match _FUTURE_TENSE_RE (validator.py:187-198). All verbs present-tense ('are documented', 'badge-reader access controls'). Future-tense gate at validator.py:541-555 requires status=COMPLIANT anyway, so it would skip on NA status, but belt-and-suspenders.\n  - No 'inherited from' string -> MISSING_INHERITANCE_MARKER skipped (validator.py:508-516).\n  - No SV-#####r#_rule citation -> UNCORROBORATED_STIG_PASS skipped (validator.py:570-587); also requires status=COMPLIANT to fire, which doesn't apply here.\n  - USD00088888 IS in tagged_evidence so cite-verifier (validator.py:_verify_cites) passes -- the only USD token in the narrative is USD00088888 and it appears literally in evidence_text. UNSUPPORTED_DOC_CITATION does NOT cascade.\n  - No hybrid-split markers (no 'On-prem:', 'Cloud:', '## responsibility_split'). _HYBRID_SPLIT_RE at validator.py:140-142 does not match, so the hybrid-merge path is skipped and classify_narrative runs the single-narrative path that gives the clean COMPLIANCE_AFFIRMING classification we need.\n\nThree identical proposals (not three variants): the stub does not consume corrective_context, so the orchestrator's job is just to keep retrying until the budget is gone. Same retry-exhaustion contract pinned by status_narrative_mismatch_cross_status / future_tense_rejection / unsupported_doc_citation / uncorroborated_stig_pass_rejection.\n\nControl PE-3.1 (Physical Access Control), CCI-000919 is a realistic substrate: many CONUS programs DO inherit physical from a tenant building (legitimate NA via lease + parent-system inheritance), but the LLM retrieving a local Physical Security Plan that describes facility-specific badge readers and reflexively writing 'Examined ... confirmed via ... documented in ...' affirming prose is exactly the failure mode the cross-status branch was written to catch.",
+  "ccis_row": {
+    "control_id": "PE-3",
+    "ap_acronym": "PE-3.1",
+    "cci_id": "CCI-000919",
+    "guidance": "The organization enforces physical access authorizations at entry and exit points to the facility where the information system resides.",
+    "procedures": "Examine documented physical access authorizations and entry/exit point listings.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00088888 Example System Physical Security Plan Rev D \u2014 describes badge-reader access control at the Example System Sterling Heights facility, including the designated entry and exit points and the roster of authorized personnel.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Not Applicable",
+      "narrative": "Examined USD00088888 Example System Physical Security Plan Rev D; confirmed via section 3 that badge-reader access controls are documented in the plan for the Example System Sterling Heights facility entry and exit points.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Not Applicable",
+      "narrative": "Examined USD00088888 Example System Physical Security Plan Rev D; confirmed via section 3 that badge-reader access controls are documented in the plan for the Example System Sterling Heights facility entry and exit points.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Not Applicable",
+      "narrative": "Examined USD00088888 Example System Physical Security Plan Rev D; confirmed via section 3 that badge-reader access controls are documented in the plan for the Example System Sterling Heights facility entry and exit points.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Not Applicable",
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "review_reason_contains_regex": "validator-exhausted.*status_narrative_mismatch",
+    "rejection_classes_contains": ["status_narrative_mismatch"]
+  }
+}

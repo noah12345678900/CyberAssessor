@@ -1,0 +1,52 @@
+{
+  "name": "tier3_control_id_in_text",
+  "description": "Tier 3 canonical path: body text mentions a control ID 'AC-2'. The tagger scans the text via _CONTROL_ID_RE (uppercase only, NOT case-insensitive), normalizes to 'ac-2', and tags every child Objective of that control at confidence 0.5. Relevance is a TF-IDF cosine band [_TIER3_RELEVANCE_FLOOR 0.35, _TIER3_RELEVANCE_CEIL 0.75] (2026-06-10) — pinned as a band rather than an exact float because the cosine is content-dependent and varies across sklearn versions. This minimal catalog has a single AC-2 child so only one tag is expected — the full child fan-out is pinned separately in pin_tier3_spray_one_mention_tags_all_children.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"},
+      {"control_id": "ac-3", "title": "Access Enforcement", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the account baseline."
+      },
+      {
+        "control_id": "ac-3",
+        "objective_id": "CCI-000213",
+        "implementation_guidance": "Access enforcement baseline.",
+        "assessment_procedures": "Verify access enforcement."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "This policy implements AC-2 account management requirements."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 1,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance_min": 0.35,
+        "relevance_max": 0.75,
+        "confidence": 0.5,
+        "rationale_contains": "Control ID AC-2"
+      }
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000213"}
+    ]
+  }
+}

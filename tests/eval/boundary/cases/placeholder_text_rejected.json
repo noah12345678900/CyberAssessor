@@ -1,0 +1,36 @@
+{
+  "name": "placeholder_text_rejected",
+  "description": "Engineered case: doc full of placeholder text (TBD, REDACTED, example.com, your-hostname-here). The stub envelope simulates a well-behaved extractor that emits ONE legit token from the doc plus correctly rejects the placeholders. The kernel asserts the legit token survives AND none of the placeholders leak into extracted_tokens — pins that the banned-tokens kernel actually catches a fixture leak in stub mode. Stub-only by design: a real LLM under the current prompt may not reliably reject all placeholders, which is exactly the regression Phase 3 is meant to fix; this case keeps measuring while the prompt stabilizes.",
+  "fixture_docs": [
+    {
+      "filename": "ssp_draft_placeholder.docx",
+      "boundary_doc_kind": "SSP",
+      "title": "DRAFT SSP -- placeholders not yet filled in",
+      "text": "## System boundary\n\nHostnames: TBD\nIP ranges: TBD / REDACTED\nIdentity provider: example.com (placeholder until vendor selection finalized)\nDatabase: your-database-here.your-domain-here\n\nOne real piece of info that made it past redaction: the bastion host on this enclave is bastion01.acme.local.\n\nFedRAMP package ID: REDACTED\nCAGE code: REDACTED"
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "bastion01.acme.local"
+    ],
+    "confidence": 0.35
+  },
+  "expected": {
+    "expected_tokens": [
+      "bastion01.acme.local"
+    ],
+    "banned_tokens": [
+      "tbd",
+      "redacted",
+      "example.com",
+      "your-database-here.your-domain-here",
+      "your-domain-here",
+      "your-hostname-here"
+    ],
+    "snapshot_tokens": [
+      "bastion01.acme.local"
+    ],
+    "min_confidence": 0.2,
+    "max_unattributed_ratio": 0.10
+  }
+}

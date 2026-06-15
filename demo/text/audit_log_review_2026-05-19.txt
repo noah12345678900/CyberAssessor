@@ -1,0 +1,65 @@
+Example System Demo System - Account Lockout & Authentication Audit Log Review
+====================================================================
+System:        Example System Demo (example-system-demo-ws01.demo.local, 10.10.5.21)
+Reviewer:      Noah Jaskolski
+Review Date:   2026-05-19
+Log Source:    Windows Security Event Log, exported from example-system-demo-ws01
+Period:        2026-05-12 00:00:00 - 2026-05-18 23:59:59 (UTC-05:00)
+Tooling:       wevtutil + manual review per SI-4(2), AU-6 procedures
+
+Summary
+-------
+Reviewed 7 calendar days of Security event log entries on the Example System Demo
+domain controller and workstation example-system-demo-ws01. No unauthorized access
+attempts confirmed. Two account-lockout events observed and reconciled
+to user-reported password-typing errors. Mandatory weekly review per
+program AU-6 procedures complete.
+
+Account Management Events (Event IDs 4720, 4722, 4724, 4725, 4726)
+------------------------------------------------------------------
+2026-05-13 08:14:22  4720  DEMO\admin01   New account created: jdoe
+                                            Justification: HR onboarding
+                                            ticket SDA-HR-2026-0418
+2026-05-13 08:15:01  4724  DEMO\admin01   Password reset for: jdoe
+2026-05-15 16:22:09  4725  DEMO\admin01   Disabled account: tcontractor
+                                            Reason: contract end, ticket
+                                            SDA-HR-2026-0422
+
+Logon Failures (Event ID 4625)
+------------------------------
+2026-05-14 09:11:42  4625  jdoe@DEMO       3 failed attempts in 4 min
+                                            Source: 10.10.5.21
+                                            Sub-status: 0xC000006A (bad pw)
+                                            Resolution: user contacted help
+                                            desk, identity confirmed,
+                                            account unlocked at 09:18 by
+                                            admin01.
+2026-05-17 07:44:18  4625  msmith@DEMO     5 failed attempts in 2 min
+                                            Source: 10.10.5.34
+                                            Sub-status: 0xC000006A
+                                            Auto-lockout triggered at
+                                            attempt 5 (per GPO password
+                                            policy threshold).
+                                            Resolution: caps-lock error
+                                            reported by user; account
+                                            auto-unlocked after 30 min.
+
+Privileged Use Events (Event ID 4672)
+-------------------------------------
+2026-05-12 through 2026-05-18: 14 privileged-logon events, all from
+admin01 or backup-svc, all within scheduled maintenance windows
+(Mon/Wed/Fri 06:00-07:00 local). Cross-checked against change calendar
+in SDA program ticketing system.
+
+Findings
+--------
+- Account lockout policy is active and enforcing the 5-attempt / 30-min
+  threshold set by GPO_Password_Policy_Export.xlsx.
+- All account creations and disables traced to authorized HR tickets.
+- No anomalies requiring escalation.
+
+Sign-off
+--------
+Reviewed by:  Noah Jaskolski, ISSO
+Date:         2026-05-19
+Next review:  2026-05-26

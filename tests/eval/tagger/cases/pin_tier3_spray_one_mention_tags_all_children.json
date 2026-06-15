@@ -1,0 +1,59 @@
+{
+  "name": "pin_tier3_spray_one_mention_tags_all_children",
+  "description": "RE-RECORDED 2026-06-10 as the regression-gate proof of the Tier 3 full child fan-out. The 2026-06-07 'spray fix' emitted ONE tag on the primary CCI per matched Control, on the assumption the LLM bundler is per-Control so siblings would see the artifact via the bundle. That batched bundler was never shipped — build_tagged_evidence_with_payload queries WHERE objective_id == <one CCI> and the assess loop runs per-CCI, so primary-CCI-only tagging STARVED every sibling CCI (empty bundle -> rule_no_evidence -> confident Non-Compliant). REVERTED 2026-06-10: one body mention of 'AC-2' now fans out to EVERY child Objective of ac-2 (CCI-000015 / CCI-000016 / CCI-000017), each at confidence 0.5 and the shared control-level cosine relevance band [0.35, 0.75]. ac-3's CCI-000213 must NOT receive a tag — the bounded-by-control invariant (no family-keyword broadcast) still holds. A regression that re-introduces primary-CCI-only selection collapses this from 3 tags to 1 and trips this case loudly.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"},
+      {"control_id": "ac-3", "title": "Access Enforcement", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management policy.",
+        "assessment_procedures": "Examine the policy."
+      },
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000016",
+        "implementation_guidance": "Account management procedures.",
+        "assessment_procedures": "Interview the manager."
+      },
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000017",
+        "implementation_guidance": "Account management automation.",
+        "assessment_procedures": "Test the automation."
+      },
+      {
+        "control_id": "ac-3",
+        "objective_id": "CCI-000213",
+        "implementation_guidance": "Access enforcement.",
+        "assessment_procedures": "Examine access controls."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "This policy implements AC-2 account management requirements."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 3,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 3,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {"objective_id": "CCI-000015", "source": "auto", "relevance_min": 0.35, "relevance_max": 0.75, "confidence": 0.5, "rationale_contains": "Control ID AC-2"},
+      {"objective_id": "CCI-000016", "source": "auto", "relevance_min": 0.35, "relevance_max": 0.75, "confidence": 0.5, "rationale_contains": "Control ID AC-2"},
+      {"objective_id": "CCI-000017", "source": "auto", "relevance_min": 0.35, "relevance_max": 0.75, "confidence": 0.5, "rationale_contains": "Control ID AC-2"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000213"}
+    ]
+  }
+}

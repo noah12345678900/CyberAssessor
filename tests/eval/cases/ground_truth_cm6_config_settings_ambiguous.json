@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_cm6_config_settings_ambiguous",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for CM-6 configuration settings. This simulates a genuinely ambiguous scenario where STIG scan results are partially available but inconclusive \u2014 some systems show compliant checks while others have not been scanned. The LLM returns low confidence (0.3, just under the 0.35 threshold), triggering the confidence-floor abstain gate at engine/assessor.py:1075-1094. Tests the confidence-floor gate with a realistic assessment scenario rather than the synthetic CCI-000017 used in abstain_low_confidence.json.",
+  "ccis_row": {
+    "control_id": "CM-6",
+    "ap_acronym": "CM-6.1",
+    "cci_id": "CCI-000363",
+    "guidance": "000363: The organization establishes configuration settings for information technology products employed within the information system.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed establishes documented configuration settings for information technology products.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- STIG checklist results (partial) \u2014 3 of 7 boundary hosts scanned; remaining 4 hosts not yet baselined.\n- Configuration management policy \u2014 references DISA STIG baselines but does not enumerate specific settings per product.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined configuration management policy and partial STIG scan results; confirmed that scanned hosts have DISA STIG baselines applied and documented in the configuration management plan.",
+      "confidence": 0.3
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "low-confidence"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "tier3_control_enhancement_form",
+  "description": "Tier 3 normalization path: body mentions an enhancement 'AC-2(1)'. _normalize_control_id converts 'AC-2(1)' -> 'ac-2.1' (lowercases AND maps parens to dot). Pins the catalog lookup form contract: catalog stores 'ac-2.1', regex finds 'AC-2(1)', normalization is the bridge. A regression that drops the .lower() or the paren->dot swap kills this case.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2.1", "title": "Automated System Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2.1",
+        "objective_id": "CCI-000016",
+        "implementation_guidance": "Automated account management.",
+        "assessment_procedures": "Verify automation."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "This policy covers AC-2(1) automated account management."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 1,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000016",
+        "source": "auto",
+        "relevance_min": 0.35,
+        "relevance_max": 0.75,
+        "confidence": 0.5,
+        "rationale_contains": "Control ID AC-2.1"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

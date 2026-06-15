@@ -1,0 +1,6 @@
+# CUI safety — block everything in this folder by default.
+# Only the README (which describes the structure) is allowed in git.
+# Real CCIS workbooks, SSPs, CRMs, catalog exports, etc. stay local-only.
+*
+!README.md
+!.gitignore

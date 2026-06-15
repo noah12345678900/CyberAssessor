@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_ac2_account_types_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 7, CCI-002110, assessed 2026-05-27). Compliant verdict based on DD2875 template and RBAC documentation confirming organizational account types are defined. Narrative uses 'Reviewed' and 'confirmed' affirming phrases \u2014 validator should classify as COMPLIANCE_AFFIRMING and accept on first attempt. Evidence type: policy/procedural documentation.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-002110",
+    "guidance": "002110: The organization defines the information system account types that support the organizational missions/business functions.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the documented information system account types to ensure the organization being inspected/assessed defines the information system account types that support the organizational missions/business functions.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- DD2875 Template \u2014 system access authorization request form defining account type categories (system administrator, user, privileged, service).\n- RBAC Documentation \u2014 role-based access control policy enumerating account types mapped to mission/business functions.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined DD2875 template and RBAC documentation; confirmed via the documented role catalog that organizational account types (system administrator, user, privileged, service) are defined to support mission/business functions.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

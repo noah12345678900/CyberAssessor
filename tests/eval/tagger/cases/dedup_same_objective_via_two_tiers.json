@@ -1,0 +1,42 @@
+{
+  "name": "dedup_same_objective_via_two_tiers",
+  "description": "Dedup case: body text contains BOTH 'AC-2' and 'CCI-000015'. Tier 2 fires first (CCI->Objective lookup), adds the row at conf 0.95. Tier 3 then finds the same Objective via control AC-2; _add() returns early because the obj_id is already in _existing_pairs. CRITICAL behavior pinned: the row is NOT duplicated (tag_count=1) but BOTH tier hit counters increment (cci_hits=1 AND control_id_hits=1) because the counter += 1 lives in the outer loop AFTER _add returns. The first-tier-wins rule means the persisted tag carries the 0.95 confidence, not 0.5. Filename is scan.ckl so the kind-gate (added 2026-06-07) lets the Tier 2 text-scrape fire — under policy.pdf only Tier 3 would fire and this dedup invariant wouldn't be exercised.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "This AC-2 STIG checklist implements CCI-000015 directly."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 1,
+      "control_id_hits": 1,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

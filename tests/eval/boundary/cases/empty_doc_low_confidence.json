@@ -1,0 +1,20 @@
+{
+  "name": "empty_doc_low_confidence",
+  "description": "Empty-docs path: no boundary docs attached. Adapter must short-circuit BEFORE issuing a prompt: confidence=0.0, source_ref='evidence:[]', extractor.calls == []. This is the no-evidence intermediate state the UI uses to prompt 'attach a doc first' — accidentally firing an empty prompt would either fail (no inputs) or worse, hallucinate. Stub-only by design: nothing to test against a real LLM since no call should happen.",
+  "fixture_docs": [],
+  "stub_extractor": {
+    "tokens": [],
+    "confidence": 0.0
+  },
+  "expected": {
+    "expected_tokens": [],
+    "banned_tokens": [
+      "example.com",
+      "tbd",
+      "the system"
+    ],
+    "snapshot_tokens": [],
+    "min_confidence": 0.0,
+    "max_unattributed_ratio": 0.0
+  }
+}

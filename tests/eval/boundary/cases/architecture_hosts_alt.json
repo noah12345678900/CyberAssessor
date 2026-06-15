@@ -1,0 +1,84 @@
+{
+  "name": "architecture_hosts_alt",
+  "description": "Alternate architecture revision modeled on USD00050014_Rev_C Cybersecurity Architecture.docx — overlapping but not identical vocabulary to the Rev_B case. Pins that two adjacent doc revisions independently produce coherent token sets and the kernel is satisfied by both (catches the assessor over-fitting the prompt to one specific revision's prose).",
+  "fixture_docs": [
+    {
+      "filename": "USD00050014_Rev_C_Cybersecurity_Architecture.docx",
+      "boundary_doc_kind": "Architecture",
+      "title": "Cybersecurity Architecture Rev C",
+      "text": "## 2.0 System overview\n\nThe accreditation boundary covers the operations enclave deployed on Example-managed VMware ESXi hosts (esx-a1.example.local through esx-a8.example.local). Guest VMs are orchestrated by vCenter (vcenter.example.local) and protected by Example-Backup (Veeam B&R 12).\n\nIdentity federation is provided via Azure AD as the upstream IdP, federated to the on-prem Okta tenant for application-tier SSO. Privileged access is brokered through CyberArk PAM with session recording.\n\n## 5.0 Telemetry stack\n\nForward-only telemetry from agents:\n\n  * Splunk Universal Forwarder -> siem.example.local:9997\n  * CrowdStrike Falcon sensor -> falcon.crowdstrike.com (egress allow-listed)\n  * Tenable Nessus Agent -> tenable.example.local:8834\n\n## 6.0 Network zones\n\nProduction (prod), pre-production (preprod), and disaster-recovery (dr-site) zones. Inter-zone traffic enforced by Fortinet FortiGate 600F pairs."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "esx-a1.example.local",
+      "esx-a8.example.local",
+      "vcenter.example.local",
+      "siem.example.local",
+      "tenable.example.local",
+      "falcon.crowdstrike.com",
+      "azure ad",
+      "okta",
+      "cyberark pam",
+      "veeam b&r 12",
+      "vmware esxi",
+      "splunk universal forwarder",
+      "crowdstrike falcon",
+      "nessus agent",
+      "fortinet fortigate 600f",
+      "prod",
+      "preprod",
+      "dr-site"
+    ],
+    "confidence": 0.84
+  },
+  "expected": {
+    "expected_tokens": [
+      "vcenter.example.local",
+      "okta",
+      "azure ad",
+      "cyberark pam",
+      "fortinet fortigate 600f"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd",
+      "redacted",
+      "the system"
+    ],
+    "snapshot_tokens": [
+      "esx-a1.example.local",
+      "esx-a8.example.local",
+      "vcenter.example.local",
+      "siem.example.local",
+      "tenable.example.local",
+      "falcon.crowdstrike.com",
+      "azure ad",
+      "okta",
+      "cyberark pam",
+      "veeam b&r 12",
+      "vmware esxi",
+      "splunk universal forwarder",
+      "crowdstrike falcon",
+      "nessus agent",
+      "fortinet fortigate 600f",
+      "prod",
+      "preprod",
+      "dr-site"
+    ],
+    "min_confidence": 0.6,
+    "max_unattributed_ratio": 0.10
+  },
+  "live_llm_boundary": {
+    "expected_tokens": [
+      "vcenter.example.local",
+      "okta",
+      "cyberark pam"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd"
+    ],
+    "min_confidence": 0.5
+  }
+}

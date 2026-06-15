@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_cp9_backup_frequency_ambiguous",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for CP-9 backup frequency. Simulates a scenario where backup documentation exists but frequency requirements are not explicitly stated \u2014 the assessor can't determine if the backup schedule meets the organization-defined RTO/RPO without additional information. LLM returns Compliant with confidence 0.25 (well under 0.35 threshold), triggering confidence-floor abstain. Tests the abstain gate with a different control family (CP) and backup-specific evidence.",
+  "ccis_row": {
+    "control_id": "CP-9",
+    "ap_acronym": "CP-9.1",
+    "cci_id": "CCI-000534",
+    "guidance": "000534: The organization conducts backups of user-level information contained in the information system per organization-defined frequency consistent with recovery time and recovery point objectives.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the contingency plan, backup procedures, and backup logs to ensure the organization being inspected/assessed conducts backups of user-level information at the defined frequency.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Contingency plan excerpt \u2014 references backup requirements but does not specify frequency or RTO/RPO targets.\n- Backup job log (partial) \u2014 shows recent backup executions but schedule interval is unclear.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined contingency plan and backup job logs; confirmed that user-level backups are being conducted, though frequency alignment with RTO/RPO targets could not be fully verified from available documentation.",
+      "confidence": 0.25
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "low-confidence"
+  }
+}

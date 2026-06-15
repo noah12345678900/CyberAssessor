@@ -1,0 +1,32 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_ia2_mfa_privileged_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 159, CCI-000767, assessed 2026-05-29). Compliant verdict based on SDA Enterprise Services Controls mapping and SSH PKE certificate-based MFA. Narrative uses 'Reviewed' and 'Confirmed' affirming phrases. Evidence type: enterprise controls overlay + technical implementation (SSH PKE, smart card/HSM). Tests narrative acceptance with overlay-derived evidence and specific authentication technology references.",
+  "ccis_row": {
+    "control_id": "IA-2(3)",
+    "ap_acronym": "IA-2(3).1",
+    "cci_id": "CCI-000767",
+    "guidance": "000767: The information system implements multifactor authentication for local access to privileged accounts.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to implement multifactor authentication for local access to privileged accounts.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- SDA Enterprise Services Controls (SDA Controls tab, IA-2(3) Req #550) \u2014 requirement for multifactor authentication for local privileged access.\n- SSH PKE configuration export \u2014 certificate-based authentication settings for privileged local access (cryptographic identity stored on hardware token, unlocked with PIN).\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined SDA Enterprise Services Controls (IA-2(3) Req #550): ground system shall use multifactor authentication for local access to privileged accounts. Confirmed via SSH PKE configuration that local privileged access uses certificate-based authentication (cryptographic identity stored on hardware token, unlocked with PIN), satisfying multifactor authentication.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "rule-8c",
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

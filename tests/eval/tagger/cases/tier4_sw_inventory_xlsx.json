@@ -1,0 +1,44 @@
+{
+  "name": "tier4_sw_inventory_xlsx",
+  "description": "Tier 4 canonical path for sw_inventory with a single in-scope control: evidence_type='sw_inventory' routes via EVIDENCE_TYPE_TO_CONTROLS['sw_inventory'] = ['cm-8','cm-7.5','cm-10','cm-11']. This case ships only cm-8 in the catalog to demonstrate the wiring works for one control without exercising the full 4-control spray (that's pinned in pin_tier4_spray_sw_inventory_tags_four_controls).",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-8", "title": "Information System Component Inventory", "family": "CM"}
+    ],
+    "objectives": [
+      {
+        "control_id": "cm-8",
+        "objective_id": "CCI-000363",
+        "implementation_guidance": "Maintain a component inventory.",
+        "assessment_procedures": "Verify inventory completeness."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "sw_inventory.xlsx",
+    "text": "",
+    "evidence_type": "sw_inventory",
+    "evidence_type_signals": ["hostname", "software_name", "version"]
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 1
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000363",
+        "source": "auto",
+        "relevance": 0.8,
+        "confidence": 0.6,
+        "rationale_contains": "Auto-classified as sw inventory"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

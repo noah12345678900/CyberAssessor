@@ -1,0 +1,40 @@
+{
+  "name": "crm_hybrid_customer_plus_inherited",
+  "description": "Pins the CRM hybrid-prepend NATURAL-FALL-THROUGH path at engine/assessor.py:752-763 — the case where dual-scope responsibilities mix in a way that does NOT satisfy `all(r in _CRM_SHORT_CIRCUIT_SET for r in specified)` at :741, so the short-circuit declines and execution falls through to the LLM with the responsibility-split block prepended.\n\ncloud='customer' + onprem='inherited':\n  - 'customer' is NOT in _CRM_SHORT_CIRCUIT_SET (only provider/inherited/not_applicable are) — so the all() check at :741 fails, the short-circuit at :743 is skipped.\n  - cloud_r is populated AND onprem_r is populated AND cloud_r != onprem_r → needs_hybrid_block=True at :752-756.\n  - hybrid block is prepended to tagged_evidence at :758-763 and the assessor proceeds into the normal LLM pipeline.\n\nDistinct from test_force_llm_keeps_hybrid_crm_prepend at test_eval_harness.py:414-474 which pins the SAME prepend invariant but with force_llm=True. The kernel-invariant test proves force_llm doesn't BYPASS the prepend; this case proves the prepend FIRES in the default (no force_llm) flow when the conditions are right. Together they pin both sides of the gate.\n\nAlso the first eval case to exercise the new llm_prompt_evidence_contains_regex expected key in the runner — asserts on stub.calls[0]['tagged_evidence'] to verify the literal '## responsibility_split' header reaches the LLM prompt. Decision-only assertions (status/source/llm_calls) can't distinguish 'the LLM saw the prepend' from 'the LLM happened to land on the right verdict without it' — this key forces the prompt-shape invariant explicitly.\n\nControl SI-4 (Information System Monitoring) is a realistic dual-scope hybrid CRM pattern: the IaaS customer must configure tenant-side telemetry (CloudTrail / CloudWatch / VPC flow logs) because the provider does NOT monitor the contents of tenant accounts — only the underlying infrastructure. On-prem is inherited from the enterprise SOC that already has 24x7 coverage of the boundary egress. The customer therefore has a real assessable cloud-side responsibility that the LLM must reason about, while the on-prem half is dispatched by the inheritance reference.\n\nstub proposal carries a Compliant narrative with the affirming phrase 'confirmed via' and a USD doc citation so the validator accepts it on the first pass (per feedback_eval_compliant_narrative_must_affirm — without an affirming phrase the validator would reject → retry → stub queue exhaustion). source_baseline_id=999 matches the sentinel used across the CRM corpus so failure messages stay diff-able.",
+  "ccis_row": {
+    "control_id": "SI-4",
+    "ap_acronym": "SI-4.1",
+    "cci_id": "CCI-001253",
+    "guidance": "The organization monitors the information system to detect attacks and indicators of potential attacks.",
+    "procedures": "Examine continuous monitoring tooling and SOC processes; confirm telemetry from both cloud-tenant and on-prem boundary feeds the detection pipeline.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00088888 Cloud Telemetry Configuration Standard Rev D \u2014 documents the tenant-side CloudTrail / CloudWatch / VPC flow log configuration the customer owns.\n",
+  "crm_entries": [
+    {
+      "control_id": "si-4",
+      "responsibility": "customer",
+      "narrative": "Tenant-side monitoring (CloudTrail, CloudWatch metric filters, VPC flow logs) is the customer's responsibility; the IaaS provider does not inspect tenant account contents.",
+      "responsibility_onprem": "inherited",
+      "narrative_onprem": "On-prem monitoring is inherited from the enterprise SOC that already operates 24x7 boundary-egress detection across the parent system boundary.",
+      "source_baseline_id": 999
+    }
+  ],
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined the customer-side cloud monitoring posture; confirmed via USD00088888 that tenant CloudTrail, CloudWatch metric filters, and VPC flow logs are configured to feed the detection pipeline for the customer-owned scope.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 1,
+    "narrative_contains_regex": "USD00088888",
+    "llm_prompt_evidence_contains_regex": "## responsibility_split"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "compliant_doc_citation",
+  "description": "Happy path \u2014 LLM returns Compliant with a USD-numbered doc cited in the narrative. Pins the Step 2 LLM-accepted path: rule 8a/8b decline (no automatic-compliant / external-CSP triggers in cols K/J), tagged evidence is present (no Step 1.65 NC short-circuit), validator accepts a concrete narrative with a literal citation token that appears in the evidence bundle. Narrative uses 'examined', 'confirmed via', and 'documented in' \u2014 three of the validator's _AFFIRMING_PHRASES at engine/validator.py:43-60 \u2014 so classify_narrative returns COMPLIANCE_AFFIRMING (not AMBIGUOUS) and the status-narrative match passes on first attempt. Discovered during scaffold: a bare 'Per USDxxxx ...' narrative without an affirming verb triggers REQUIREMENT_RESTATEMENT/STATUS_NARRATIVE_MISMATCH and the orchestrator retries until the stub queue exhausts.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization identifies and selects the following types of information system accounts to support organizational missions/business functions.",
+    "procedures": "Examine the account management plan and confirm account types are enumerated.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev B \u2014 enumerates privileged, service, and standard user account types and the approval workflow for each.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 3 that privileged, service, and standard account types are documented in the plan with approval workflows for each.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "narrative_contains_regex": "USD\\d{8}"
+  },
+  "live_llm": {
+    "expected_status": "Compliant",
+    "expected_needs_review": false,
+    "expected_source_in": ["llm", "llm_after_retry"]
+  }
+}

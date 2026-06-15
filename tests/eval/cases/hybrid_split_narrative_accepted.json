@@ -1,0 +1,29 @@
+{
+  "name": "hybrid_split_narrative_accepted",
+  "description": "Pins Fix 2 (KERNEL_VERSION 0.5.0, eval finding #2 from eval_v1.json). Hybrid-aware narrative classifier at engine/validator.py:290-320: when a column-Q narrative carries 'On-prem:' / 'Cloud:' half markers matched by _HYBRID_SPLIT_RE (validator.py:140-142), each half is classified independently and merged via _merge_hybrid_classes' precedence rules (AMBIGUOUS > GAP > AFFIRMING > NA). The pre-fix single-pass classifier saw both 'documented in' (AFFIRMING) and 'implemented by aws' (NA_JUSTIFYING) inside the same string, hit the multi-class branch at _classify_single line 344-346, and returned AMBIGUOUS — which then tripped STATUS_NARRATIVE_MISMATCH against the LLM's COMPLIANT verdict and forced a retry. With only one proposal in the stub queue, retries exhaust → ABSTAIN, masking valid hybrid Compliant verdicts in production. Post-fix, the on-prem half classifies AFFIRMING and the cloud half classifies NA_JUSTIFYING; precedence rule #3 ('any AFFIRMING half with the rest NA → AFFIRMING') yields COMPLIANCE_AFFIRMING overall, the status-narrative check passes on first attempt, and the row ships with source='llm' and llm_calls=1. A pre-Fix-2 replay would show llm_calls=2 (one accept attempt + one retry) and source='abstain' with rejection_log carrying STATUS_NARRATIVE_MISMATCH — so the llm_calls=1 + source='llm' pin catches a regression of the split-classification path. Narrative cites USD00099999 (in tagged_evidence) for cite verification; both halves stay above the cite verifier's USD token check. The cloud half deliberately uses 'implemented by AWS GovCloud' (an _NA_PHRASES hit) rather than 'inherited from AWS GovCloud' so MISSING_INHERITANCE_MARKER stays dormant (validator.py only fires that when 'inherited from' is literally present). Jaccard overlap with the 9-token procedures stays below _OVERLAP_THRESHOLD=0.70. No crm_entries — the hybrid markers are emitted by the LLM directly, not prepended by the assessor's _render_hybrid_block; this isolates the validator's split path from the assessor's enrichment path.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization identifies and selects the following types of information system accounts to support organizational missions/business functions.",
+    "procedures": "Examine documented account management plan; confirm enumerated account types approved by designated approval authority.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev B \u2014 enumerates privileged, service, and standard account types and the approval workflow for each.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "On-prem: Examined USD00099999 Example System Account Management Plan Rev B; confirmed via section 3 that privileged, service, and standard account types are documented in the plan with approval workflows.\nCloud: Account-type enforcement is implemented by AWS GovCloud Directory Service at the IAM control plane, with the customer-managed tenant inheriting the FedRAMP-authorized baseline.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm"],
+    "needs_review": false,
+    "llm_calls": 1,
+    "narrative_contains_regex": "On-prem:[\\s\\S]*Cloud:"
+  }
+}

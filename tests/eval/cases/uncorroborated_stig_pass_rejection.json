@@ -1,0 +1,48 @@
+{
+  "name": "uncorroborated_stig_pass_rejection",
+  "description": "Pins the UNCORROBORATED_STIG_PASS validator rule (engine/validator.py:570-587) AND the retry-exhaustion abstain path. This is the third leg of precision-over-recall (future_tense + unsupported_doc_citation are legs one and two): a COMPLIANT verdict whose narrative cites a STIG rule (SV-#####r#_rule, regex _CITE_STIG_RE at validator.py:839) is rejected unless a non-scan corroborator (policy / SSP / baseline doc / config export) is also present on the row. A passing scan finding documents one host at one point in time -- it does not prove the control is implemented by policy or design.\n\nMechanism trace:\n  - Each queued proposal is status=Compliant with a narrative containing 'examined ' / 'confirmed via' (COMPLIANCE_AFFIRMING per classify_narrative) AND citing 'SV-258133r958472_rule' (matches _CITE_STIG_RE).\n  - tagged_evidence contains the literal 'SV-258133r958472_rule' token so the cite-verifier (_verify_cites) does NOT reject first -- the citation IS in the evidence; it's just that scan-only evidence is insufficient for a COMPLIANT verdict.\n  - tagged_evidence ALSO contains a USD doc number so the doc-cite check passes for any doc the narrative happens to mention.\n  - evidence_block.has_nonscan_artifact=False is the load-bearing signal: the orchestrator threads this into validator.validate(corroboration_present=False) at assessor.py:1130-1134, which fires the rule at validator.py:570.\n  - Three attempts exhaust the retry budget -> _abstain with reason 'validator-exhausted: ... uncorroborated_stig_pass ...'.\n\nLoad-bearing details:\n  - evidence_block.has_nonscan_artifact MUST be literal False, not None. assessor.py:1130-1134 passes None through to the validator when evidence_block is None, and the rule at validator.py:572 explicitly checks `corroboration_present is False` (identity compare) -- None skips the rule entirely. The legacy 'no evidence_block passed' path is the deterministic rule-8 short-circuit; this case is the LLM-path equivalent.\n  - evidence_block.text mirrors tagged_evidence so the validator's evidence_text (used by _verify_cites) sees the SV-rule and USD tokens. Without this, the cite-verifier would reject first and the rejection_classes set would contain 'unsupported_doc_citation' instead of the corroboration rule -- which would mask a regression in the corroboration gate behind the cite-verifier's noise.\n  - Three identical proposals (not three variants): the stub does not consume corrective_context, so the orchestrator's job is just to keep retrying until the budget is gone. The case pins that contract; if a future change made retry actually feed corrective context back in, the case would still trip the same rule three times because the underlying evidence_block doesn't change between attempts.\n  - has_artifacts=True is necessary so the Step 1.65 no-evidence short-circuit does NOT fire at assessor.py:757-761; the corroboration rule only fires on the LLM path. has_findings=True / has_hosts=True reflect realistic STIG-scan plumbing but are not load-bearing.\n\nThis is also the first eval case to exercise the new evidence_block runner extension (the _build_evidence_block helper at test_eval_harness.py and the evidence_block= parameter on the assessor.assess call). The runner change is justified by this case -- the corroboration rule cannot be tripped from JSON alone without a way to set has_nonscan_artifact=False explicitly. A future case that needs other EvidenceBlock signals (has_coverage for asset-crosscheck behaviors, etc.) will use the same runner extension.\n\nControl ID 'AC-3' (Access Enforcement) is a realistic STIG-driven control: an account-creation rule from the Windows Server 2022 STIG (SV-258133r958472_rule, real V-ID family) is a plausible Compliant narrative anchor when scan output shows the host configured correctly -- but without a corroborating policy / SSP / baseline doc the verdict cannot ship as Compliant under the precision-over-recall stance. source_baseline_id sentinel not used here (no CRM entry).",
+  "ccis_row": {
+    "control_id": "AC-3",
+    "ap_acronym": "AC-3.1",
+    "cci_id": "CCI-000213",
+    "guidance": "The information system enforces approved authorizations for logical access to information and system resources in accordance with applicable access control policies.",
+    "procedures": "Examine access control configuration and confirm enforcement.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## tagged_evidence\n- ACAS-SCAN-2026-Q2 STIG check SV-258133r958472_rule reported PASS on host exsys-app-01 against the Windows Server 2022 baseline scan run 2026-04-15.\n",
+  "evidence_block": {
+    "text": "## tagged_evidence\n- ACAS-SCAN-2026-Q2 STIG check SV-258133r958472_rule reported PASS on host exsys-app-01 against the Windows Server 2022 baseline scan run 2026-04-15.\n",
+    "has_artifacts": true,
+    "has_coverage": false,
+    "has_findings": true,
+    "has_hosts": true,
+    "has_nonscan_artifact": false
+  },
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined ACAS-SCAN-2026-Q2; confirmed via STIG check SV-258133r958472_rule that the access enforcement configuration is in place on the target host.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined ACAS-SCAN-2026-Q2; confirmed via STIG check SV-258133r958472_rule that the access enforcement configuration is in place on the target host.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined ACAS-SCAN-2026-Q2; confirmed via STIG check SV-258133r958472_rule that the access enforcement configuration is in place on the target host.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "review_reason_contains_regex": "validator-exhausted.*uncorroborated_stig_pass",
+    "rejection_classes_contains": ["uncorroborated_stig_pass"]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "tier1_doc_number_in_body_text",
+  "description": "Tier 1 fallback path: Evidence.doc_number is empty/None, but the body text contains a USD reference. The tagger scrapes the text via collect_doc_numbers (canonicalizes USD-22222 -> USD00022222) and re-uses the Tier 1 LIKE lookup. Pins that body-text USD discovery still produces a Tier 1 (0.9/1.0) tag, not a degraded one.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "USD00022222 establishes the account management baseline.",
+        "assessment_procedures": "Examine USD00022222."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "Implementation is governed per USD-22222 as cited above."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 1,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.9,
+        "rationale_contains": "Doc number USD00022222"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

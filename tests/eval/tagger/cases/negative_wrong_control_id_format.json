@@ -1,0 +1,36 @@
+{
+  "name": "negative_wrong_control_id_format",
+  "description": "Negative case: body text uses lowercase 'ac-2' and stray non-control formats ('AC2', 'AC_2', '2-AC'). _CONTROL_ID_RE is uppercase-only and requires the canonical hyphen form '[A-Z]{2}-\\d{1,2}'; none of these match. Tier 3 should produce zero hits. Pins the regex's strictness — a regression that adds re.IGNORECASE would tag this case.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "References ac-2 lowercase, AC2 without hyphen, AC_2 with underscore, and 2-AC reversed. None of these match the canonical form."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

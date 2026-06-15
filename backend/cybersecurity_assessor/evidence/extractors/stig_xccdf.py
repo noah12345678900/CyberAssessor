@@ -1,0 +1,268 @@
+"""XCCDF results extractor (`.xml` files produced by SCAP scanners).
+
+XCCDF is the OASIS/NIST format that tools like SCC, OpenSCAP, and ACAS
+emit when they evaluate a STIG. It carries the same Rule_ID/CCI/result
+information as a `.ckl`, just at a different layer in the namespace
+soup.
+
+Two important wrinkles:
+
+* XCCDF uses XML namespaces. The version varies (1.1.4, 1.2, …). We
+  use local-name matching (``etree`` iter with a wildcard) instead of
+  hardcoding namespace URIs so the parser tolerates either flavor.
+* Not every ``.xml`` we see is XCCDF — could be OVAL, an MSBuild
+  manifest, or random user XML. The dispatcher routes all ``.xml``
+  here, so we detect XCCDF by looking for an XCCDF ``Benchmark`` or
+  ``TestResult`` root element and raise ``ExtractorError`` otherwise
+  (which the orchestrator turns into a "manual review" tag rather
+  than killing the ingest).
+"""
+
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+from typing import BinaryIO
+
+from ...models import EvidenceKind
+from ._stig_common import (
+    StigFindingRow,
+    StigParseResult,
+    extract_cci_refs,
+    normalize_severity,
+    normalize_status,
+)
+from .base import ExtractedDoc, ExtractorError, register, resolve_doc_number
+
+
+def _local(tag: str) -> str:
+    """Strip an XML ``{namespace}tag`` down to just ``tag``."""
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _findall_local(el, name: str):
+    """Find all descendants whose local-name matches, ignoring namespace."""
+    return [child for child in el.iter() if _local(child.tag) == name]
+
+
+def _find_local(el, name: str):
+    for child in el.iter():
+        if _local(child.tag) == name:
+            return child
+    return None
+
+
+def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
+    try:
+        from defusedxml import ElementTree as ET  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ExtractorError(
+            "defusedxml is not installed — add it to backend/pyproject.toml."
+        ) from exc
+
+    try:
+        tree = ET.parse(stream)
+    except Exception as exc:
+        raise ExtractorError(f"defusedxml failed on {name}: {exc}") from exc
+
+    root = tree.getroot()
+    root_local = _local(root.tag)
+    # ``asset-report-collection`` is the ARF (Asset Reporting Format, SCAP
+    # 1.2/1.3) wrapper element. ARF embeds the very same XCCDF
+    # Benchmark/TestResult content one or more layers down (inside
+    # reports/report/content), plus richer asset/host identification. Every
+    # finding helper below walks ``el.iter()``, which recurses through all
+    # descendants, so once we accept the ARF root the embedded Rules,
+    # Groups, and rule-results are found exactly as in a bare XCCDF file —
+    # no separate ARF parser needed.
+    if root_local not in {
+        "Benchmark",
+        "TestResult",
+        "data-stream-collection",
+        "asset-report-collection",
+    }:
+        # Not an XCCDF/ARF file — let the orchestrator know so it can
+        # persist the raw file without findings rather than dropping it.
+        raise ExtractorError(
+            f"{name} is not an XCCDF/ARF document (root=<{root_local}>); "
+            "skipping STIG parse."
+        )
+
+    # Title can live on Benchmark/title or TestResult/benchmark[@href].
+    title_el = _find_local(root, "title")
+    title = (title_el.text or "").strip() if title_el is not None else None
+
+    # Pre-index Rules (Benchmark/Rule) so we can pull CCI refs / severity
+    # for each rule-result. Keyed by rule id.
+    #
+    # Also build a group_id map: in XCCDF each <Group id="V-..."> wraps
+    # one or more <Rule> elements. We map rule-id → group-id so the
+    # human V-number travels through to the StigFindingRow.
+    group_id_for_rule: dict[str, str] = {}
+    for grp in _findall_local(root, "Group"):
+        gid = grp.attrib.get("id") or ""
+        for r in _findall_local(grp, "Rule"):
+            rid = r.attrib.get("id") or ""
+            if rid and gid:
+                group_id_for_rule[rid] = gid
+
+    rule_meta: dict[str, dict] = {}
+    for rule in _findall_local(root, "Rule"):
+        rid = rule.attrib.get("id")
+        if not rid:
+            continue
+        ccis: list[str] = []
+        for ident in _findall_local(rule, "ident"):
+            sys_attr = (ident.attrib.get("system") or "").lower()
+            txt = (ident.text or "").strip()
+            if "cci" in sys_attr or txt.upper().startswith("CCI-"):
+                ccis.append(txt)
+
+        # check_text: prefer <check-content>, fall back to description
+        check_text: str | None = None
+        check_content_el = _find_local(rule, "check-content")
+        if check_content_el is not None:
+            check_text = (check_content_el.text or "").strip() or None
+        if check_text is None:
+            desc_el = _find_local(rule, "description")
+            if desc_el is not None:
+                check_text = (desc_el.text or "").strip() or None
+
+        # fix_text: from <fixtext>
+        fix_text: str | None = None
+        fixtext_el = _find_local(rule, "fixtext")
+        if fixtext_el is not None:
+            fix_text = (fixtext_el.text or "").strip() or None
+
+        rule_meta[rid] = {
+            "severity": rule.attrib.get("severity"),
+            "version": (_find_local(rule, "version").text or "").strip()
+            if _find_local(rule, "version") is not None
+            else None,
+            "title": (_find_local(rule, "title").text or "").strip()
+            if _find_local(rule, "title") is not None
+            else "",
+            "ccis": ccis,
+            "check_text": check_text,
+            "fix_text": fix_text,
+        }
+
+    findings: list[StigFindingRow] = []
+    text_chunks: list[str] = []
+    if title:
+        text_chunks.append(f"STIG: {title}")
+
+    # XCCDF legitimately allows multiple <TestResult> blocks in a single
+    # benchmark document (SCC writes one per host when sweeping a fleet).
+    # We iterate each TestResult, capture its target, and attribute every
+    # rule-result inside that block to that target — otherwise a
+    # multi-host result file would collapse to a faceless pile of
+    # rule_ids with no way to tell which box failed what.
+    test_results = _findall_local(root, "TestResult")
+    hosts: list[str] = []
+
+    def _host_of(node) -> str | None:
+        # ``target``/``target-address``/``target-id-ref`` are the XCCDF
+        # TestResult host fields (primary). ``hostname``/``fqdn`` are the
+        # ARF asset-identification fields (ai:computing-device) — used as a
+        # fallback when an ARF file carries asset metadata but the embedded
+        # TestResult omits an explicit target.
+        for tag in (
+            "target",
+            "target-address",
+            "target-id-ref",
+            "hostname",
+            "fqdn",
+        ):
+            el = _find_local(node, tag)
+            if el is not None and (el.text or "").strip():
+                return el.text.strip()
+        return None
+
+    def _emit_rule_results(node, host_name: str | None) -> None:
+        for rr in _findall_local(node, "rule-result"):
+            rid = rr.attrib.get("idref") or ""
+            if not rid:
+                continue
+            result_el = _find_local(rr, "result")
+            status_raw = (
+                (result_el.text or "").strip() if result_el is not None else ""
+            )
+            meta = rule_meta.get(rid, {})
+            severity_raw = rr.attrib.get("severity") or meta.get("severity")
+            cci_refs = extract_cci_refs(", ".join(meta.get("ccis", [])))
+            comments = f"host={host_name}" if host_name else None
+
+            findings.append(
+                StigFindingRow(
+                    rule_id=rid,
+                    status=normalize_status(status_raw),
+                    rule_version=meta.get("version"),
+                    cci_refs=cci_refs,
+                    severity=normalize_severity(severity_raw),
+                    finding_details=None,  # XCCDF rarely carries free-text findings
+                    comments=comments,
+                    group_id=group_id_for_rule.get(rid) or None,
+                    rule_title=meta.get("title") or None,
+                    check_text=meta.get("check_text"),
+                    fix_text=meta.get("fix_text"),
+                )
+            )
+            text_chunks.append(
+                f"[{rid} {status_raw}] {meta.get('title', '')}".strip()
+            )
+
+    # ARF carries asset identification (hostname/fqdn) in a sibling
+    # <assets> branch, OUTSIDE the embedded <TestResult>. When a
+    # TestResult itself names no target, fall back to this
+    # collection-level host so ARF files don't lose host attribution.
+    collection_host = _host_of(root)
+
+    if test_results:
+        for tr in test_results:
+            host_name = _host_of(tr) or collection_host
+            if host_name and host_name not in hosts:
+                hosts.append(host_name)
+            if host_name:
+                text_chunks.append(f"Host: {host_name}")
+            _emit_rule_results(tr, host_name)
+    else:
+        # Benchmark-only or data-stream document — fall back to root-level
+        # target and root-level rule-results (older single-host shape).
+        host_name = _host_of(root)
+        if host_name:
+            hosts.append(host_name)
+            text_chunks.append(f"Host: {host_name}")
+        _emit_rule_results(root, host_name)
+
+    primary_host = hosts[0] if hosts else None
+    text = "\n".join(text_chunks)
+    return StigParseResult(
+        text=text, findings=findings, title=title, host=primary_host, hosts=hosts
+    )
+
+
+@register(".xml", ".arf")
+def extract_xccdf(stream: BinaryIO, name: str) -> ExtractedDoc:
+    """Extract findings from an XCCDF or ARF results XML file.
+
+    Handles both bare XCCDF (``.xml`` with a Benchmark/TestResult root)
+    and ARF (``.arf`` or ``.xml`` with an ``asset-report-collection``
+    root, which embeds the same XCCDF content). The parser sniffs the
+    root element rather than trusting the extension, so an ARF document
+    saved with a ``.xml`` suffix is handled identically.
+    """
+    result = _parse_xccdf(stream, name)
+    stem = PurePosixPath(name).stem
+    title = result.title or stem
+    return ExtractedDoc(
+        text=result.text,
+        title=title,
+        doc_number=resolve_doc_number(name, title, result.text),
+        kind=EvidenceKind.STIG_XCCDF,
+        metadata={
+            "host": result.host,
+            "hosts": result.hosts,
+            "finding_count": len(result.findings),
+            "_stig_findings": result.findings,
+        },
+    )

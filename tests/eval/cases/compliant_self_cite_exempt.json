@@ -1,0 +1,29 @@
+{
+  "name": "compliant_self_cite_exempt",
+  "description": "Pins the cite-verifier's ROW-EXEMPTION branch at engine/validator.py:888-893 -- the only branch of _verify_cites that lets a narrative cite tokens which are NOT in the evidence text. The exemption skips the row's own cci_id and control_id because those names come from the prompt context (assessor.py builds the prompt with 'You are assessing CCI-000015 (AC-2)...'), not from the tagged evidence -- so an LLM naturally restating the row identity in the narrative ('against CCI-000015 (AC-2) requirements') would otherwise trip UNSUPPORTED_DOC_CITATION on every Compliant verdict.\n\nMechanism trace:\n  - status = COMPLIANT.\n  - Narrative contains 'examined ', 'confirmed via', 'documented in' (_AFFIRMING_PHRASES at validator.py:43-60) -> classify_narrative returns COMPLIANCE_AFFIRMING.\n  - _expected_status_for_class(COMPLIANCE_AFFIRMING) returns COMPLIANT -> status match passes, no STATUS_NARRATIVE_MISMATCH.\n  - _is_requirement_restatement returns False (no _RESTATEMENT_REGEXES opener match; narrative starts with 'Examined USD...').\n  - _verify_cites extracts three tokens: USD00099999, CCI-000015, AC-2. USD00099999 is in evidence (literal match). CCI-000015 matches row.cci_id -> added to row_exemptions at validator.py:891, skipped at line 909. AC-2 matches row.control_id -> added to row_exemptions at validator.py:893, skipped at line 909. Returns []. No UNSUPPORTED_DOC_CITATION.\n  - Single-pass accept -> source=llm, status=COMPLIANT.\n\nRegression surface (verified by inspection):\n  Deleting validator.py:888-893 (or any change that bypasses the row exemption -- passing row=None to _verify_cites, mishandling case folding, etc.) makes _verify_cites return ['CCI-000015', 'AC-2'], which triggers UNSUPPORTED_DOC_CITATION on every attempt. The single proposal is retried (corrective_context = 'cite unsupported_doc_citation: ...'), the stub queue exhausts after one call (only one proposal queued), and source flips to 'abstain'. This case fails loudly when that happens.\n\nLoad-bearing details:\n  - Narrative contains BOTH CCI-000015 and AC-2 to pin both halves of the exemption (the row_exemptions set at validator.py:888 adds cci_id AND control_id). A case with only one of the two would pass even if half the exemption branch was deleted.\n  - USD00099999 IS in evidence so the USD cite is verified naturally -- isolates the test to the exemption branch, not to a hallucinated USD cascade.\n  - control_id 'AC-2' (not 'AC-2(1)') is the simpler form; the regex _CITE_CONTROL_ID_RE handles both ('\\\\b([A-Z]{2}-\\\\d{1,2}(?:\\\\(\\\\d+\\\\))?)(?!\\\\d)'). A future case for AC-2(1)-style enhancement IDs would be a separate pin; here we cover the base form which is by far the more common LLM output.\n  - Single proposal queued (not three): if a regression makes this fail, the stub queue exhausts after one call -> source=abstain, which the assertion `source_in: [\"llm\", \"llm_after_retry\"]` rejects loudly. If three proposals were queued, the regression would still trip the assertion (status would still wind up abstain after exhausting all three) but the failure message would be less direct. One proposal = one chance, clean signal.\n  - No evidence_block passed: the LLM-path corroboration rule (UNCORROBORATED_STIG_PASS) requires `corroboration_present is False` (identity compare) and the orchestrator passes None when evidence_block is omitted -- so the corroboration check is skipped regardless of the SV-rule absence.\n\nThis is also the only positive eval case for the cite-verifier (every other case exercising _verify_cites is in the rejection direction: unsupported_doc_citation.json hallucinates a USD, uncorroborated_stig_pass_rejection.json cites an SV-rule that needs corroboration). Without this case, the exemption branch has no green-path pin.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization identifies and selects the following types of information system accounts to support organizational missions/business functions.",
+    "procedures": "Examine the account management plan and confirm account types are enumerated.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev B \u2014 enumerates privileged, service, and standard user account types and the approval workflow for each.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00099999 Example System Account Management Plan Rev B against CCI-000015 (AC-2) requirements; confirmed via section 3 that privileged, service, and standard account types are documented in the plan.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 1,
+    "narrative_contains_regex": "CCI-000015.*AC-2"
+  }
+}

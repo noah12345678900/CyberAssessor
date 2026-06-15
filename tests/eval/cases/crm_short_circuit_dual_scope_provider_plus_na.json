@@ -1,0 +1,33 @@
+{
+  "name": "crm_short_circuit_dual_scope_provider_plus_na",
+  "description": "Symmetric counterpart to crm_short_circuit_dual_scope_inherited_wins — same DUAL-SCOPE CRM plumbing, but exercises the OTHER side of the combined-status branch at engine/assessor.py:1908-1919. With cloud='provider' + onprem='not_applicable', specified=['provider','not_applicable'] and 'inherited' is NOT in the list, so the kernel takes the `else` branch at :1915-1919 and uses status_map[specified[0]] = NOT_APPLICABLE + class_map[specified[0]] = NA_JUSTIFYING.\n\nThe `# both provider and not_applicable map to NA_JUSTIFYING so this is consistent` comment at :1916-1917 is load-bearing — it asserts that the first-element-wins fallback is safe BECAUSE the two non-inherited values in _CRM_SHORT_CIRCUIT_SET happen to share the same status_map slot. This case is what would catch a future regression that added a fourth value to _CRM_SHORT_CIRCUIT_SET without the corresponding status_map symmetry — the specified[0] heuristic would silently pick the wrong status. Together with the inherited_wins case, the pair pins both legs of the if/else at :1912-1919.\n\nThree branches reached here that the single-scope NA / provider cases cannot reach:\n\n1. The else branch at assessor.py:1915-1919 (single-scope cases have specified=[<r>] which always trivially satisfies status_map[specified[0]]; this case proves the fallback works when specified has length 2 AND no inherited).\n\n2. The source-string suffix at assessor.py:2019-2021 composing to 'crm_provider+onprem_not_applicable' — pins that the suffix tolerates the literal token 'not_applicable' (underscored) without normalization, complementing the inherited_wins case's 'crm_provider+onprem_inherited'.\n\n3. The labeled split narrative at assessor.py:1926-1930 with two distinct non-inherited responsibilities — the Cloud:/On-prem: prefix logic doesn't depend on inherited being present, but no case has exercised the path with both halves being NA-class until now.\n\nllm_stub_proposals=[] + llm_calls=0 is load-bearing as in every other CRM short-circuit case — a regression that bypassed the dual-scope all() check at :741 would IndexError loudly from StubLlmClient.propose_twice. tagged_evidence stays non-empty (a generic system inventory) to prove the dual-scope short-circuit fires regardless of local artifacts.\n\nControl ID 'cm-7' (Least Functionality) is a realistic dual-scope NA pattern: the cloud half is provider-owned (the IaaS provider locks down hypervisor-level services) while the on-prem half is not_applicable because the customer's enclave is a single-purpose appliance with no general-purpose OS exposing services to disable. source_baseline_id=999 matches the sentinel used across the CRM corpus so failure messages stay diff-able.",
+  "ccis_row": {
+    "control_id": "CM-7",
+    "ap_acronym": "CM-7.1",
+    "cci_id": "CCI-000381",
+    "guidance": "The organization configures the information system to provide only essential capabilities.",
+    "procedures": "Examine configuration baselines; confirm only essential capabilities are enabled.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00055555 System Asset Inventory Rev A \u2014 enumerates appliance build manifest with no general-purpose OS services.\n",
+  "crm_entries": [
+    {
+      "control_id": "cm-7",
+      "responsibility": "provider",
+      "narrative": "Hypervisor-layer service minimization is owned and operated by the FedRAMP-authorized AWS GovCloud provider; tenants have no visibility into or control over the underlying host service set.",
+      "responsibility_onprem": "not_applicable",
+      "narrative_onprem": "The on-prem enclave is a single-purpose appliance build with no general-purpose operating system exposing configurable services; least-functionality controls do not apply to this scope.",
+      "source_baseline_id": 999
+    }
+  ],
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": "Not Applicable",
+    "source_in": ["crm_provider+onprem_not_applicable"],
+    "needs_review": false,
+    "llm_calls": 0,
+    "narrative_contains_regex": "Cloud: .*FedRAMP-authorized AWS GovCloud.*\\nOn-prem: .*single-purpose appliance build"
+  }
+}

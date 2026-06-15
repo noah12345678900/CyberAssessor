@@ -1,0 +1,76 @@
+{
+  "name": "architecture_hosts_example_system",
+  "description": "Architecture-doc prose modeled on USD00050013_Rev_B Example System Cybersecurity Architecture.docx — service identifiers (LDAP/SAML IdP/SIEM), zones (DMZ, mgmt VLAN), and vendor products. Architecture docs are typically less host-dense than SSPs but richer in named services; this case pins that signal.",
+  "fixture_docs": [
+    {
+      "filename": "USD00050013_Rev_B_Example System_Cybersecurity_Architecture.docx",
+      "boundary_doc_kind": "Architecture",
+      "title": "Example System Cybersecurity Architecture Rev B",
+      "text": "## 3.2 Identity and access services\n\nThe Example System enclave consumes three centrally-operated identity services:\n\n  1. LDAP directory (read-only consumer of ldap.example.local)\n  2. SAML 2.0 IdP — Okta — serves browser SSO for the operator console\n  3. PIV-CAC smart-card auth via the enterprise ActivClient agent\n\nLog aggregation flows to the enterprise Splunk cluster (siem.example.local) over TCP/9997. Endpoint protection is CrowdStrike Falcon; vulnerability scans are run from Tenable.sc with the Example-managed Nessus scanners.\n\n## 4.1 Network zones\n\n  - DMZ:          external-facing reverse proxies\n  - mgmt VLAN:    out-of-band administrative network (jump hosts only)\n  - prod enclave: production application + database servers\n  - lab enclave:  developer integration testing, segregated\n\nAll inter-zone traffic traverses the Palo Alto PA-5260 boundary firewall pair."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "ldap.example.local",
+      "siem.example.local",
+      "okta",
+      "saml",
+      "ldap",
+      "piv-cac",
+      "activclient",
+      "splunk",
+      "crowdstrike falcon",
+      "tenable.sc",
+      "nessus",
+      "dmz",
+      "mgmt vlan",
+      "palo alto pa-5260"
+    ],
+    "confidence": 0.82
+  },
+  "expected": {
+    "expected_tokens": [
+      "ldap.example.local",
+      "siem.example.local",
+      "okta",
+      "crowdstrike falcon",
+      "palo alto pa-5260"
+    ],
+    "banned_tokens": [
+      "the system",
+      "example.com",
+      "tbd",
+      "your-domain-here"
+    ],
+    "snapshot_tokens": [
+      "ldap.example.local",
+      "siem.example.local",
+      "okta",
+      "saml",
+      "ldap",
+      "piv-cac",
+      "activclient",
+      "splunk",
+      "crowdstrike falcon",
+      "tenable.sc",
+      "nessus",
+      "dmz",
+      "mgmt vlan",
+      "palo alto pa-5260"
+    ],
+    "min_confidence": 0.6,
+    "max_unattributed_ratio": 0.10
+  },
+  "live_llm_boundary": {
+    "expected_tokens": [
+      "okta",
+      "splunk",
+      "crowdstrike falcon"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd"
+    ],
+    "min_confidence": 0.5
+  }
+}

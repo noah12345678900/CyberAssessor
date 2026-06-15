@@ -1,0 +1,32 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_si2_flaw_reporting_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 295, CCI-001226, assessed 2026-05-27). Compliant verdict based on vulnerability management procedural documentation with USD-numbered citations. Nearly identical evidence set to the SI-2.3 flaw correction sibling (CCI-001227) \u2014 tests that the harness handles sibling CCIs in the same control with slightly different narrative focus (reporting vs. correction). Evidence type: procedural documentation.",
+  "ccis_row": {
+    "control_id": "SI-2",
+    "ap_acronym": "SI-2.2",
+    "cci_id": "CCI-001226",
+    "guidance": "001226: The organization reports information system flaws.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the authorization package, verifies the POA&M is up to date and includes recently identified information system flaws, and verifies that the organization has notified appropriate personnel as defined by DoD Cybersecurity policy and organizational roles and responsibilities.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Vulnerability Scanning Analysis and Reporting Procedures \u2014 defines flaw identification and reporting workflow.\n- Vulnerability Tracking and Remediation Procedures \u2014 defines flaw reporting channels.\n- USD00011570 DevSecOps Guide \u2014 organizational process for flaw reporting in the CI/CD pipeline.\n- USD00008630 Software Development Plan \u2014 flaw reporting integration.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined Vulnerability Scanning Analysis and Reporting Procedures, Vulnerability Tracking SOP, DevSecOps Guide (USD00011570), and Software Development Plan (USD00008630); confirmed via the cited SOPs that a documented process exists to report identified information system flaws.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false,
+    "narrative_contains_regex": "USD\\d{8}"
+  }
+}

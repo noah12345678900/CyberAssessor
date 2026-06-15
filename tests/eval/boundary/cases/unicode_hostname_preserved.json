@@ -1,0 +1,48 @@
+{
+  "name": "unicode_hostname_preserved",
+  "description": "Engineered case: non-ASCII hostnames and identifiers must survive normalization. The normalizer (boundary_docs._normalize_token) is .lower() + ^[^\\w]+|[^\\w]+$ strip; Python's \\w is Unicode-aware by default so umlauts, Cyrillic, and Greek letters count as word chars and are NEITHER stripped (mid-string) NOR damaged (no encoding conversion). Pins that an overseas-partner SSP with a German or Russian-named host doesn't get its tokens mangled to empty strings or ASCII transliteration. Stub-only by design: a real LLM may or may not preserve unicode depending on its own normalization layer; this case guards the ADAPTER normalizer in isolation.",
+  "fixture_docs": [
+    {
+      "filename": "partner_ssp_eu.docx",
+      "boundary_doc_kind": "SSP",
+      "title": "Coalition Partner SSP -- EU node",
+      "text": "## Hosts in the Munich datacenter\n\n  * muenchen-srv01.partner.eu  (German-administered datacenter)\n  * köln-app02.partner.eu       (Cologne node, named in local convention)\n  * αθήνα-mon01.partner.eu      (Athens monitoring relay, Greek-letter naming)\n\nThe Cyrillic-named relay сервер.partner.ru is operated by a separate coalition member and is in scope for inheritance only.\n\nEnvironment labels follow the local convention: prod-eu, præprod-eu."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "muenchen-srv01.partner.eu",
+      "köln-app02.partner.eu",
+      "αθήνα-mon01.partner.eu",
+      "сервер.partner.ru",
+      "prod-eu",
+      "præprod-eu"
+    ],
+    "confidence": 0.7
+  },
+  "expected": {
+    "expected_tokens": [
+      "muenchen-srv01.partner.eu",
+      "köln-app02.partner.eu",
+      "αθήνα-mon01.partner.eu",
+      "сервер.partner.ru",
+      "præprod-eu"
+    ],
+    "banned_tokens": [
+      "",
+      "example.com",
+      "tbd",
+      "redacted"
+    ],
+    "snapshot_tokens": [
+      "muenchen-srv01.partner.eu",
+      "köln-app02.partner.eu",
+      "αθήνα-mon01.partner.eu",
+      "сервер.partner.ru",
+      "prod-eu",
+      "præprod-eu"
+    ],
+    "min_confidence": 0.5,
+    "max_unattributed_ratio": 0.10
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "crm_short_circuit_dual_scope_inherited_wins",
+  "description": "Pins the DUAL-SCOPE branch of the CRM rule-1.5 short-circuit at engine/assessor.py:733-746 where the CRM specifies BOTH a cloud responsibility AND an on-prem responsibility. specified = [cloud_r, onprem_r] has length 2, and the all() check at assessor.py:741 must pass for BOTH elements — not just the first — for the short-circuit to fire. Distinct from the single-scope trio (crm_short_circuit_inherited / _provider / _not_applicable) which each only populate cloud_r.\n\nThis case uses cloud='provider' + onprem='inherited' to pin THREE invariants that single-scope cases cannot reach:\n\n1. The 'any inherited wins' combined-status rule at assessor.py:1912-1914: when 'inherited' appears in specified[] (regardless of order or which scope), status=COMPLIANT + narrative_class=COMPLIANCE_AFFIRMING. A naive implementation that took status_map[specified[0]] would return NOT_APPLICABLE here (provider is first); the explicit `if 'inherited' in specified` guard prevents that regression. This matters in practice because a cloud-provider-owned + on-prem-customer-inherited control IS a compliant control overall — the customer has an authorization covering the on-prem half.\n\n2. The source-string suffix at assessor.py:2019-2021: source = `f'crm_{cloud_r}'` + (`+onprem_{onprem_r}' if onprem_r and onprem_r != cloud_r else '')` → 'crm_provider+onprem_inherited'. Single-scope cases never compose the suffix because onprem_r is None.\n\n3. The labeled split narrative at assessor.py:1926-1930: when cloud_r != onprem_r and both are populated, narrative is composed as `'Cloud: <cloud_text>\\nOn-prem: <onprem_text>'`. Single-scope cases emit one line without the 'Cloud:' / 'On-prem:' prefixes.\n\nllm_stub_proposals=[] is load-bearing — empty queue + llm_calls=0 means a regression that bypassed the dual-scope all() check (e.g., a refactor that only inspected cloud_r) would IndexError loudly from StubLlmClient.propose_twice. tagged_evidence is intentionally non-empty (customer-side AC policy excerpt) to prove the dual-scope short-circuit fires regardless of local artifacts.\n\nControl ID 'ac-3' (Access Enforcement) is a realistic dual-scope CRM example: the IaaS provider enforces tenant isolation at the hypervisor layer (cloud=provider) while the customer inherits the enterprise IAM authorization for on-prem access enforcement (onprem=inherited). source_baseline_id=999 matches the sentinel used across the CRM trio so failure messages stay diff-able.",
+  "ccis_row": {
+    "control_id": "AC-3",
+    "ap_acronym": "AC-3.1",
+    "cci_id": "CCI-000213",
+    "guidance": "The information system enforces approved authorizations for logical access to information and system resources in accordance with applicable access control policies.",
+    "procedures": "Examine access enforcement mechanisms; confirm logical access is enforced per approved authorizations.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00066666 Access Control Policy Rev C \u2014 enterprise IAM role-mapping authority document.\n",
+  "crm_entries": [
+    {
+      "control_id": "ac-3",
+      "responsibility": "provider",
+      "narrative": "Tenant isolation and access enforcement at the IaaS layer are owned by the FedRAMP-authorized AWS GovCloud provider.",
+      "responsibility_onprem": "inherited",
+      "narrative_onprem": "On-prem access enforcement is inherited from the enterprise IAM authorization covering the parent system boundary.",
+      "source_baseline_id": 999
+    }
+  ],
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["crm_provider+onprem_inherited"],
+    "needs_review": false,
+    "llm_calls": 0,
+    "narrative_contains_regex": "Cloud: .*FedRAMP-authorized AWS GovCloud.*\\nOn-prem: .*inherited from the enterprise IAM"
+  }
+}

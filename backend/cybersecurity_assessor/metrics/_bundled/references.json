@@ -1,0 +1,84 @@
+{
+  "rates_revised": "2026-06-06",
+  "notes": "Reference benchmarks for the Metrics tab. Each value is the published manual-assessment number that the Live (this user's) numbers are compared against. value=null + source.citation='TODO' means the user has not yet sourced the benchmark — the UI renders 'Awaiting source' for null entries. When sourcing, replace value/unit + fill source.citation/url/as_of together (an unsourced number is worse than no number). Cost/time benchmarks use FedRAMP Moderate as the canonical baseline (~325 controls, the most common authorization level); per-CCI denominators assume ~3 CCIs/control on a NIST 800-53 catalog.",
+  "references": [
+    {
+      "key": "manual_assessment_accuracy",
+      "family": "accuracy",
+      "label": "Manual A&A inter-rater agreement",
+      "value": 64,
+      "unit": "percent",
+      "source": {
+        "citation": "Radziwill & Benton (2017), 'Cybersecurity Cost of Quality: Managing the Costs of Cybersecurity Risk Management.' Two raters independently classified the 98 subcategories of the NIST CSF; Cohen's kappa = 0.64 ('substantial agreement') across 106 ratings, with 23 disagreements reconciled by discussion. Conservative benchmark — raw percent agreement is typically higher than kappa, but kappa adjusts for chance and is the defensible apples-to-apples number for an LLM-vs-human comparison on the same labeling task.",
+        "url": "https://arxiv.org/abs/1707.02653",
+        "as_of": "2017"
+      },
+      "sublabel": "Two human assessors agreeing on the same CCI verdict, controlled study."
+    },
+    {
+      "key": "manual_assessment_cost_per_control",
+      "family": "cost",
+      "label": "Manual A&A cost per control",
+      "value": 700,
+      "unit": "USD",
+      "source": {
+        "citation": "Midpoint of industry-consensus FedRAMP Moderate 3PAO assessment range (~$150K-$300K → ~$225K, published by 3PAO firms like Schellman, A-LIGN, Coalfire) divided by the FedRAMP Moderate control count (~325). 3PAO fee only — CSP-side readiness, remediation, and continuous monitoring labor are excluded, so the real all-in cost per control runs higher. Conservative number. No FedRAMP/NIST publication itemizes 3PAO fees; GAO-24-106591 ('Cloud Security: Federal Authorization Program Usage Increasing,' Jan 2024) is the closest durable government source on FedRAMP costs — it reports total CSP authorization costs of $300K-$3.7M across 8 CSPs (2020-2022), corroborating that 3PAO fees are a substantial component.",
+        "url": "https://www.gao.gov/products/GAO-24-106591",
+        "as_of": "2024"
+      },
+      "sublabel": "Loaded labor cost for a senior assessor to evaluate one NIST 800-53 control end-to-end."
+    },
+    {
+      "key": "manual_assessment_cost_per_cci",
+      "family": "cost",
+      "label": "Manual A&A cost per CCI",
+      "value": 233,
+      "unit": "USD",
+      "source": {
+        "citation": "A CCI is one testable statement in DISA's decomposition of NIST 800-53 — what an assessor actually marks Compliant / Non-Compliant / Not Applicable. There are roughly 3 CCIs per 800-53 control, so the per-CCI cost is the per-control cost divided by 3: $700 ÷ 3 ≈ $233. The $700/control figure comes from the industry-consensus FedRAMP Moderate 3PAO range ($150K-$300K), and GAO-24-106591 (Jan 2024) is the durable government source on overall FedRAMP authorization costs.",
+        "url": "https://www.gao.gov/products/GAO-24-106591",
+        "as_of": "2024"
+      },
+      "sublabel": "Loaded assessor labor for one CCI verdict. ~$225K industry midpoint for a FedRAMP Moderate 3PAO assessment ÷ 325 controls ÷ ~3 CCIs/control ≈ $233."
+    },
+    {
+      "key": "manual_assessment_time_per_control",
+      "family": "time",
+      "label": "Manual A&A time per control",
+      "value": 480,
+      "unit": "minutes",
+      "source": {
+        "citation": "Industry-cited baseline: 8 hours per control for a senior assessor to document, review, and test a single system control. Surfaces consistently in RMF practitioner discussions and DoD A&A LoE estimates; not a formal NIST publication, but the most-cited per-control number in the field. Anchored to NIST SP 800-53A Rev 5 (the canonical assessment-procedure publication that defines what a per-control evaluation entails). Highly variable — technical controls requiring functional testing exceed this; pure documentation controls undershoot it.",
+        "url": "https://csrc.nist.gov/pubs/sp/800/53/a/r5/final",
+        "as_of": "2022"
+      },
+      "sublabel": "Wall-clock minutes for a senior assessor to read artifacts, decide, write up one control."
+    },
+    {
+      "key": "manual_assessment_time_per_cci",
+      "family": "time",
+      "label": "Manual A&A time per CCI",
+      "value": 160,
+      "unit": "minutes",
+      "source": {
+        "citation": "Per-control time (480 min / 8 hr) ÷ ~3 CCIs per control on a NIST 800-53 catalog. Derived figure: floors to the same source as manual_assessment_time_per_control (industry baseline of 8 hr/control, anchored to NIST SP 800-53A Rev 5).",
+        "url": "https://csrc.nist.gov/pubs/sp/800/53/a/r5/final",
+        "as_of": "2022"
+      },
+      "sublabel": "Per-CCI denominator at the same ~3 CCIs/control breakdown."
+    },
+    {
+      "key": "manual_assessment_engagement_duration",
+      "family": "time",
+      "label": "Typical engagement duration",
+      "value": 9,
+      "unit": "weeks",
+      "source": {
+        "citation": "Midpoint of the 6-12 week range commonly cited for a full NIST 800-53 / FedRAMP Moderate assessment of a medium-impact system (testing through SAR delivery, excludes CSP-side readiness). Practitioner-consensus figure — no FedRAMP/NIST publication fixes an engagement duration. GAO-24-106591 (Jan 2024) is the closest durable government source on FedRAMP authorization timelines and finds that authorization processes 'can take a year or more,' which corroborates that a 9-week assessment phase is the active-testing slice of a longer end-to-end effort. Complex systems and remediation cycles routinely push the assessment phase itself longer.",
+        "url": "https://www.gao.gov/products/GAO-24-106591",
+        "as_of": "2024"
+      },
+      "sublabel": "Calendar weeks for a full ATO assessment of a medium-impact system."
+    }
+  ]
+}

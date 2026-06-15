@@ -1,0 +1,31 @@
+{
+  "name": "dual_narrative_leak_advisory",
+  "description": "Pins DUAL_NARRATIVE_MISLABEL via the leak-detection branch (engine/validator.py:550-565) — the ADVISORY rejection class that fires on the LLM-accept path WITHOUT triggering retry or abstain. Validator.validate_dual_narratives runs once column Q has already passed validate(); it walks _PROVIDER_ONLY_PHRASES (validator.py:136-150) against the on-prem half and _ONPREM_ONLY_PHRASES (validator.py:156-165) against the cloud half. Here `narrative_on_prem` contains 'inherited from AWS' verbatim — the first phrase in _PROVIDER_ONLY_PHRASES — so the on-prem leak branch fires (validator.py:550-557), appends a NOTE, and adds RejectionReason.DUAL_NARRATIVE_MISLABEL to dual_result.flagged.\n\nNo CRM context is supplied (assessor.py:1222-1229 sets crm_resp_for_check=None when crm_entry is None) so the CRM cross-check branch at validator.py:570-597 is skipped entirely — this case isolates the phrase-table detector from the responsibility-mismatch detector. Cloud half is populated with a clean provider-attribution paragraph that contains no _ONPREM_ONLY_PHRASES tokens (no 'physical data center', 'rack-mounted', etc.), so the symmetric cloud-side leak branch (validator.py:558-565) stays silent — only one flag should accumulate.\n\nColumn Q narrative ('Examined the program inheritance...') is independently valid: contains affirming phrases 'Examined ' and 'confirmed via' (_AFFIRMING_PHRASES at validator.py:43-60) so classify_narrative returns COMPLIANCE_AFFIRMING and status=Compliant passes the expected_status check at :355; contains 'inherited from the FedRAMP-authorized cloud service provider AWS GovCloud, documented in' which satisfies _INHERITANCE_SOURCE_RE at validator.py:697-701 (whitespace + source token after 'from'), so MISSING_INHERITANCE_MARKER doesn't cascade; shares <70% Jaccard with the AC-2 `procedures` text, so REQUIREMENT_RESTATEMENT doesn't fire either.\n\nAsserts via the new `dual_narrative_flags_contains` runner hook (test_eval_harness.py) — NOT via rejection_classes_contains, because the advisory layer routes its flags into decision.dual_narrative_flags rather than decision.rejection_log (the LLM-accept path has empty rejection_log by construction). source='llm' and needs_review=false pin the load-bearing invariant: advisory flags don't propagate to the retry budget or the human-review queue — they're a UI-fidelity signal mirrored to Assessment.dual_narrative_flag_reasons by routes/controls.py for the column-Q-split renderer.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization defines and documents the account types permitted within the information system.",
+    "procedures": "Examine documented account management plan; confirm enumerated account types approved by designated approval authority.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Cloud Account Management Plan Rev C \u2014 references FedRAMP-authorized provider for account-type baselines.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined the program inheritance documentation USD00099999; confirmed via the documented authorization package that account-type controls are inherited from the FedRAMP-authorized cloud service provider AWS GovCloud, documented in section 4 of the plan.",
+      "narrative_on_prem": "Customer manages local privileged-account enrollment and quarterly recertification per the program's account management plan; the underlying directory service is inherited from AWS Directory Service in the provider boundary.",
+      "narrative_cloud": "AWS GovCloud Directory Service provides the IAM control plane that enforces account-type baselines for the customer-managed tenant; documented in the FedRAMP-authorized provider package.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 1,
+    "dual_narrative_flags_contains": ["dual_narrative_mislabel"]
+  }
+}

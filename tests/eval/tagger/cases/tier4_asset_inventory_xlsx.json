@@ -1,0 +1,44 @@
+{
+  "name": "tier4_asset_inventory_xlsx",
+  "description": "Tier 4 canonical path for asset_inventory: evidence_type='asset_inventory' routes via EVIDENCE_TYPE_TO_CONTROLS['asset_inventory'] = ['cm-8']. Mirrors hw_inventory's wiring but documents that 'asset_inventory' is also a valid classifier key — drift between detector vocab and tagger dict is a known sharp edge.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-8", "title": "Information System Component Inventory", "family": "CM"}
+    ],
+    "objectives": [
+      {
+        "control_id": "cm-8",
+        "objective_id": "CCI-000363",
+        "implementation_guidance": "Maintain a component inventory.",
+        "assessment_procedures": "Verify inventory completeness."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "asset_inventory.xlsx",
+    "text": "",
+    "evidence_type": "asset_inventory",
+    "evidence_type_signals": ["asset_id", "owner"]
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 1
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000363",
+        "source": "auto",
+        "relevance": 0.8,
+        "confidence": 0.6,
+        "rationale_contains": "Auto-classified as asset inventory"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

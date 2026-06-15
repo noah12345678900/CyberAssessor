@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Palette — sourced from nuon.ai (C:\Users\Noah.Jaskolski\Projects\nuon-site\styles.css)
+ *   --navy        #0a2540   hsl(213, 73%, 15%)   primary surface / CTA
+ *   --navy-deep   #061a30   hsl(213, 78%, 11%)   dark-mode background
+ *   --blue        #2563eb   hsl(221, 83%, 53%)   accent / link  (Tailwind: brand-600)
+ *   --blue-bright #3b82f6   hsl(217, 91%, 60%)   accent on dark (Tailwind: brand-500)
+ *   --ink         #1a2540   hsl(220, 43%, 18%)   body text
+ *   --muted       #5b6b85   hsl(218, 18%, 44%)   secondary text
+ *   --line        #e5ebf3   hsl(216, 30%, 93%)   borders / dividers
+ *   --bg-soft     #f6f9fc   hsl(213, 50%, 98%)   subtle surface (hover/active)
+ *
+ * Notes on shadcn token wiring:
+ *   --primary stays navy        — buttons, CTAs, headings
+ *   --accent is the SUBTLE soft — hover/active surface in nav, ghost buttons
+ *   --ring is the brand blue    — focus rings + a few link accents
+ *   For inline brand color use Tailwind `text-brand-600` / `bg-brand-600`.
+ * ------------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 220 43% 18%;          /* ink */
+    --card: 0 0% 100%;
+    --card-foreground: 220 43% 18%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 43% 18%;
+
+    --primary: 213 73% 15%;             /* navy — CTAs */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 213 50% 98%;           /* bg-soft */
+    --secondary-foreground: 220 43% 18%;
+
+    --muted: 213 50% 98%;
+    --muted-foreground: 218 18% 44%;
+
+    --accent: 213 50% 96%;              /* slightly stronger than bg-soft for hover/active */
+    --accent-foreground: 213 73% 15%;   /* navy text on subtle hover */
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 216 30% 93%;              /* line */
+    --input: 216 30% 93%;
+    --ring: 221 83% 53%;                /* brand blue focus ring */
+
+    --radius: 0.625rem;                 /* 10px — between nuon 12px and shadcn 8px */
+
+    /* Custom nuon shadow tokens, exported as Tailwind shadow-nuon-{sm,md,lg} */
+    --shadow-nuon-sm: 0 1px 2px rgba(10, 37, 64, 0.06), 0 1px 3px rgba(10, 37, 64, 0.05);
+    --shadow-nuon-md: 0 4px 10px rgba(10, 37, 64, 0.06), 0 10px 24px rgba(10, 37, 64, 0.06);
+    --shadow-nuon-lg: 0 12px 30px rgba(10, 37, 64, 0.10), 0 24px 60px rgba(10, 37, 64, 0.10);
+  }
+
+  .dark {
+    --background: 213 78% 11%;          /* navy-deep */
+    --foreground: 216 30% 93%;
+    --card: 213 73% 15%;                /* navy */
+    --card-foreground: 216 30% 93%;
+    --popover: 213 73% 15%;
+    --popover-foreground: 216 30% 93%;
+
+    --primary: 217 91% 60%;             /* blue-bright in dark mode */
+    --primary-foreground: 213 78% 11%;
+
+    --secondary: 213 60% 18%;
+    --secondary-foreground: 216 30% 93%;
+
+    --muted: 213 60% 18%;
+    --muted-foreground: 216 20% 70%;
+
+    --accent: 213 60% 20%;
+    --accent-foreground: 216 30% 93%;
+
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 213 50% 22%;
+    --input: 213 50% 22%;
+    --ring: 217 91% 60%;
+
+    --shadow-nuon-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-nuon-md: 0 4px 10px rgba(0, 0, 0, 0.40), 0 10px 24px rgba(0, 0, 0, 0.30);
+    --shadow-nuon-lg: 0 12px 30px rgba(0, 0, 0, 0.50);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+      Cantarell, "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    letter-spacing: -0.005em;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3, h4 {
+    @apply text-foreground;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+
+  /* Headline scale tuned to match nuon's display weight */
+  h1 { @apply text-2xl font-semibold; }
+  h2 { @apply text-xl font-semibold; }
+  h3 { @apply text-base font-semibold; }
+
+  /* Focus ring — crisp 2px brand blue with offset matching background */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* Refined scrollbar (WebKit / Chromium) */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.45);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  /* Selection */
+  ::selection {
+    background: hsl(var(--ring) / 0.25);
+    color: hsl(var(--foreground));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Component-level polish
+ * ------------------------------------------------------------------------- */
+
+@layer components {
+  /* Subtle inset top-bar gradient that matches nuon's translucent nav */
+  .nuon-topbar {
+    background: linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background) / 0.85) 100%);
+    backdrop-filter: saturate(180%) blur(10px);
+    -webkit-backdrop-filter: saturate(180%) blur(10px);
+  }
+
+  /* Active sidebar item — left brand-blue rail + soft surface */
+  .nuon-nav-active {
+    background: hsl(var(--accent));
+    color: hsl(var(--primary));
+    box-shadow: inset 3px 0 0 0 hsl(var(--ring));
+  }
+
+  /* Primary CTA hover — gentle navy → indigo shift, mirrors nuon-site */
+  .nuon-cta-hover:hover {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(224 60% 22%) 100%);
+    box-shadow: 0 6px 16px hsl(213 73% 15% / 0.22);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Indeterminate progress sweep — used by the Evidence-page ingest progress
+ * strip. Total file count isn't known ahead of the walk (esp. on SharePoint
+ * streaming pagination), so an indeterminate sweep is honest signal.
+ * ------------------------------------------------------------------------- */
+@keyframes ingest-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}

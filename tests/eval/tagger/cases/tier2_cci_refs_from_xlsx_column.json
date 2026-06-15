@@ -1,0 +1,66 @@
+{
+  "name": "tier2_cci_refs_from_xlsx_column",
+  "description": "Lever B (2026-06-11): a generic evidence xlsx (NOT a structured STIG/Nessus kind) names its CCIs in a dedicated column. The extractor emits metadata['cci_refs']; ingest threads it into tag_evidence(cci_refs=[...]). This case pins that those tokens reach the SAME ungated 0.95/1.0 Tier-2 branch as a STIG finding's cci_refs, even though the inline text-scrape branch is kind-gated off for xlsx. Two CCIs across two families prove the column drives attribution to exactly the named CCIs. A third catalog CCI (CCI-000764) is never named and must stay untagged, pinning that the path doesn't over-collect.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"},
+      {"control_id": "au-12", "title": "Audit Generation", "family": "AU"},
+      {"control_id": "ia-2", "title": "Identification and Authentication", "family": "IA"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the account baseline."
+      },
+      {
+        "control_id": "au-12",
+        "objective_id": "CCI-000169",
+        "implementation_guidance": "Audit generation baseline.",
+        "assessment_procedures": "Verify audit record generation."
+      },
+      {
+        "control_id": "ia-2",
+        "objective_id": "CCI-000764",
+        "implementation_guidance": "Unique user identification.",
+        "assessment_procedures": "Verify unique identification."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "ComplianceMatrix.xlsx",
+    "text": "## Matrix\nRequirement,CCI,Status\nAccount mgmt,CCI-000015,Met\nAudit gen,CCI-000169,Met\n",
+    "cci_refs": ["CCI-000015", "CCI-000169"]
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 2,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 2,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      },
+      {
+        "objective_id": "CCI-000169",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      }
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000764"}
+    ]
+  }
+}

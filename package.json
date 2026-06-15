@@ -1,0 +1,24 @@
+{
+  "name": "cybersecurity-assessor",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Standalone NIST SP 800-53 control assessor for eMASS CCIS workbooks. Electron + React UI, Python FastAPI sidecar.",
+  "author": "Noah Jaskolski <noah@nuon.ai>",
+  "license": "UNLICENSED",
+  "homepage": "https://nuon.ai",
+  "bugs": {
+    "email": "contact@nuon.ai"
+  },
+  "scripts": {
+    "dev": "pnpm --filter ui dev",
+    "dev:backend": "uv run --directory backend uvicorn cybersecurity_assessor.server:app --reload --port 8765 --host 127.0.0.1",
+    "build": "pnpm --filter ui build",
+    "package": "pnpm --filter ui package",
+    "lint": "pnpm --filter ui lint",
+    "test:backend": "uv run --directory backend pytest"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  }
+}

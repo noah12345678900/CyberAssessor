@@ -1,0 +1,33 @@
+{
+  "name": "evidence_block_empty_text_but_artifact_true",
+  "description": "Pins the precedence contract inside the Step 1.65 deterministic no-evidence gate -- specifically that EvidenceBlock.text is None wins over EvidenceBlock.has_artifacts=True. This is a builder-inconsistency state: a future regression in route-layer evidence assembly that flips has_artifacts (because an artifact line was tokenized) without populating text (because the bundle materializer skipped the body render) MUST still short-circuit to the no-evidence ABSTAIN, not slip through to the LLM with text=None and let the model invent an affirming narrative against a phantom artifact.\n\nStep D (2026-06-11): the no-evidence gate ABSTAINS rather than minting confident Non-Compliant. Zero evidence is *Unknown*, not a finding (88% of the prior confident-NC rows disagreed with the gold reviewer). The gate routes through _finalize_no_evidence_decision -> _abstain: status coerced to None, proposed_status left None, source='abstain', needs_review=True, review_reason prefixed 'no-evidence:'. accepted stays True so the row is persisted (the export gates filter on needs_review to keep the untrusted row out of the workbook/POAM bundle).\n\nWhy this is its own case rather than a unit test: the gate is the only place the kernel reads BOTH fields of EvidenceBlock in the same branch (`text is None or is_only_context`). The complementary nc_no_evidence.json case pins the LEGACY string-mode path (tagged_evidence=None). The complementary evidence_block_only_context_coverage_wrapper.json case pins the is_only_context arm (text populated, no artifact/finding/host). Neither exercises the EvidenceBlock-contract `text is None` arm with has_artifacts=True, so a refactor that reordered the `or` or replaced it with `text is None and not has_artifacts` would silently pass both sibling cases while letting boolean-contradiction bundles reach the LLM.\n\nMechanism trace:\n  - evidence_block.text = None, evidence_block.has_artifacts = True, has_findings = False, has_hosts = False, has_coverage = False.\n  - is_only_context property at evidence_bundle.py:107-115 returns `text is not None and not (has_artifacts or has_findings or has_hosts)`. With text=None the left half of the AND short-circuits to False -> is_only_context = False.\n  - the gate evaluates `text is None or is_only_context` -> True or False -> True.\n  - _finalize_no_evidence_decision fires with context_only=False (text is None -> genuine zero-candidate sweep). Routes through _abstain. Returns Decision(accepted=True, status=None, proposed_status=None, narrative='No artifacts were retrieved for this CCI...', narrative_class=AMBIGUOUS, source='abstain', needs_review=True, review_reason='no-evidence: zero artifacts retrieved...').\n  - llm_stub_proposals is empty -> any LLM call would raise IndexError from StubLlmClient. Zero recorded calls proves the short-circuit fired before reaching the LLM path.\n\nLoad-bearing details that ISOLATE the precedence contract:\n  - text=None AND has_artifacts=True is the exact contradiction state. This case specifically pins that has_artifacts=True does NOT rescue a text-less bundle.\n  - has_findings=False / has_hosts=False isolate the failure to the `text is None` half of the OR -- a regression that broke only that half (e.g. swapping the OR for an AND) would let this case slip while the is_only_context-driven sibling still passed.\n  - has_coverage=False keeps the bundle out of any coverage-report enrichment path that might prepend synthetic text and accidentally rescue the case.\n  - tagged_evidence is set to a non-empty string so the legacy string-empty arm would NOT fire on its own. This proves the EvidenceBlock arm took the gate, not the legacy fallback.\n  - force_llm is implicitly False (Assessor.assess default). The no-evidence short-circuit ONLY runs in the `if not force_llm:` branch -- this case pins the default-mode precedence contract, not the force-LLM override.\n  - No CRM context, no narrative, no inherited marker -- removes confounders. The only thing being tested is the EvidenceBlock precedence contract.\n\nSubstrate: IA-2 (Identification and Authentication) / CCI-000764 is a fresh control not used by other eval cases. The 'identifies organizational users' AP is a realistic touchpoint for a route-layer builder bug -- an evidence bundle that tokenized an artifact reference from the user-list table but failed to render the body text could plausibly hit this contradiction state.\n\nThe assertion uses status=null, proposed_status=null, source_in=['abstain'], needs_review=true, accepted=true, llm_calls=0, narrative_contains_regex='No artifacts were retrieved', AND review_reason_contains_regex='no-evidence'. Orthogonal pin points so a regression in any one (verdict wrongly minted, source mis-stamped, needs_review wrongly cleared, accepted wrongly cleared, LLM accidentally called, narrative template changed, or review_reason prefix dropped) fails loudly. The narrative regex guards _finalize_no_evidence_decision's templated context_only=False string -- downstream POAM clustering latches onto that text, so a copy-edit that broke the prefix would silently break POAM grouping.",
+  "ccis_row": {
+    "control_id": "IA-2",
+    "ap_acronym": "IA-2.1",
+    "cci_id": "CCI-000764",
+    "guidance": "The information system uniquely identifies and authenticates organizational users.",
+    "procedures": "Examine the identification and authentication mechanism and confirm unique organizational user identification.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00066666 Example System Identification and Authentication Plan Rev A \u2014 referenced in bundle index but body rendering skipped.\n",
+  "evidence_block": {
+    "text": null,
+    "has_artifacts": true,
+    "has_coverage": false,
+    "has_findings": false,
+    "has_hosts": false
+  },
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": null,
+    "proposed_status": null,
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 0,
+    "narrative_contains_regex": "No artifacts were retrieved",
+    "review_reason_contains_regex": "no-evidence"
+  }
+}

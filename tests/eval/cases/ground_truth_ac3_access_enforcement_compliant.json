@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_ac3_access_enforcement_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 31, CCI-000213, assessed 2026-05-27). Compliant verdict based on RBAC implementation review on Linux hosts and container orchestration. Narrative uses 'Reviewed' and 'confirmed' affirming phrases. Evidence type: technical configuration (STIG-related RBAC, sudoers, container RBAC).",
+  "ccis_row": {
+    "control_id": "AC-3",
+    "ap_acronym": "AC-3.1",
+    "cci_id": "CCI-000213",
+    "guidance": "000213: The information system enforces approved authorizations for logical access to information and system resources in accordance with applicable access control policies.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to enforce approved authorizations for logical access to information and system resources in accordance with applicable access control policies.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- RBAC configuration export (RHEL 8 hosts) \u2014 sudoers configuration and group membership assignments for logical access enforcement.\n- Container orchestration RBAC policy \u2014 role bindings and cluster-role assignments enforcing authorized access at the platform layer.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined RBAC implementation on RHEL 8 hosts and container orchestration platform; confirmed via group membership, sudoers, and platform-level RBAC that approved authorizations are enforced for logical access.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "name": "tier4_poam_shape_to_ca5",
+  "description": "Lever C (2026-06-11): a Plan of Action & Milestones workbook is classified by its column shape (weakness + scheduled-completion + milestones + point-of-contact + status) as evidence_type='poam'. This case pins the Tier-4 routing half: evidence_type='poam' fans out to EVERY child objective of CA-5 (the single family-pure control a POA&M is the literal artifact for) at relevance 0.8 / confidence 0.6 with an 'Auto-classified as poam' rationale. Family-purity is pinned by negative controls: AT-4 (a different family-pure Lever-C target) and CM-8 (the inventory target) are seeded but must stay untagged — poam maps to ca-5 alone, never spraying across families. The xlsx classifier half (column shape -> 'poam') is pinned separately in backend/tests/evidence/test_poam_training_autotag.py.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ca-5", "title": "Plan of Action and Milestones", "family": "CA"},
+      {"control_id": "at-4", "title": "Training Records", "family": "AT"},
+      {"control_id": "cm-8", "title": "System Component Inventory", "family": "CM"}
+    ],
+    "objectives": [
+      {"control_id": "ca-5", "objective_id": "ca-5.1", "source": "AP", "text": "Develop a POA&M."},
+      {"control_id": "ca-5", "objective_id": "ca-5.2", "source": "AP", "text": "Update the POA&M."},
+      {"control_id": "at-4", "objective_id": "at-4.1", "source": "AP", "text": "Maintain training records."},
+      {"control_id": "cm-8", "objective_id": "cm-8.1", "source": "AP", "text": "Maintain a component inventory."}
+    ]
+  },
+  "framework_id": "NIST-800-53r4",
+  "evidence": {
+    "filename": "Program_POAM.xlsx",
+    "text": "",
+    "evidence_type": "poam",
+    "evidence_type_signals": ["weakness", "scheduled completion date", "milestones", "point of contact", "status"]
+  },
+  "expected": {
+    "tag_count": 2,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 2
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "ca-5.1",
+        "source": "auto",
+        "relevance": 0.8,
+        "confidence": 0.6,
+        "rationale_contains": "Auto-classified as poam"
+      },
+      {
+        "objective_id": "ca-5.2",
+        "source": "auto",
+        "relevance": 0.8,
+        "confidence": 0.6,
+        "rationale_contains": "Auto-classified as poam"
+      }
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "at-4.1"},
+      {"objective_id": "cm-8.1"}
+    ]
+  }
+}

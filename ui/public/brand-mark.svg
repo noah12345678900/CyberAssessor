@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Cybersecurity Assessor">
+  <defs>
+    <!-- Subtle vertical navy gradient — uses the assessor palette,
+         intentionally NOT the nuon diagonal mark gradient. Final nuon
+         brand mark drops in here later (see ui/LOGO_PLACEHOLDERS.md). -->
+    <linearGradient id="ca-bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#0e2c4a"/>
+      <stop offset="100%" stop-color="#061a30"/>
+    </linearGradient>
+    <linearGradient id="ca-shield-fill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square container -->
+  <rect x="8" y="8" width="240" height="240" rx="44" ry="44" fill="url(#ca-bg)"/>
+
+  <!-- Hairline inner highlight for depth -->
+  <rect
+    x="9" y="9" width="238" height="238" rx="43" ry="43"
+    fill="none"
+    stroke="#ffffff"
+    stroke-opacity="0.08"
+    stroke-width="1"/>
+
+  <!-- Shield silhouette: classic 5-point with rounded shoulders -->
+  <path
+    d="M128 52 L188 78 L188 138 C188 178 160 202 128 214 C96 202 68 178 68 138 L68 78 Z"
+    fill="url(#ca-shield-fill)"
+    stroke="#ffffff"
+    stroke-width="18"
+    stroke-linejoin="round"/>
+
+  <!-- Checkmark — bright blue for legibility against the white shield outline -->
+  <polyline
+    points="94,134 120,160 166,108"
+    fill="none"
+    stroke="#3b82f6"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- Accent nodes at the shield's vertical axis -->
+  <circle cx="128" cy="52"  r="10" fill="#60a5fa"/>
+  <circle cx="128" cy="214" r="10" fill="#60a5fa"/>
+</svg>

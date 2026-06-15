@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_sa9_oversight_na",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 265, CCI-000672, assessed 2026-05-29). Not Applicable verdict \u2014 no external service providers in scope, so government oversight requirements do not apply. Narrative uses 'Not applicable \u2014' (em-dash form) which hits _NA_PHRASES; no GAP-phrase collision because 'no external ... exist that require identification' does not match any current _GAP_PHRASES entry. Validator approves NOT_APPLICABLE on first attempt \u2014 happy-path NA acceptance. Sibling fixture ground_truth_sa9_external_provider_na (CCI-000669) pins the COLLISION mode (NA + GAP both fire \u2192 AMBIGUOUS \u2192 hard abstain); together they cover both branches of the SA-9 NA pattern.",
+  "ccis_row": {
+    "control_id": "SA-9",
+    "ap_acronym": "SA-9.5",
+    "cci_id": "CCI-000672",
+    "guidance": "000672: The organization documents government oversight with regard to external information system services.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the official documentation governing the provision of the external IT services to confirm the organization has clearly established the government oversight to be conducted on external information system services and service providers.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Procurement review \u2014 confirmed no external information system service contracts exist under the IATT boundary.\n- Contracts register search \u2014 zero active third-party service agreements in scope.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Not Applicable",
+      "narrative": "Not applicable \u2014 the program has no external service providers in scope under the IATT; no external functions, ports, protocols, or services exist that require identification. Will be re-assessed if external services are introduced.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Not Applicable",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false,
+    "accepted": true,
+    "llm_calls": 1
+  }
+}
