@@ -1,0 +1,40 @@
+{
+  "name": "future_tense_rejection",
+  "description": "Pins the FUTURE_TENSE_COMPLIANCE rejection (engine/validator.py:413-427) AND the retry-exhaustion \u2192 abstain path (assessor.py loop at :843, max_retries=2 \u2192 3 attempts). Each queued proposal is status=Compliant with a narrative that classifies as COMPLIANCE_AFFIRMING (contains 'confirmed via' / 'configured per' / 'examined ') AND matches _FUTURE_TENSE_RE ('will be configured'). Status/narrative-class check passes, but the future-tense trip-wire fires every attempt. After 3 rejections the orchestrator calls _abstain with reason 'validator-exhausted: ...'. This is the precision-over-recall mechanism the priorities memo ranks as #2 \u2014 a planned-state narrative must never be allowed to ship as Compliant. Three identical proposals (not three variants) because the stub does not consume corrective_context; the orchestrator's job is to keep retrying until the budget is gone, and the case pins that contract.",
+  "ccis_row": {
+    "control_id": "CM-6",
+    "ap_acronym": "CM-6.1",
+    "cci_id": "CCI-000363",
+    "guidance": "The organization establishes and documents configuration settings for information technology products employed within the information system.",
+    "procedures": "Examine documented configuration settings and confirm baseline values.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00088888 Example System Configuration Management Plan Rev A \u2014 references baseline configuration values planned for rollout in Q3.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00088888 Example System Configuration Management Plan Rev A; confirmed via section 4 that all baseline settings will be configured per the documented values.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00088888 Example System Configuration Management Plan Rev A; confirmed via section 4 that all baseline settings will be configured per the documented values.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined USD00088888 Example System Configuration Management Plan Rev A; confirmed via section 4 that all baseline settings will be configured per the documented values.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "review_reason_contains_regex": "validator-exhausted.*future_tense_compliance",
+    "rejection_classes_contains": ["future_tense_compliance"]
+  }
+}

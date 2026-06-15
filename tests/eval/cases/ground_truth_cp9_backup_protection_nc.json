@@ -1,0 +1,46 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_cp9_backup_protection_nc",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 155, CCI-000540, assessed 2026-05-27). Non-Compliant verdict \u2014 backup confidentiality/integrity/availability protections not documented. Narrative uses 'Examined/Finding' structure with 'have not been provided' gap language. The phrase 'have not been provided' should hit _GAP_PHRASES ('has not been' or 'have not been' pattern). 'Examined' hits _AFFIRMING_PHRASES. If both fire: AMBIGUOUS -> may or may not match NC depending on _expected_status_for_class behavior.",
+  "ccis_row": {
+    "control_id": "CP-9",
+    "ap_acronym": "CP-9.7",
+    "cci_id": "CCI-000540",
+    "guidance": "000540: The organization protects the confidentiality, integrity, and availability of backup information at storage locations.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the system security plan and ensures backup information at the storage location is protected IAW the system security plan.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- System Security Plan (SSP) \u2014 reviewed for backup information storage protection references.\n- Backup infrastructure documentation request \u2014 no artifacts provided demonstrating CIA protections for backup storage.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nBackup-security specifics covering confidentiality, integrity, and availability protections.\n\nFinding:\nObserved that documented controls for protecting backup confidentiality, integrity, and availability have not been provided.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nBackup-security specifics covering confidentiality, integrity, and availability protections.\n\nFinding:\nObserved that documented controls for protecting backup confidentiality, integrity, and availability have not been provided.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nBackup-security specifics covering confidentiality, integrity, and availability protections.\n\nFinding:\nObserved that documented controls for protecting backup confidentiality, integrity, and availability have not been provided.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Non-Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": [
+      "status_narrative_mismatch"
+    ]
+  }
+}

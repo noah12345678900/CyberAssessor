@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_ir4_incident_handling_ambiguous",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for IR-4 incident handling. Simulates a scenario where an incident response plan exists but has not been exercised \u2014 the assessor cannot confirm the implementation matches the documented procedures without test results. LLM signals abstain directly with confidence 0.2. Tests the confidence-floor abstain gate with an IR-family control where implementation evidence is characteristically harder to obtain on an IATT (no incidents have occurred yet).",
+  "ccis_row": {
+    "control_id": "IR-4",
+    "ap_acronym": "IR-4.1",
+    "cci_id": "CCI-000822",
+    "guidance": "000822: The organization implements an incident handling capability for security incidents that includes preparation, detection and analysis, containment, eradication, and recovery.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the incident response plan and interviews organizational personnel to ensure the organization implements an incident handling capability.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Incident Response Plan (draft) \u2014 defines preparation, detection/analysis, containment, eradication, and recovery phases but marked as draft pending tabletop exercise.\n- Interview notes \u2014 security team confirmed plan exists but no incidents have been handled under the IATT.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined incident response plan; confirmed via the documented IRP that preparation, detection and analysis, containment, eradication, and recovery phases are defined. Tabletop exercise records were unavailable for review under the current IATT, so implementation-vs-procedure conformance could not be independently corroborated.",
+      "confidence": 0.2
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "low-confidence"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "negative_random_alphanumeric_not_cci",
+  "description": "Negative case: body text contains tokens that look CCI-shaped ('REF-000015', 'IDX-123456', 'ABC-000099') but don't match the literal 'CCI-' prefix that _CCI_RE requires. Tier 2 should produce zero hits. Pins the strict prefix anchor — a regression that loosens the regex to '[A-Z]{3}-\\d{6}' would tag CCI-000015 here by accident. Filename is scan.ckl so the text-scrape branch actually fires (kind-gate added 2026-06-07); otherwise a regex-loosening mutation would be masked by the gate.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "Reference REF-000015 and IDX-123456 and ABC-000099. None of these are CCIs."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

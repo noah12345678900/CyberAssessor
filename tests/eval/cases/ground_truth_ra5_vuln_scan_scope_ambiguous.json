@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_ra5_vuln_scan_scope_ambiguous",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for RA-5 vulnerability scanning. Simulates a scenario where vulnerability scans exist but their boundary scope is questionable \u2014 scans cover some hosts but the scan target list doesn't match the current asset inventory. LLM returns Non-Compliant with confidence 0.3, triggering confidence-floor abstain. Tests the abstain gate with a scan-derived finding where boundary attribution is uncertain.",
+  "ccis_row": {
+    "control_id": "RA-5",
+    "ap_acronym": "RA-5.8",
+    "cci_id": "CCI-001059",
+    "guidance": "001059: The organization remediates legitimate vulnerabilities in accordance with an organizational assessment of risk.",
+    "procedures": "The organization conducting the inspection/assessment examines the vulnerability scan results and POA&M to ensure the organization being inspected/assessed remediates legitimate vulnerabilities in accordance with organizational risk assessments.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Vulnerability scan report (May 2026) \u2014 covers 12 hosts but asset inventory lists 19 in-boundary hosts; 7 hosts are unscanned.\n- POA&M extract \u2014 shows 3 open vulnerability items but none reference the 7 unscanned hosts.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Vulnerability scan report covers only 12 of 19 in-boundary hosts; 7 hosts are missing from the scan scope. POA&M lists 3 open vulnerability items but none reference the unscanned hosts \u2014 gap identified between scan scope and the current asset inventory.",
+      "confidence": 0.3
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Non-Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "low-confidence"
+  }
+}

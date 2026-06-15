@@ -1,0 +1,25 @@
+Example System Demo Account Mgmt Procedure Manual
+Document Number: USD20260601
+Revision: A
+Effective Date: 2024-03-15
+Owner: Example System Demo Information System Security Manager
+
+Purpose
+-------
+Defines account lifecycle controls for the Example System Demo information system
+(synthetic). Covers privileged and standard user account provisioning,
+quarterly attestation, and offboarding for hosts in the example-system-demo.local
+boundary.
+
+Section 4.2 — Quarterly Privileged-Account Attestation
+------------------------------------------------------
+On the first business day of each calendar quarter, the ISSO produces an
+inventory of all privileged accounts on example-system-demo-ws01 and example-system-demo-srv01
+and routes it to the account owner of record for written attestation
+("still required" / "remove"). Attestations are filed in the Example System Demo
+SharePoint workspace under /Sites/Example-System-Demo/Records/Attestations.
+
+NOTE: This is Revision A. Revision B (same document number USD20260601)
+supersedes this revision as of 2025-02-10. Use the Rev B copy for any
+new assessment activity; this revision is retained for historical
+audit purposes only.

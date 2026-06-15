@@ -1,0 +1,43 @@
+{
+  "name": "tier1_doc_number_padding_variants",
+  "description": "Tier 1 LIKE-expansion path: Evidence.doc_number is the canonical USD00022222 but the Objective guidance cites the un-padded form 'USD-22222'. Pins that _objectives_mentioning_doc OR's the canonical + variant forms across implementation_guidance + assessment_procedures so trailing-digit suffix variants still match. A regression that drops the variant expansion would zero this out.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Per USD-22222 the account baseline applies.",
+        "assessment_procedures": "Examine the policy referenced as USD-22222."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "doc_number": "USD00022222",
+    "text": ""
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 1,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.9,
+        "rationale_contains": "Doc number USD00022222"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

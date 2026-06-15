@@ -1,0 +1,52 @@
+{
+  "name": "dedup_rerun_does_not_duplicate",
+  "description": "Rerun-idempotency case: calling tag_evidence twice on the same Evidence with identical inputs MUST add zero rows on the second call. Pins the _existing_pairs dedup invariant — on the second pass, the in-memory _existing_pairs set is rebuilt from the persisted EvidenceTag rows, so every tier that would re-tag the same (evidence_id, objective_id) pair short-circuits. Note: EvidenceTag has no UNIQUE constraint on (evidence_id, objective_id); the dedup is purely app-side. The runner detects this case via the top-level 'rerun_must_not_duplicate' flag.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "",
+    "stig_findings": [
+      {
+        "rule_id": "SV-12345r1_rule",
+        "status": "Open",
+        "cci_refs": "CCI-000015",
+        "severity": "medium",
+        "finding_details": "Account requirement not met.",
+        "comments": ""
+      }
+    ]
+  },
+  "framework_id": "NIST-800-53r4",
+  "rerun_must_not_duplicate": true,
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 1,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

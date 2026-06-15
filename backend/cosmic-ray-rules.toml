@@ -1,0 +1,8 @@
+[cosmic-ray]
+module-path = "cybersecurity_assessor/engine/rules.py"
+timeout = 30.0
+excluded-modules = []
+test-command = "python -m pytest -x -q ../tests/test_validator.py ../tests/test_supersession.py ../tests/test_rules.py ../tests/engine/test_properties.py ../tests/engine/test_kernel_coverage.py"
+
+[cosmic-ray.distributor]
+name = "local"

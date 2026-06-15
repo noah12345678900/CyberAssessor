@@ -1,0 +1,33 @@
+{
+  "name": "gap_describing_nc",
+  "description": "Happy path for the LLM-accepted Non-Compliant verdict. Status=Non-Compliant paired with a GAP_DESCRIBING narrative (engine/validator.py:83-100): contains 'no documentation' and 'POA&M' which both hit _GAP_PHRASES; no affirming or NA phrase so classify_narrative returns GAP_DESCRIBING and the status-class check at validator.py:343-352 passes on first attempt. Cite verification finds USD00077777 in evidence \u2014 no UNSUPPORTED_DOC_CITATION. Narrative leads with 'Reviewed' (not 'Examined ' which is affirming) and stays well under the 70% Jaccard threshold against guidance/procedures to avoid REQUIREMENT_RESTATEMENT. Pins the third verdict class \u2014 the seed corpus now exercises Compliant, Not Applicable, AND Non-Compliant via the LLM path (with the rule_8a/8b/no-evidence shortcuts covering the deterministic NC and NA paths). A regression that demotes legitimate NC narratives to 'needs_review' (e.g. mis-classifying 'POA&M' as ambiguous, or a confidence gate sneaking onto NC verdicts) fails here.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.4",
+    "cci_id": "CCI-000018",
+    "guidance": "The organization defines account approval workflow steps for each account type.",
+    "procedures": "Examine account approval workflow documentation.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00077777 Example System Access Control Plan Rev A \u2014 names approvers in general terms but does not enumerate per-account-type workflow steps.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Reviewed USD00077777 Example System Access Control Plan Rev A and found no documentation of per-account-type approval workflow steps. Gap added to POA&M for remediation.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Non-Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 1
+  },
+  "live_llm": {
+    "expected_status": "Non-Compliant",
+    "expected_needs_review": false,
+    "expected_source_in": ["llm", "llm_after_retry"]
+  }
+}

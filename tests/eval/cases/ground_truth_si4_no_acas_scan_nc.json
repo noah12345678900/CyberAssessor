@@ -1,0 +1,46 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_si4_no_acas_scan_nc",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 325, CCI-002684, assessed 2026-05-27). Non-Compliant verdict \u2014 no ACAS scan results for the assessed boundary; scans referenced in prior notes pertain to a different environment. Same boundary-scoping pattern as the SI-3 siblings but for a different control family (SI-4). Narrative uses 'Examined/Finding' with 'was located' gap pattern.",
+  "ccis_row": {
+    "control_id": "SI-4(22)",
+    "ap_acronym": "SI-4(22).4",
+    "cci_id": "CCI-002684",
+    "guidance": "002684: The information system audits and/or alerts organization-defined personnel when unauthorized network services are detected.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to audit and/or alert at a minimum, the ISSO and ISSM when unauthorized network services are detected.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Prior assessment notes \u2014 reference vulnerability scanner for detection of services running on targeted systems (scoped to DSO environment).\n- Scan results search \u2014 no in-boundary vulnerability scan results located for the EI boundary.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing vulnerability scanner for detection of services running on targeted systems, and scan results available for the assessed boundary.\n\nFinding:\nNo in-boundary vulnerability scan result was located. Scans referenced in prior notes pertain to the DSO environment, which is out of this boundary.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing vulnerability scanner for detection of services running on targeted systems, and scan results available for the assessed boundary.\n\nFinding:\nNo in-boundary vulnerability scan result was located. Scans referenced in prior notes pertain to the DSO environment, which is out of this boundary.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Non-Compliant",
+      "narrative": "Examined:\nPrior assessment notes citing vulnerability scanner for detection of services running on targeted systems, and scan results available for the assessed boundary.\n\nFinding:\nNo in-boundary vulnerability scan result was located. Scans referenced in prior notes pertain to the DSO environment, which is out of this boundary.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Non-Compliant",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": [
+      "status_narrative_mismatch"
+    ]
+  }
+}

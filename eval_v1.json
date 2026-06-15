@@ -1,0 +1,500 @@
+{
+  "workbook_id": 2,
+  "workbook_path": "C:\\Users\\Noah.Jaskolski\\Downloads\\CCIS_Example System_T2_SN_EXAMPLE_EI_GOV_Export_baseline_copy.xlsx",
+  "modes": [
+    "current",
+    "llm-forced"
+  ],
+  "sample": 5,
+  "stratified_by": "verdict_source",
+  "seed": 42,
+  "oracle_total": 317,
+  "sampled_total": 10,
+  "results": [
+    {
+      "objective_id": "CCI-000056",
+      "excel_row": 52,
+      "control_id": "ac-11",
+      "mode": "current",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 13.861163900000065,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.8,
+        "narrative_excerpt": "Tagged GPO export USD20240218 documents the 900-second machine inactivity limit (lock initiation) but no artifact substantiates that the session lock is retained until the user reestablishes access via established identification and authentication procedures; reassess after evidence collection. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-002116",
+      "excel_row": 13,
+      "control_id": "ac-2",
+      "mode": "current",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_after_retry",
+      "latency_s": 19.505201899999975,
+      "error": null,
+      "decision_payload": {
+        "source": "llm_after_retry",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "No artifact specifying authorized group membership was located, and no sampling of accounts mapped to authorized groups was found; USD20240315 does not address group-membership specification. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-000164",
+      "excel_row": 95,
+      "control_id": "au-9",
+      "mode": "current",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "rule_no_evidence",
+      "latency_s": 0.00022309999985736795,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_no_evidence",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 1.0,
+        "narrative_excerpt": "No artifacts were retrieved for this CCI. With no evidence of implementation available to examine, the control objective is presumed not satisfied; status is Non-Compliant pending submission of supporting evidence.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-001586",
+      "excel_row": 127,
+      "control_id": "cm-3",
+      "mode": "current",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00017369999977745465,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000389",
+      "excel_row": 143,
+      "control_id": "cm-8",
+      "mode": "current",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 14.320935900000222,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "Sweep located no examinable evidence documenting a hardware/component inventory that reflects the current system; col F is empty and implementation status is Planned. The tagged AWS GovCloud CRM addresses PE-* and scanning controls only and contains no CM-8 entry. Prior-cited Bessemer SVD/EC2 dashboard/bessemer.conf were not available to examine; reassess after evidence collection. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-000538",
+      "excel_row": 154,
+      "control_id": "cp-9",
+      "mode": "current",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00016289999985019676,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000777",
+      "excel_row": 163,
+      "control_id": "ia-3",
+      "mode": "current",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00021999999989930075,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-001958",
+      "excel_row": 165,
+      "control_id": "ia-3",
+      "mode": "current",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 12.768384200000128,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "Sweep located no evidence addressing device authentication (e.g., 802.1X, device certificates, or port-based authentication for workstations, printers, servers, VoIP, or VTC) before network connection; tagged USD20240212 covers user/authenticator controls (IA-2/IA-4/IA-5/IA-7) only and implementation status is Planned. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-001611",
+      "excel_row": 202,
+      "control_id": "ia-5.1",
+      "mode": "current",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00028389999988576164,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000834",
+      "excel_row": 228,
+      "control_id": "ir-6",
+      "mode": "current",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00013730000000578002,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000056",
+      "excel_row": 52,
+      "control_id": "ac-11",
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 12.16645460000018,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.6,
+        "narrative_excerpt": "Verified via USD20240218 GPO export from example-system-demo-dc01 that Interactive logon Machine inactivity limit is set to 900 seconds, enforcing a screen lock that the Windows session retains until the user reestablishes access via identification and authentication.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-002116",
+      "excel_row": 13,
+      "control_id": "ac-2",
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_after_retry",
+      "latency_s": 21.44785759999968,
+      "error": null,
+      "decision_payload": {
+        "source": "llm_after_retry",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.82,
+        "narrative_excerpt": "No artifact specifying the documented list of authorized group membership for a sampling of information system accounts was located; the referenced Account Management Policy (USD20240315) contains no authorized-group-membership listing and implementation status is Planned. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-000164",
+      "excel_row": 95,
+      "control_id": "au-9",
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 9.095633800000087,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "Sweep located no tagged evidence substantiating that the system disallows unauthorized deletion of audit information for CCI-000164; previous results assert Linux filesystem permissions and Splunk authorization controls but no examinable artifact or applicable STIG/SRG check was provided, and implementation status is Planned. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-001586",
+      "excel_row": 127,
+      "control_id": "cm-3",
+      "mode": "llm-forced",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00016479999976581894,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000389",
+      "excel_row": 143,
+      "control_id": "cm-8",
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 11.035538500000257,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "Prior results reference a Bessemer SVD, an AWS EC2 instances dashboard, and bessemer.conf, but none of these inventory artifacts are attached or verifiable in tagged evidence, and implementation status is Planned; tagged evidence (POA&M and AWS physical-controls CRM) does not document a component inventory reflecting the current system. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-000538",
+      "excel_row": 154,
+      "control_id": "cp-9",
+      "mode": "llm-forced",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00023989999999685097,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000777",
+      "excel_row": 163,
+      "control_id": "ia-3",
+      "mode": "llm-forced",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00013339999986783369,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-001958",
+      "excel_row": 165,
+      "control_id": "ia-3",
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "oracle_needs_review": false,
+      "new_status": "Non-Compliant",
+      "new_verdict_source": "llm_accept",
+      "latency_s": 14.737772499999664,
+      "error": null,
+      "decision_payload": {
+        "source": "llm",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": 0.85,
+        "narrative_excerpt": "Sweep located no evidence that the network infrastructure authenticates endpoint/mobile devices (workstations, printers, servers, VoIP, VTC) before connection; USD20240212 documents only user/account authentication (PIV, password, gMSA) and no device-authentication mechanism, device list, or applicable STIG/SRG check was provided, and implementation status is Planned. POA&M opened.",
+        "rule": null
+      }
+    },
+    {
+      "objective_id": "CCI-001611",
+      "excel_row": 202,
+      "control_id": "ia-5.1",
+      "mode": "llm-forced",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00014719999990120414,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    },
+    {
+      "objective_id": "CCI-000834",
+      "excel_row": 228,
+      "control_id": "ir-6",
+      "mode": "llm-forced",
+      "oracle_status": "Compliant",
+      "oracle_verdict_source": "rule_8a",
+      "oracle_needs_review": false,
+      "new_status": "Compliant",
+      "new_verdict_source": "rule_8a",
+      "latency_s": 0.00011839999979201821,
+      "error": null,
+      "decision_payload": {
+        "source": "rule_8a",
+        "cache_source": null,
+        "needs_review": false,
+        "review_reason": null,
+        "confidence": null,
+        "narrative_excerpt": "Automatically compliant per Assessment Procedures (col K): \"automatically compliant\".",
+        "rule": "8a"
+      }
+    }
+  ],
+  "aggregates": {
+    "rule_no_evidence": {
+      "current": {
+        "n": 5,
+        "agree": 5,
+        "errors": 0,
+        "latency_total": 60.45590900000025
+      },
+      "llm-forced": {
+        "n": 5,
+        "agree": 4,
+        "errors": 0,
+        "latency_total": 68.48325699999987
+      }
+    },
+    "rule_8a": {
+      "current": {
+        "n": 5,
+        "agree": 5,
+        "errors": 0,
+        "latency_total": 0.0009777999994184938
+      },
+      "llm-forced": {
+        "n": 5,
+        "agree": 5,
+        "errors": 0,
+        "latency_total": 0.0008036999993237259
+      }
+    }
+  },
+  "disagreements": [
+    {
+      "cci": "CCI-000056",
+      "control_id": "ac-11",
+      "excel_row": 52,
+      "mode": "llm-forced",
+      "oracle_status": "Non-Compliant",
+      "oracle_verdict_source": "rule_no_evidence",
+      "new_status": "Compliant",
+      "new_verdict_source": "llm_accept",
+      "narrative_excerpt": "Verified via USD20240218 GPO export from example-system-demo-dc01 that Interactive logon Machine inactivity limit is set to 900 seconds, enforcing a screen lock that the Windows session retains until the user reestablishes access via identification and authentication.",
+      "confidence": 0.6,
+      "review_reason": null
+    }
+  ]
+}

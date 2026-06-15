@@ -1,0 +1,83 @@
+{
+  "name": "ssp_hosts_example_system",
+  "description": "Canonical SSP prose modeled on USD00050015_Rev_D_SSP.docx — hostnames, FQDNs, IPs, and environment labels survive normalization (lowercase + strip-leading/trailing-punct). Verifies the load-bearing path: SSP-quality prose in, fingerprint tokens out.",
+  "fixture_docs": [
+    {
+      "filename": "USD00050015_Rev_D_SSP.docx",
+      "boundary_doc_kind": "SSP",
+      "title": "Example System System Security Plan v1.2",
+      "text": "## System boundary\n\nThe Example System accreditation boundary comprises the following managed hosts:\n\n  * exsys-jump01.example.local       (10.42.10.5)   bastion host, production enclave\n  * exsys-app01.example.local        (10.42.10.21)  primary application server\n  * exsys-app02.example.local        (10.42.10.22)  secondary application server\n  * exsys-db01.example.local         (10.42.11.5)   PostgreSQL primary\n  * exsys-db02.example.local         (10.42.11.6)   PostgreSQL replica\n  * exsys-mon01.example.local        (10.42.12.10)  Splunk forwarder collector\n\nAuthentication is brokered through the Example Identity Provider (Active Directory + Okta SAML federation). Network egress to vendor management planes (Tenable.sc, Splunk Cloud) traverses the Example proxy at egress.example.local.\n\nManagement VLAN: 10.42.99.0/24. Production data VLAN: 10.42.10.0/23.\n\nEnvironments: prod (the boundary above), iat (pre-prod mirror, separate accreditation), and dev (developer workstations, NOT in boundary).\n\nFedRAMP package: EXSYS-2024-001."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "exsys-jump01.example.local",
+      "exsys-app01.example.local",
+      "exsys-app02.example.local",
+      "exsys-db01.example.local",
+      "exsys-db02.example.local",
+      "exsys-mon01.example.local",
+      "10.42.10.0/23",
+      "10.42.99.0/24",
+      "egress.example.local",
+      "okta",
+      "active directory",
+      "tenable.sc",
+      "splunk cloud",
+      "postgresql",
+      "prod",
+      "iat",
+      "exsys-2024-001"
+    ],
+    "confidence": 0.88
+  },
+  "expected": {
+    "expected_tokens": [
+      "exsys-jump01.example.local",
+      "exsys-db01.example.local",
+      "10.42.10.0/23",
+      "okta",
+      "exsys-2024-001"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd",
+      "redacted",
+      "the system",
+      "users"
+    ],
+    "snapshot_tokens": [
+      "exsys-jump01.example.local",
+      "exsys-app01.example.local",
+      "exsys-app02.example.local",
+      "exsys-db01.example.local",
+      "exsys-db02.example.local",
+      "exsys-mon01.example.local",
+      "10.42.10.0/23",
+      "10.42.99.0/24",
+      "egress.example.local",
+      "okta",
+      "active directory",
+      "tenable.sc",
+      "splunk cloud",
+      "postgresql",
+      "prod",
+      "iat",
+      "exsys-2024-001"
+    ],
+    "min_confidence": 0.6,
+    "max_unattributed_ratio": 0.10
+  },
+  "live_llm_boundary": {
+    "expected_tokens": [
+      "exsys-jump01.example.local",
+      "exsys-db01.example.local",
+      "okta"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd"
+    ],
+    "min_confidence": 0.5
+  }
+}

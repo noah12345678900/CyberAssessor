@@ -1,0 +1,40 @@
+{
+  "name": "missing_inheritance_marker_rejection",
+  "description": "Pins the MISSING_INHERITANCE_MARKER rejection at engine/validator.py:393-401. The narrative contains the substring 'inherited from' (lowercased on line 392) but the `_INHERITANCE_SOURCE_RE` regex at validator.py:697-701 requires `inherited from\\s+(?:the\\s+)?<source>` — i.e. at least one whitespace char must follow 'from' before any source token. This case ends the phrase with 'inherited from.' (period directly after 'from', no whitespace), so the regex fails to match → `_names_inheritance_source` returns False → MISSING rejection fires.\n\nIsolates this rejection from the cascade chain: narrative is COMPLIANCE_AFFIRMING (hits 'examined ', 'confirmed via', 'documented in' from _AFFIRMING_PHRASES at validator.py:43-60) and status is COMPLIANT, so the expected_status check at :355 passes → no STATUS_NARRATIVE_MISMATCH cascade. Restatement detector also clears: narrative shares only 'documented' and 'account' with `procedures` (2 of 16 distinct content tokens ≈ 0.125 Jaccard, far below _OVERLAP_THRESHOLD=0.70), and none of the four _RESTATEMENT_REGEXES at :117-122 match the 'Examined ...' opener. 'pending' is not in _FUTURE_TENSE_RE (validator.py:172-183) so the future-tense gate also skips.\n\nThree identical proposals exhaust the validator loop (max_retries=2 → 3 attempts) because the stub ignores corrective_context. Asserts via both `rejection_classes_contains` AND `review_reason_contains_regex` — unlike the restatement case where the regex couldn't distinguish primary from cascaded mechanism, this case has a single rejection per attempt so review_reason's `validator-exhausted: missing_inheritance_marker: ...` summary uniquely identifies the path. Pinning both surfaces guards the assessor.py:1295-1334 review-reason-building code AND the rejection_log walker against silent regressions.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization defines and documents the account types permitted within the information system.",
+    "procedures": "Examine documented account management plan; confirm enumerated account types approved by designated approval authority.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Program inheritance documentation \u2014 references parent authorization package but does not name the source system.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined the program inheritance documentation; confirmed via the documented authorization package that the account type controls are inherited from. Source attribution pending in section 4.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined the program inheritance documentation; confirmed via the documented authorization package that the account type controls are inherited from. Source attribution pending in section 4.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examined the program inheritance documentation; confirmed via the documented authorization package that the account type controls are inherited from. Source attribution pending in section 4.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": ["missing_inheritance_marker"],
+    "review_reason_contains_regex": "validator-exhausted.*missing_inheritance_marker"
+  }
+}

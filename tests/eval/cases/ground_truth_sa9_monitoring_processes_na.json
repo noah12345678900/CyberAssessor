@@ -1,0 +1,46 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_sa9_monitoring_processes_na",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 269, CCI-003139, assessed 2026-05-29). Not Applicable verdict \u2014 no external service providers, so monitoring processes for external providers do not apply. Narrative uses 'Not applicable \u2014' (em-dash) with 'does not currently engage' \u2014 the exact phrase that collides with _GAP_PHRASES in the existing SA-9.1 sibling fixture (CCI-000669). Fourth sibling in the SA-9 NA cluster. This case is expected to exhibit the same NA+GAP \u2192 AMBIGUOUS collision as the existing CCI-000669 fixture.",
+  "ccis_row": {
+    "control_id": "SA-9",
+    "ap_acronym": "SA-9.9",
+    "cci_id": "CCI-003139",
+    "guidance": "003139: The organization defines processes, methods, and techniques to employ to monitor security control compliance by external service providers on an ongoing basis.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the documented processes, methods, and techniques to ensure the organization being inspected/assessed defines processes, methods, and techniques to employ to monitor security control compliance by external service providers on an ongoing basis.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Procurement review \u2014 confirmed no external information system service contracts exist under the IATT boundary.\n- Program acquisition records \u2014 no external provider activities to monitor or report on.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Not Applicable",
+      "narrative": "Not applicable \u2014 the program does not currently engage external information system services under the IATT; there are no external provider activities, anomalies, or behaviors to monitor or report on. Will be re-assessed if external services are introduced.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Not Applicable",
+      "narrative": "Not applicable \u2014 the program does not currently engage external information system services under the IATT; there are no external provider activities, anomalies, or behaviors to monitor or report on. Will be re-assessed if external services are introduced.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Not Applicable",
+      "narrative": "Not applicable \u2014 the program does not currently engage external information system services under the IATT; there are no external provider activities, anomalies, or behaviors to monitor or report on. Will be re-assessed if external services are introduced.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": null,
+    "proposed_status": "Not Applicable",
+    "source_in": [
+      "abstain"
+    ],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": [
+      "status_narrative_mismatch"
+    ]
+  }
+}

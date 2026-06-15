@@ -1,0 +1,34 @@
+{
+  "name": "airgapped_downgrade",
+  "description": "Airgapped boundary with affirming compensating-control narrative downgrades residual below raw_severity. The SC-7 narrative explicitly says 'examined network diagram, confirmed via boundary review, documented in USD00099999 boundary protection plan' — three of the validator's _AFFIRMING_PHRASES (per feedback_eval_compliant_narrative_must_affirm). Pins that the LLM stub payload (a) is accepted by validate_response, (b) downgrades from HIGH raw to LOW residual, and (c) cites airgap + boundary enforcement in key_factors so the UI card explains the reasoning.",
+  "poam": {
+    "control_cluster": "AC-2",
+    "vulnerability_description": "Account review cadence not enforced on management plane.",
+    "raw_severity": "high",
+    "likelihood": "moderate",
+    "impact": "high"
+  },
+  "linked_narratives": [
+    {
+      "control_id": "SC-7",
+      "narrative_q": "Examined the network architecture diagram and confirmed via boundary protection review that the management plane is airgapped from the corporate network. Documented in USD00099999 Example System Boundary Protection Plan Rev B."
+    },
+    {
+      "control_id": "AC-3",
+      "narrative_q": "Examined the access enforcement matrix; confirmed via RBAC review that privileged actions require MFA. Documented in USD00088888."
+    }
+  ],
+  "llm_stub_payload": {
+    "suggested_residual": "low",
+    "rationale": "Examined linked SC-7 narrative confirming airgapped management plane; combined with AC-3 MFA enforcement (USD00088888), exploitability of the account-review gap is effectively limited to a small number of vetted administrators with physical access. Residual downgraded to LOW.",
+    "confidence": "high",
+    "key_factors": ["airgapped", "boundary-enforcement", "mfa-required", "limited-admin-population"]
+  },
+  "expected": {
+    "suggested_residual": "low",
+    "confidence": "high",
+    "must_not_exceed_raw": true,
+    "rationale_contains_affirming_phrase": true,
+    "min_key_factors": 2
+  }
+}

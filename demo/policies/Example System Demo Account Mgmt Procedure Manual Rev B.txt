@@ -1,0 +1,30 @@
+Example System Demo Account Mgmt Procedure Manual
+Document Number: USD20260601
+Revision: B
+Effective Date: 2025-02-10
+Supersedes: Revision A (2024-03-15)
+Owner: Example System Demo Information System Security Manager
+
+Purpose
+-------
+Defines account lifecycle controls for the Example System Demo information system
+(synthetic). Covers privileged and standard user account provisioning,
+quarterly attestation, and offboarding for hosts in the example-system-demo.local
+boundary. Revises Section 4.2 to require dual-reviewer sign-off on
+privileged-account retention decisions.
+
+Section 4.2 — Quarterly Privileged-Account Attestation (revised)
+----------------------------------------------------------------
+On the first business day of each calendar quarter, the ISSO produces an
+inventory of all privileged accounts on example-system-demo-ws01 and example-system-demo-srv01
+and routes it to BOTH the account owner of record AND the system owner
+for written attestation. A "still required" disposition requires BOTH
+signatures; either reviewer marking "remove" triggers same-day account
+disablement. Attestations are filed in the Example System Demo SharePoint workspace
+under /Sites/Example-System-Demo/Records/Attestations with the Rev B template.
+
+Change Log (Rev A → Rev B)
+--------------------------
+- Added dual-reviewer requirement to §4.2.
+- Added same-day disablement trigger on disposition "remove".
+- Standardized attestation template (Rev B form).

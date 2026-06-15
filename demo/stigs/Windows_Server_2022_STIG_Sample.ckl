@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--DISA STIG Viewer :: 2.17-->
+<CHECKLIST>
+  <ASSET>
+    <ROLE>Member Server</ROLE>
+    <ASSET_TYPE>Computing</ASSET_TYPE>
+    <HOST_NAME>EXAMPLE-SYSTEM-DEMO-WS01</HOST_NAME>
+    <HOST_IP>10.10.5.21</HOST_IP>
+    <HOST_MAC></HOST_MAC>
+    <HOST_FQDN>example-system-demo-ws01.demo.local</HOST_FQDN>
+    <TECH_AREA></TECH_AREA>
+    <TARGET_KEY>3784</TARGET_KEY>
+    <WEB_OR_DATABASE>false</WEB_OR_DATABASE>
+    <WEB_DB_SITE></WEB_DB_SITE>
+    <WEB_DB_INSTANCE></WEB_DB_INSTANCE>
+  </ASSET>
+  <STIGS>
+    <iSTIG>
+      <STIG_INFO>
+        <SI_DATA><SID_NAME>version</SID_NAME><SID_DATA>1</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>classification</SID_NAME><SID_DATA>UNCLASSIFIED</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>customname</SID_NAME></SI_DATA>
+        <SI_DATA><SID_NAME>stigid</SID_NAME><SID_DATA>Windows_Server_2022_STIG</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>description</SID_NAME><SID_DATA>The Microsoft Windows Server 2022 Security Technical Implementation Guide (STIG) is published as a tool to improve the security of Department of Defense (DoD) information systems.</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>filename</SID_NAME><SID_DATA>U_MS_Windows_Server_2022_STIG_V2R1_Manual-xccdf.xml</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>releaseinfo</SID_NAME><SID_DATA>Release: 1 Benchmark Date: 24 Jan 2026</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>title</SID_NAME><SID_DATA>Microsoft Windows Server 2022 Security Technical Implementation Guide</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>uuid</SID_NAME><SID_DATA>cf0a5d3c-7c19-4e2a-9b3e-71fd83a4c9a0</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>notice</SID_NAME><SID_DATA>terms-of-use</SID_DATA></SI_DATA>
+        <SI_DATA><SID_NAME>source</SID_NAME><SID_DATA>STIG.DOD.MIL</SID_DATA></SI_DATA>
+      </STIG_INFO>
+      <VULN>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-254238</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Severity</VULN_ATTRIBUTE><ATTRIBUTE_DATA>medium</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Group_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SRG-OS-000480-GPOS-00227</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_ID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SV-254238r848537_rule</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Ver</VULN_ATTRIBUTE><ATTRIBUTE_DATA>WN22-00-000010</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>Windows Server 2022 manually managed application account passwords must be at least 14 characters in length.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Discuss</VULN_ATTRIBUTE><ATTRIBUTE_DATA>Application/service account passwords must be of sufficient length to prevent being easily cracked. Application/service accounts that are manually managed must have passwords at least 14 characters in length.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-000205</ATTRIBUTE_DATA></STIG_DATA>
+        <STATUS>NotAFinding</STATUS>
+        <FINDING_DETAILS>Verified via local security policy export 2026-05-15. All manually managed service accounts (svc-acas, svc-splunk, svc-backup) are configured for 16-character minimum.</FINDING_DETAILS>
+        <COMMENTS>Tracked under Example System Account Management Plan (USD00013961).</COMMENTS>
+        <SEVERITY_OVERRIDE></SEVERITY_OVERRIDE>
+        <SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+      </VULN>
+      <VULN>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-254244</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Severity</VULN_ATTRIBUTE><ATTRIBUTE_DATA>high</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Group_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SRG-OS-000076-GPOS-00044</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_ID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SV-254244r877393_rule</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Ver</VULN_ATTRIBUTE><ATTRIBUTE_DATA>WN22-AC-000020</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>Windows Server 2022 must automatically lock an account when three logon attempts in 15 minutes are made.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Discuss</VULN_ATTRIBUTE><ATTRIBUTE_DATA>The account lockout feature, when enabled, prevents brute-force password attacks on the system.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-000044</ATTRIBUTE_DATA></STIG_DATA>
+        <STATUS>NotAFinding</STATUS>
+        <FINDING_DETAILS>GPO "Example-System-Hardening-Baseline-v2" enforces lockout threshold = 3 / observation window = 15 min / lockout duration = 15 min. Verified via secedit /export.</FINDING_DETAILS>
+        <COMMENTS></COMMENTS>
+        <SEVERITY_OVERRIDE></SEVERITY_OVERRIDE>
+        <SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+      </VULN>
+      <VULN>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-254252</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Severity</VULN_ATTRIBUTE><ATTRIBUTE_DATA>medium</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Group_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SRG-OS-000032-GPOS-00013</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_ID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SV-254252r958388_rule</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Ver</VULN_ATTRIBUTE><ATTRIBUTE_DATA>WN22-AU-000010</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>Windows Server 2022 audit records must be backed up to a different system or media than the system being audited.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-001851</ATTRIBUTE_DATA></STIG_DATA>
+        <STATUS>NotAFinding</STATUS>
+        <FINDING_DETAILS>Windows Event Forwarding configured to forward Security/System/Application logs to example-system-splunk-fwd01.demo.local. WEF subscription verified.</FINDING_DETAILS>
+        <COMMENTS>See SDA Example System Auditing Procedures.</COMMENTS>
+        <SEVERITY_OVERRIDE></SEVERITY_OVERRIDE>
+        <SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+      </VULN>
+      <VULN>
+        <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-254301</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Severity</VULN_ATTRIBUTE><ATTRIBUTE_DATA>medium</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Group_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SRG-OS-000095-GPOS-00049</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_ID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>SV-254301r958478_rule</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Ver</VULN_ATTRIBUTE><ATTRIBUTE_DATA>WN22-00-000110</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>Rule_Title</VULN_ATTRIBUTE><ATTRIBUTE_DATA>Windows Server 2022 must not have the Telnet Client installed.</ATTRIBUTE_DATA></STIG_DATA>
+        <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-000381</ATTRIBUTE_DATA></STIG_DATA>
+        <STATUS>Open</STATUS>
+        <FINDING_DETAILS>Telnet-Client optional feature found enabled on EXAMPLE-SYSTEM-DEMO-WS01. Slated for removal via GPO update 2026-06-10.</FINDING_DETAILS>
+        <COMMENTS>Tracked in POA&amp;M item POAM-2026-0017.</COMMENTS>
+        <SEVERITY_OVERRIDE></SEVERITY_OVERRIDE>
+        <SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+      </VULN>
+    </iSTIG>
+  </STIGS>
+</CHECKLIST>

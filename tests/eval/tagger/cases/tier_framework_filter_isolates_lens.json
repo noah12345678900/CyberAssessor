@@ -1,0 +1,67 @@
+{
+  "name": "tier_framework_filter_isolates_lens",
+  "description": "Framework-scoped lookup (added 2026-06-07): when tag_evidence is called with framework_id=X, the three lookup helpers (_objectives_by_cci, _objectives_for_control_ids, _objectives_mentioning_doc) MUST filter Objectives to that framework only. Seeds CCI-000015 under both NIST-800-53r4 (seeded first → PK 1) and NIST-800-53r5 (PK 2); passes framework_id=NIST-800-53r4; only the r4 Objective gets tagged. A regression that drops the framework_id WHERE/JOIN clause from any helper kills this case by producing 2 tags. The framework_id is None path (boundary-doc upload with no workbook) is unaffected — confirmed via the existing single-framework cases like tier2_cci_inline_in_text and the cases that explicitly pass framework_id: null.",
+  "catalog": {
+    "frameworks": [
+      {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+      {"framework_id": "NIST-800-53r5", "name": "NIST 800-53", "version": "Rev 5"}
+    ],
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC", "framework_id": "NIST-800-53r4"},
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC", "framework_id": "NIST-800-53r5"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "r4 account management baseline.",
+        "assessment_procedures": "Verify.",
+        "framework_id": "NIST-800-53r4"
+      },
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "r5 account management baseline.",
+        "assessment_procedures": "Verify.",
+        "framework_id": "NIST-800-53r5"
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "",
+    "stig_findings": [
+      {
+        "rule_id": "SV-12345r1_rule",
+        "status": "Open",
+        "cci_refs": "CCI-000015",
+        "severity": "medium",
+        "finding_details": "Account requirement not met.",
+        "comments": ""
+      }
+    ]
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 1,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "framework_id": 1,
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      }
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015", "framework_id": 2}
+    ]
+  }
+}

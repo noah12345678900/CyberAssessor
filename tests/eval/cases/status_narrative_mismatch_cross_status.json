@@ -1,0 +1,40 @@
+{
+  "name": "status_narrative_mismatch_cross_status",
+  "description": "Pins the STATUS_NARRATIVE_MISMATCH cross-status branch at engine/validator.py:481-490 in PURE form -- a proposal where the narrative classifies cleanly as one class but the proposed status is a DIFFERENT class. The other STATUS_NARRATIVE_MISMATCH branch (validator.py:471-480, ambiguous-narrative) already fires as a cascade in requirement_restatement_rejection.json (rule #11 comment at validator.py:463-465 notes restatement always trips the ambiguous match below). This case isolates the cross-status branch -- the most common real-world LLM failure where the model writes gap-finding reasoning ('no documentation was located... POA&M is open') but mislabels the verdict as Compliant. Without this case, a regression that broke the cross-status branch would still let requirement_restatement_rejection pass (because the ambiguous branch fires there) and ship a misclassified Compliant verdict.\n\nMechanism trace:\n  - status = COMPLIANT.\n  - narrative classifies as GAP_DESCRIBING because it contains 'no documentation' (validator.py:_GAP_PHRASES line 99), 'POA&M' (line 104), 'remediation' (line 106). No _AFFIRMING_PHRASES (no 'confirmed via', 'examined ', 'documented in', etc.) and no _NA_PHRASES, so classify_narrative returns GAP_DESCRIBING unambiguously.\n  - _expected_status_for_class(GAP_DESCRIBING) returns NON_COMPLIANT (validator.py:740-741).\n  - status (COMPLIANT) != expected_status (NON_COMPLIANT) → cross-status branch fires at validator.py:481-490.\n  - Three identical proposals exhaust the retry budget → _abstain with reason 'validator-exhausted: ... status_narrative_mismatch ...'.\n\nLoad-bearing details that ISOLATE the cross-status branch from cascades:\n  - Narrative does NOT match _RESTATEMENT_REGEXES (validator.py:117-122). The four regexes are: 'reviewed [X]; confirmed the requirement', 'reviewed (sda control|cci|requirement)', 'confirmed the requirement that the (system|contractor) shall', and '(system|contractor) shall ... as required'. Narrative opens with 'Inspected USD00077777' and contains none of these phrases.\n  - Narrative token-set Jaccard vs procedures / guidance / definition / previous_results stays well below _OVERLAP_THRESHOLD (0.70). The narrative tokens (inspected, usd00077777, audit, review, evidence, documentation, weekly, log, located, soc, published, required, quarterly, summary, poa, tracking, open, address, gap, pending, remediation) share only 'audit', 'review' with the deliberately-terse procedures field -- Jaccard ≈ 2/21 ≈ 0.10. This keeps _is_requirement_restatement (validator.py:749-776) False so REQUIREMENT_RESTATEMENT does NOT also fire.\n  - Narrative does NOT match _FUTURE_TENSE_RE (validator.py:187-198). The future-tense gate (validator.py:541-555) only fires when status=COMPLIANT AND a future-tense token matches. Narrative uses 'is open to address' (present tense) instead of 'will be configured / to be implemented / planned to deploy', so no cascade.\n  - No 'inherited from' in narrative → MISSING_INHERITANCE_MARKER skipped (validator.py:508-516).\n  - No SV-#####r#_rule citation → UNCORROBORATED_STIG_PASS skipped (validator.py:570-587), even though status=COMPLIANT. evidence_block intentionally omitted so corroboration_present is None at assessor.py:1130-1134, which would skip the rule anyway even if a STIG cite were present.\n  - USD00077777 IS in tagged_evidence so the cite-verifier (validator.py:_verify_cites at 858) passes -- the only USD token in the narrative is USD00077777 and it appears literally in evidence_text. UNSUPPORTED_DOC_CITATION does NOT cascade.\n  - cci_id 'CCI-000148' is the row's own CCI, exempted via _CITE_EXEMPT_SUBSTRINGS-equivalent self-cite logic in _verify_cites; safe to mention but the narrative doesn't cite it anyway.\n\nThree identical proposals (not three variants): the stub does not consume corrective_context, so the orchestrator's job is just to keep retrying until the budget is gone. Same retry-exhaustion contract pinned by future_tense_rejection / unsupported_doc_citation / uncorroborated_stig_pass_rejection.\n\nControl AU-6 (Audit Review, Analysis, and Reporting), CCI-000148 is a realistic substrate: an LLM that retrieves a partial audit-review doc but finds no weekly log-review evidence might be tempted to mark the row Compliant because the doc exists, even though the narrative it generates correctly describes the gap. This is the precision-over-recall failure mode the cross-status branch was written to catch.",
+  "ccis_row": {
+    "control_id": "AU-6",
+    "ap_acronym": "AU-6.1",
+    "cci_id": "CCI-000148",
+    "guidance": "The organization reviews and analyzes information system audit records for indications of inappropriate or unusual activity.",
+    "procedures": "Examine audit review records.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00077777 Example System Audit Review Plan Rev B \u2014 outlines the audit-review program, designated reviewer roles, and the cadence at which audit records are to be analyzed.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Inspected USD00077777 for audit-review evidence; no documentation of weekly log review was located, and the SOC has not published the required quarterly summary. POA&M tracking is open to address the gap pending remediation.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Inspected USD00077777 for audit-review evidence; no documentation of weekly log review was located, and the SOC has not published the required quarterly summary. POA&M tracking is open to address the gap pending remediation.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Inspected USD00077777 for audit-review evidence; no documentation of weekly log review was located, and the SOC has not published the required quarterly summary. POA&M tracking is open to address the gap pending remediation.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "review_reason_contains_regex": "validator-exhausted.*status_narrative_mismatch",
+    "rejection_classes_contains": ["status_narrative_mismatch"]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "dual_narrative_crm_customer_mismatch",
+  "description": "Pins DUAL_NARRATIVE_MISLABEL via the CRM responsibility cross-check branch (engine/validator.py:685-694) — the SECOND advisory rejection class inside validate_dual_narratives, distinct from the phrase-table leak branch that dual_narrative_leak_advisory.json exercises. Fires when the CRM marks a control as customer-owned but the LLM populates the cloud half anyway (customer-owned controls have no provider scope by definition; a non-empty cloud half is structurally nonsensical and flags the row for review without rejecting the verdict).\n\nThis case is also the first eval case to exercise the runner's new `crm_entries` plumbing (test_eval_harness.py:_build_crm_context) — every prior case sent crm_context=None to assessor.assess, isolating the LLM and validator paths from CRM resolution. Wiring CRM into case JSON unlocks the entire CRM short-circuit lattice (rule 1.5 at assessor.py:733-746) plus the hybrid-prepend / cross-check enrichment paths for future cases.\n\nCRM control_id is 'ac-2' (OSCAL canonical lowercase) to match what _lookup_crm constructs via _ccis_to_oscal_control_id(_normalize_control('AC-2')) at assessor.py:1830. responsibility='customer' falls through the CRM short-circuit (assessor.py:741 — 'customer' is NOT in _CRM_SHORT_CIRCUIT_SET = {provider, inherited, not_applicable}) so the LLM path runs as normal; responsibility_onprem is omitted (no dual-scope), so crm_resp_for_check resolves to plain 'customer' at assessor.py:1267 and reaches validate_dual_narratives as crm_responsibility='customer'.\n\nIsolation from the phrase-table leak branch (validator.py:665-680): the on-prem half ('Customer manages local privileged-account enrollment...') contains zero _PROVIDER_ONLY_PHRASES tokens — no 'inherited from aws', no 'aws govcloud', no 'implemented by the csp'. The cloud half ('AWS GovCloud Directory Service provides...') is checked against _ONPREM_ONLY_PHRASES (not _PROVIDER_ONLY_PHRASES — those only apply to the on-prem half), and contains no 'physical data center', 'rack-mounted', etc. So both phrase-table checks pass cleanly and the only flag comes from validator.py:687-694 ('customer + populated cloud half').\n\nColumn Q narrative is independently valid: 'Examined ' + 'confirmed via' + 'documented in' satisfy _AFFIRMING_PHRASES so classify_narrative returns COMPLIANCE_AFFIRMING and status=Compliant passes the expected_status check at :355; the narrative does NOT contain 'inherited from' so MISSING_INHERITANCE_MARKER stays dormant (validator.py:508 only fires when 'inherited from' is present); shares ~6 content tokens with the 12-token `procedures` text out of ~23 union (Jaccard ~0.26), well below _OVERLAP_THRESHOLD=0.70 so REQUIREMENT_RESTATEMENT doesn't trigger; no future-tense ('will be', 'pending') so FUTURE_TENSE_COMPLIANCE doesn't fire either.\n\nAsserts source='llm' and needs_review=false — the load-bearing CRM-customer invariant: a customer-owned control with a stray cloud paragraph still produces an accepted Compliant verdict for the customer half. Only the dual_narrative_flag is set so the column-Q-split UI renderer at routes/controls.py can flag the row for human review without bouncing it through the abstain queue.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization defines and documents the account types permitted within the information system.",
+    "procedures": "Examine documented account management plan; confirm enumerated account types approved by designated approval authority.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Customer Account Management Plan Rev D \u2014 customer-managed tenant directory enrollment procedures.\n",
+  "crm_entries": [
+    {
+      "control_id": "ac-2",
+      "responsibility": "customer",
+      "narrative": "Customer assesses account management controls in the customer-managed tenant scope; provider exposes the IAM control plane but does not manage account-type policy.",
+      "source_baseline_id": 999
+    }
+  ],
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined account management procedures USD00099999; confirmed via the program-documented plan that account types are documented in the customer-managed tenant scope and approved by the system owner.",
+      "narrative_on_prem": "Customer manages local privileged-account enrollment and quarterly recertification per the program's documented account management plan; system owner approves all account types in the tenant directory.",
+      "narrative_cloud": "AWS GovCloud Directory Service provides the IAM control plane that enforces account-type baselines for the customer-managed tenant; documented in the FedRAMP-authorized provider package.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["llm", "llm_after_retry"],
+    "needs_review": false,
+    "llm_calls": 1,
+    "dual_narrative_flags_contains": ["dual_narrative_mislabel"]
+  }
+}

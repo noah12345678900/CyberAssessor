@@ -1,0 +1,42 @@
+{
+  "name": "tier2_cci_inline_in_text",
+  "description": "Tier 2 text-scrape path: a STIG .ckl body contains a CCI string but no parsed stig_findings rows (extractor missed it inside finding_details free-text). _CCI_RE scrapes the body the same way it scrapes a parsed cci_refs field and produces the same 0.95/1.0 tag. Filename is scan.ckl so the kind-gate (added 2026-06-07) lets the text-scrape branch fire; under a policy.pdf this case would correctly produce 0 tags. Pins the STIG narrative-text fallback path that 2026 STIG requirements depend on.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the account baseline."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "This STIG checklist addresses CCI-000015 directly."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 1,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

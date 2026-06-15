@@ -1,0 +1,31 @@
+{
+  "name": "crm_short_circuit_provider",
+  "description": "Pins the CRM overlay short-circuit at engine/assessor.py:733-746 for responsibility='provider' — the third value in _CRM_SHORT_CIRCUIT_SET = frozenset({provider, inherited, not_applicable}) at assessor.py:468. Companion to crm_short_circuit_inherited; together they pin two of the three short-circuit branches (not_applicable being the third — symmetric to provider since both map to NOT_APPLICABLE / NA_JUSTIFYING via status_map at assessor.py:1858-1862).\n\nWith responsibility='provider' and no responsibility_onprem, specified=['provider'], `all(r in _CRM_SHORT_CIRCUIT_SET ...)` is True, and the kernel returns via _finalize_crm_decision (assessor.py:1833) WITHOUT consulting the LLM. _finalize_crm_decision maps provider → status=NOT_APPLICABLE + narrative_class=NA_JUSTIFYING, then takes the CRM-supplied narrative verbatim (validator skipped intentionally at assessor.py:1847). source='crm_provider' composed at assessor.py:2019 as f'crm_{cloud_r or \"na\"}'.\n\nDistinct verdict shape from crm_short_circuit_inherited (Compliant) — provider responsibility means the provider owns implementation entirely, so from the customer's perspective the control is NOT_APPLICABLE to the local boundary. This is the FedRAMP shared-responsibility pattern for controls like SC-7 boundary protection at the cloud infrastructure layer: AWS/Azure owns the underlying hypervisor networking; the customer can't and shouldn't try to assess it.\n\nllm_stub_proposals=[] is load-bearing — empty queue + llm_calls=0 means a kernel regression that reached the LLM would raise IndexError from StubLlmClient.propose_twice, surfacing the regression loudly rather than silently consulting a model. tagged_evidence is intentionally non-empty (a customer-side hardening guide that does NOT cover the provider-owned aspect) to prove the short-circuit fires regardless of local artifacts — provider-owned means provider-owned, even when the customer has tangentially-related documentation.\n\nControl ID 'sc-7' (OSCAL canonical lowercase) matches what _lookup_crm at assessor.py:1830 constructs via _ccis_to_oscal_control_id(_normalize_control('SC-7')); source_baseline_id=999 matches the sentinel used by crm_short_circuit_inherited and dual_narrative_crm_customer_mismatch — all three CRM cases route through the same overlay path so failure messages stay diff-able.",
+  "ccis_row": {
+    "control_id": "SC-7",
+    "ap_acronym": "SC-7.1",
+    "cci_id": "CCI-001097",
+    "guidance": "The information system monitors and controls communications at the external boundary of the system and at key internal boundaries within the system.",
+    "procedures": "Examine boundary protection devices and configurations; confirm monitoring of communications at external and key internal boundaries.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00088888 Tenant Hardening Guide Rev B \u2014 customer-side OS firewall baseline for managed VMs.\n",
+  "crm_entries": [
+    {
+      "control_id": "sc-7",
+      "responsibility": "provider",
+      "narrative": "External boundary protection at the IaaS layer is owned and operated by the FedRAMP-authorized AWS GovCloud provider; customer tenants do not have administrative access to underlying VPC routing or hypervisor network controls.",
+      "source_baseline_id": 999
+    }
+  ],
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": "Not Applicable",
+    "source_in": ["crm_provider"],
+    "needs_review": false,
+    "llm_calls": 0,
+    "narrative_contains_regex": "FedRAMP-authorized AWS GovCloud provider"
+  }
+}

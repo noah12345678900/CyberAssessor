@@ -1,0 +1,16 @@
+[cosmic-ray]
+# Patent-kernel mutation target. Set to one of the three load-bearing
+# modules per-session (validator/supersession/rules) and re-init —
+# cosmic-ray's module-path is single-target so we run three sessions
+# sequentially rather than mutating the entire engine package (which
+# pulled in calibration, crm_ml, crm_sanity, etc. — out of scope for
+# patent claims, ~3000 wasted mutations).
+module-path = "cybersecurity_assessor/engine/validator.py"
+timeout = 30.0
+excluded-modules = []
+# Test scope is the kernel golden + property suites + the new
+# coverage-gap tests. Keeps per-mutation runtime ~1-2s on Python 3.14.
+test-command = "python -m pytest -x -q ../tests/test_validator.py ../tests/test_supersession.py ../tests/test_rules.py ../tests/engine/test_properties.py ../tests/engine/test_kernel_coverage.py"
+
+[cosmic-ray.distributor]
+name = "local"

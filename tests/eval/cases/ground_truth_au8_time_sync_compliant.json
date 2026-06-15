@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_au8_time_sync_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 86, CCI-001890, assessed 2026-05-27). Compliant verdict based on NTP/time synchronization configuration review. Narrative uses 'Reviewed' and 'confirmed' affirming phrases. Evidence type: system configuration (NTP, STIG checks). Tests that a technical-configuration narrative with specific service names (IPA, Amazon Time Sync) is accepted by the validator.",
+  "ccis_row": {
+    "control_id": "AU-8",
+    "ap_acronym": "AU-8.4",
+    "cci_id": "CCI-001890",
+    "guidance": "001890: The information system records time stamps for audit records that can be mapped to Coordinated Universal Time (UTC) or Greenwich Mean Time (GMT).",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure that the organization being inspected/assessed has configured the information system to generate time stamps for audit records that contain time zones or time offsets that can be mapped to Coordinated Universal Time (UTC) or Greenwich Mean Time (GMT).",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- NTP configuration export \u2014 chrony.conf from boundary hosts showing time source hierarchy (identity provider server -> cloud time sync service at 10.0.0.123).\n- STIG checklist results (RHEL 8) \u2014 time synchronization STIG checks showing compliant status.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examined time synchronization configuration; confirmed via STIG check results that system time is used for system logs, that system time is sourced from the identity provider server for all systems, and that the identity provider sources its time from the cloud time sync service at 10.0.0.123.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

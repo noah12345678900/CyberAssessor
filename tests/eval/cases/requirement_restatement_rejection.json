@@ -1,0 +1,40 @@
+{
+  "name": "requirement_restatement_rejection",
+  "description": "Pins the REQUIREMENT_RESTATEMENT rejection (engine/validator.py:285,338-347 + _is_requirement_restatement at :634-661) via the Jaccard-overlap branch — not the regex-opener branch. The LLM's narrative reuses 12/14 distinct content tokens from `procedures` after stopword filtering (examine, documented, account, management, plan, confirm, enumerated, types, approved, designated, approval, authority), giving a Jaccard ratio of ~0.857 — comfortably above _OVERLAP_THRESHOLD=0.70 at validator.py:127. None of the _RESTATEMENT_REGEXES openers match (narrative starts with 'Examine ', not 'Reviewed [...]; confirmed the requirement', and contains no 'shall ... as required' phrase), so this case isolates the *lexical-paraphrase* detector that the regex set alone would miss. Once restatement fires, classify_narrative returns AMBIGUOUS and STATUS_NARRATIVE_MISMATCH also rejects on the same attempt; both classes show up in decision.rejection_log, which is why this case asserts via `rejection_classes_contains` rather than the regex on review_reason (review_reason only echoes the LAST rejection per attempt, which is STATUS_NARRATIVE_MISMATCH after both fire). Three identical proposals exhaust the validator loop (max_retries=2 → 3 attempts) because the stub ignores corrective_context — the orchestrator's contract is 'keep retrying until the budget is gone' and this case pins that the budget is actually spent.",
+  "ccis_row": {
+    "control_id": "AC-2",
+    "ap_acronym": "AC-2.1",
+    "cci_id": "CCI-000015",
+    "guidance": "The organization defines and documents the account types permitted within the information system.",
+    "procedures": "Examine documented account management plan; confirm enumerated account types approved by designated approval authority.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00099999 Example System Account Management Plan Rev A \u2014 lists account types and approvers; verbatim restatement risk is high.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Examine documented account management plan USD00099999; confirm enumerated account types approved by designated approval authority documented in section 4.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examine documented account management plan USD00099999; confirm enumerated account types approved by designated approval authority documented in section 4.",
+      "confidence": 0.9
+    },
+    {
+      "status": "Compliant",
+      "narrative": "Examine documented account management plan USD00099999; confirm enumerated account types approved by designated approval authority documented in section 4.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "llm_calls": 3,
+    "rejection_classes_contains": ["requirement_restatement", "status_narrative_mismatch"],
+    "review_reason_contains_regex": "validator-exhausted"
+  }
+}

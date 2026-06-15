@@ -1,0 +1,22 @@
+{
+  "name": "rule_8a_auto_compliant",
+  "description": "Rule 8a explicit-text short-circuit \u2014 procedures column (K) contains the literal phrase 'automatically compliant', which classify_row step 1 (rules.py:181-192, _R8A_TRIGGERS) matches as a Rule 8a trigger. The orchestrator returns Compliant BEFORE consulting the LLM. Empty stub queue confirms the LLM is not called. This case pins the explicit-text col-K lane of rule 8a; na_external_csp_rule_8b.json pins the complementary CSP-inheritance col-Q lane (also COMPLIANT_8A under v0.11.0, but matched from the human-authored rationale column, not the DISA template text). Together they cover both ways a row can auto-resolve to Compliant; if either short-circuit silently stops firing (trigger phrase typo, classify_row reordering, _find_first_trigger case sensitivity regression) the corresponding case fails immediately instead of surfacing as a precision drop weeks later.",
+  "ccis_row": {
+    "control_id": "AT-1",
+    "ap_acronym": "AT-1.1",
+    "cci_id": "CCI-000100",
+    "guidance": "The organization develops and documents an awareness and training policy.",
+    "procedures": "This CCI is automatically compliant per the DoD-level awareness training program; no system-level test is required at the program tier.",
+    "inherited": null,
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- placeholder \u2014 rule 8a should fire before this is examined.\n",
+  "llm_stub_proposals": [],
+  "expected": {
+    "status": "Compliant",
+    "source_in": ["rule_8a"],
+    "needs_review": false,
+    "llm_calls": 0
+  }
+}

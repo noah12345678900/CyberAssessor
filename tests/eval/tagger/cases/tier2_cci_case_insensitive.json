@@ -1,0 +1,42 @@
+{
+  "name": "tier2_cci_case_insensitive",
+  "description": "Tier 2 case-folding path: _CCI_RE uses re.IGNORECASE, and the matched string is upper-cased via m.group(0).upper() before lookup. Body text contains 'cci-000015' lowercase; expected to tag the canonical CCI-000015 objective. Pins that lowercasing the source text doesn't kill the tier. Filename is scan.ckl so the kind-gate (added 2026-06-07) lets the text-scrape branch fire; under a .pdf this case would correctly produce 0 tags.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the account baseline."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "scan.ckl",
+    "text": "References cci-000015 here in lowercase."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 1,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 1,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [
+      {
+        "objective_id": "CCI-000015",
+        "source": "auto",
+        "relevance": 1.0,
+        "confidence": 0.95,
+        "rationale_contains": "Direct CCI reference"
+      }
+    ],
+    "tags_must_not_include": []
+  }
+}

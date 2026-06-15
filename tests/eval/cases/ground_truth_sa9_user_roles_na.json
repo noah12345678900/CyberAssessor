@@ -1,0 +1,33 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_sa9_user_roles_na",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 266, CCI-000673, assessed 2026-05-29). Not Applicable verdict \u2014 no external service providers in scope, so user role definitions for external services do not apply. Narrative uses 'Not applicable \u2014' (em-dash) and 'no acquisitions ... have occurred' \u2014 only the NA phrase trips, no GAP collision. Validator approves NOT_APPLICABLE on first attempt \u2014 happy-path NA acceptance. Third sibling in the SA-9 NA cluster (alongside CCI-000669 collision-mode and CCI-000672 happy-path).",
+  "ccis_row": {
+    "control_id": "SA-9",
+    "ap_acronym": "SA-9.6",
+    "cci_id": "CCI-000673",
+    "guidance": "000673: The organization defines user roles and responsibilities with regard to external information system services.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the official documentation governing the provision of the external IT services to confirm the organization has clearly defined the roles and responsibilities of all types of users of the external information system services.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Procurement review \u2014 confirmed no external information system service contracts exist under the IATT boundary.\n- Program acquisition records \u2014 no acquisitions of external information system services.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Not Applicable",
+      "narrative": "Not applicable \u2014 the program has no external service providers in scope under the IATT; no acquisitions of external information system services have occurred that would trigger the processes addressed by this CCI. Will be re-assessed if external services are introduced.",
+      "confidence": 0.9
+    }
+  ],
+  "expected": {
+    "status": "Not Applicable",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false,
+    "accepted": true,
+    "llm_calls": 1
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "pin_control_id_in_path_only",
+  "description": "RE-RECORDED 2026-06-07 as the regression-gate proof of the path-only deceptive-filename fix. Pre-fix, _CONTROL_ID_RE scanned BOTH text and evidence.path; with empty body text and only the path containing 'AC-2', the tagger tagged every child Objective of ac-2 at 0.7/0.5. That was a rename attack — a user wanting credit on AC-2/RA-5/SC-7 could upload a file named 'AC-2_RA-5_SC-7_kitchen_sink.pdf' with arbitrary contents and harvest tags. Post-fix, Tier 3 scans the text body ONLY; path-only matches produce zero tags. CCI-000015 (the ac-2 child) must NOT be tagged. A regression that re-adds the `for m in _CONTROL_ID_RE.finditer(evidence.path or \"\")` line resurrects the attack and trips this case.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "AC-2_policy.pdf",
+    "text": "",
+    "path_override": "file:///fixtures/AC-2_policy.pdf"
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

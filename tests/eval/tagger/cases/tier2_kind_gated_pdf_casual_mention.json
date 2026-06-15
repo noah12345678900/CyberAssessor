@@ -1,0 +1,36 @@
+{
+  "name": "tier2_kind_gated_pdf_casual_mention",
+  "description": "Tier 2 kind-gate (added 2026-06-07): a policy.pdf body that quotes 'CCI-000015' for context (not as a finding) MUST NOT produce a Tier 2 tag. The text-scrape branch of Tier 2 is gated on `evidence.kind in _STRUCTURED_FINDING_KINDS` ({STIG_CKL, STIG_CKLB, STIG_XCCDF, NESSUS}); a .pdf file is routed to EvidenceKind.PDF and the inline `_CCI_RE.finditer(text)` branch short-circuits. The structured `stig_findings` branch above the gate is unaffected — extractors that parse CCI lists out of any kind still tag at 0.95. A regression that removes the gate, widens `_STRUCTURED_FINDING_KINDS` to include `PDF`, or moves the gate above the structured-findings branch kills this case. Recall for policy PDFs is preserved via Tier 1 (doc number, conf 0.9) and Tier 3 (control ID, conf 0.5).",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {
+        "control_id": "ac-2",
+        "objective_id": "CCI-000015",
+        "implementation_guidance": "Account management baseline.",
+        "assessment_procedures": "Verify the baseline."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "policy.pdf",
+    "text": "Background: per CCI-000015 above, account management is required. This document does not itself constitute a STIG finding."
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 0,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 0
+    },
+    "tags_must_include": [],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

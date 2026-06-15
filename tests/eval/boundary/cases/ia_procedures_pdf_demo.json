@@ -1,0 +1,73 @@
+{
+  "name": "ia_procedures_pdf_demo",
+  "description": "I&A procedures case modeled on Identification_and_Authentication_Procedures_USD20240212.pdf — PDF-extracted text with service identifiers (Okta, PIV, Yubikey) + vendor product names. Mirror of acct_mgmt_policy_demo but with the .pdf suffix that maps to EvidenceKind.PDF in _KIND_BY_SUFFIX — pins that suffix routing doesn't change adapter behavior.",
+  "fixture_docs": [
+    {
+      "filename": "Identification_and_Authentication_Procedures_USD20240212.pdf",
+      "boundary_doc_kind": "Procedure",
+      "title": "Identification and Authentication Procedures USD20240212",
+      "text": "1.0 PURPOSE\n\nThis procedure operationalizes the Example Identification & Authentication Policy (IA-2 through IA-12 of NIST SP 800-53 Rev 5).\n\n2.0 MULTI-FACTOR AUTHENTICATION\n\nAll interactive access to Example-managed information systems shall require multi-factor authentication consisting of:\n\n  - Something you have: PIV card (preferred), Yubikey 5 FIPS, or DUO Mobile push\n  - Something you know: a passphrase meeting the complexity rules in section 3\n  - Something you are: only when PIV unavailable, via Okta Verify biometric\n\nFederated SSO is brokered by Okta (okta.example.com); fallback for non-federated systems is local LDAP (ldap.example.local) with PAM stack enforcement.\n\n3.0 PASSPHRASE COMPLEXITY\n\nMinimum 15 characters; mixed case; one digit; one special character; no dictionary words; reused passphrases blocked via Specops Password Policy enforcement.\n\n4.0 DEVICE-LEVEL\n\nWorkstations are joined to the Example Active Directory forest (example.local) and enforce conditional access via Microsoft Intune."
+    }
+  ],
+  "stub_extractor": {
+    "tokens": [
+      "ia-2",
+      "ia-12",
+      "okta",
+      "okta.example.com",
+      "ldap.example.local",
+      "piv",
+      "yubikey 5 fips",
+      "duo mobile",
+      "okta verify",
+      "active directory",
+      "example.local",
+      "microsoft intune",
+      "specops password policy"
+    ],
+    "confidence": 0.75
+  },
+  "expected": {
+    "expected_tokens": [
+      "okta",
+      "okta.example.com",
+      "ldap.example.local",
+      "piv",
+      "microsoft intune"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd",
+      "the user",
+      "redacted"
+    ],
+    "snapshot_tokens": [
+      "ia-2",
+      "ia-12",
+      "okta",
+      "okta.example.com",
+      "ldap.example.local",
+      "piv",
+      "yubikey 5 fips",
+      "duo mobile",
+      "okta verify",
+      "active directory",
+      "example.local",
+      "microsoft intune",
+      "specops password policy"
+    ],
+    "min_confidence": 0.5,
+    "max_unattributed_ratio": 0.10
+  },
+  "live_llm_boundary": {
+    "expected_tokens": [
+      "okta",
+      "piv"
+    ],
+    "banned_tokens": [
+      "example.com",
+      "tbd"
+    ],
+    "min_confidence": 0.4
+  }
+}

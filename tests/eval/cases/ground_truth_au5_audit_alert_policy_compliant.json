@@ -1,0 +1,31 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_au5_audit_alert_policy_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 80, CCI-001572, assessed 2026-05-29). Compliant verdict based on audit-processing-failure alerting SOP, SIEM configuration, and monitoring dashboards. Narrative uses structured headings (Policy/Implementation/Monitoring) with 'Examined' and 'Confirmed' affirming phrases. Evidence type: SOP + SIEM configuration + operational procedures. Tests multi-paragraph structured narratives.",
+  "ccis_row": {
+    "control_id": "AU-5",
+    "ap_acronym": "AU-5.2",
+    "cci_id": "CCI-001572",
+    "guidance": "001572: The organization defines the personnel or roles to be alerted in the event of an audit processing failure.",
+    "procedures": "The organization conducting the inspection/assessment obtains and examines the documented list of personnel or roles who should be alerted in the event of audit processing failure to ensure the organization being inspected/assessed has either defined additional personnel or roles, or identified that there are no additional personnel or roles.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- Auditing Procedures SOP (SharePoint: Cybersecurity/Account Management Artifacts/Procedures) \u2014 defines audit-processing-failure conditions and notification procedures.\n- SIEM configuration export \u2014 confirms audit data ingestion from all boundary components with critical alerting enabled.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "Policy:\nExamined Auditing Procedures SOP; audit-processing-failure conditions (log-flow stoppage, ingest backlog) are defined and documented.\n\nImplementation:\nConfirmed SIEM ingests audit data from all boundary components. Critical alerts are surfaced through monitoring infrastructure.\n\nMonitoring:\nSecurity operators conduct daily dashboard reviews; alerts are documented and addressed per the SOP, with weekly reports retained for authorization. Audit-processing-failure conditions are visible to operators via the same daily dashboard review path.",
+      "confidence": 0.88
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false
+  }
+}

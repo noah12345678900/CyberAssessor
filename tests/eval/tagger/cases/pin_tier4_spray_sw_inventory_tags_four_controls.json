@@ -1,0 +1,62 @@
+{
+  "name": "pin_tier4_spray_sw_inventory_tags_four_controls",
+  "description": "RE-RECORDED 2026-06-10 as the regression-gate proof of the Tier 4 full child fan-out. The 2026-06-07 'spray fix' narrowed two things together: (a) EVIDENCE_TYPE_TO_CONTROLS['sw_inventory'] to ['cm-8'] only, and (b) per-Control primary-CCI selection. Both were REVERTED 2026-06-10: (a) sw_inventory maps back to ['cm-8','cm-7.5','cm-10','cm-11'] — a software inventory is corroborating evidence for component inventory (CM-8), authorized-software (CM-7(5)), usage restrictions (CM-10), and user-installed software (CM-11); (b) the evidence-type match fans out to EVERY child CCI of each mapped Control, because the assess loop is per-CCI and primary-CCI-only tagging starved the siblings. Each of the four controls here has one child, so this xlsx upload yields FOUR tags (CCI-000363 / CCI-001774 / CCI-000877 / CCI-001812) at the flat Tier 4 relevance 0.8 / confidence 0.6. Regression-gate target: re-narrowing EVIDENCE_TYPE_TO_CONTROLS['sw_inventory'] OR re-introducing primary-CCI-only selection collapses this from 4 tags and trips the case.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-8", "title": "Information System Component Inventory", "family": "CM"},
+      {"control_id": "cm-7.5", "title": "Least Functionality | Authorized Software", "family": "CM"},
+      {"control_id": "cm-10", "title": "Software Usage Restrictions", "family": "CM"},
+      {"control_id": "cm-11", "title": "User-Installed Software", "family": "CM"}
+    ],
+    "objectives": [
+      {
+        "control_id": "cm-8",
+        "objective_id": "CCI-000363",
+        "implementation_guidance": "Component inventory.",
+        "assessment_procedures": "Verify."
+      },
+      {
+        "control_id": "cm-7.5",
+        "objective_id": "CCI-001774",
+        "implementation_guidance": "Authorized software list.",
+        "assessment_procedures": "Verify."
+      },
+      {
+        "control_id": "cm-10",
+        "objective_id": "CCI-000877",
+        "implementation_guidance": "Software usage restrictions.",
+        "assessment_procedures": "Verify."
+      },
+      {
+        "control_id": "cm-11",
+        "objective_id": "CCI-001812",
+        "implementation_guidance": "User-installed software policy.",
+        "assessment_procedures": "Verify."
+      }
+    ]
+  },
+  "evidence": {
+    "filename": "sw_inventory.xlsx",
+    "text": "",
+    "evidence_type": "sw_inventory",
+    "evidence_type_signals": ["hostname", "software_name", "version"]
+  },
+  "framework_id": "NIST-800-53r4",
+  "expected": {
+    "tag_count": 4,
+    "tier_hits": {
+      "doc_number_hits": 0,
+      "cci_hits": 0,
+      "control_id_hits": 0,
+      "evidence_type_hits": 4
+    },
+    "tags_must_include": [
+      {"objective_id": "CCI-000363", "source": "auto", "relevance": 0.8, "confidence": 0.6},
+      {"objective_id": "CCI-001774", "source": "auto", "relevance": 0.8, "confidence": 0.6},
+      {"objective_id": "CCI-000877", "source": "auto", "relevance": 0.8, "confidence": 0.6},
+      {"objective_id": "CCI-001812", "source": "auto", "relevance": 0.8, "confidence": 0.6}
+    ],
+    "tags_must_not_include": []
+  }
+}

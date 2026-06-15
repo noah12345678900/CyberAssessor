@@ -1,0 +1,32 @@
+{
+  "ground_truth": true,
+  "name": "ground_truth_sc28_encryption_at_rest_compliant",
+  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 292, CCI-001199, assessed 2026-05-27). Compliant verdict based on encryption-at-rest review across on-prem and cloud scopes. Narrative uses structured On-prem/Cloud headings with 'Reviewed' and 'confirmed' affirming phrases, and cites a USD-numbered architecture document. Evidence type: architecture document + FIPS crypto modules. Tests dual-scope (on-prem + cloud) narrative acceptance and USD citation parsing.",
+  "ccis_row": {
+    "control_id": "SC-28",
+    "ap_acronym": "SC-28.1",
+    "cci_id": "CCI-001199",
+    "guidance": "001199: The information system protects the confidentiality and/or integrity of organization-defined information at rest.",
+    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to protect the confidentiality and/or integrity of organization-defined information at rest.",
+    "inherited": "Local",
+    "narrative": null,
+    "definition": null
+  },
+  "tagged_evidence": "## Tagged evidence\n- USD00050014 Rev D Cybersecurity Architecture \u2014 sections on Encryption of Data at Rest (DAR) and Encrypted Data Storage Service.\n- NAS encryption verification \u2014 on-prem storage encryption status using FIPS-certified cryptographic modules.\n- Cloud storage configuration \u2014 S3 bucket encryption settings and SIEM archive retention policy.\n",
+  "llm_stub_proposals": [
+    {
+      "status": "Compliant",
+      "narrative": "On-prem:\nExamined USD00050014 Rev D \"Encryption of Data at Rest (DAR)\" / \"Encrypted Data Storage Service\"; confirmed via the NAS encryption configuration that on-premise NAS encrypts stored data using FIPS-certified cryptographic modules.\n\nCloud (AWS GovCloud):\nExamined USD00050014 Rev D \"Encryption of Data at Rest (DAR)\" / \"Encrypted Data Storage Service\"; confirmed via cloud storage bucket settings that buckets are used for data-at-rest with encryption enabled. SIEM archives older than 120 days are also stored in encrypted cloud storage.",
+      "confidence": 0.92
+    }
+  ],
+  "expected": {
+    "status": "Compliant",
+    "source_in": [
+      "llm",
+      "llm_after_retry"
+    ],
+    "needs_review": false,
+    "narrative_contains_regex": "USD\\d{8}"
+  }
+}
