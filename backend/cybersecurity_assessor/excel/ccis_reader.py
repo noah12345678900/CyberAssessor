@@ -716,14 +716,33 @@ def read_assignment_values(
 
 
 def _ccis_to_oscal_control_id(ccis_id: str) -> str:
-    """'AC-2(1)' -> 'ac-2.1' (matches OSCAL canonical form).
+    """'AC-2(1)' -> 'ac-2.1', 'AC-7 a' -> 'ac-7.a', 'IA-5 (1) (a)' -> 'ia-5.1.a'.
 
-    Translation is deterministic so storing one canonical form in the
-    Control row is enough — workbook reads translate on lookup.
+    OSCAL canonical form joins the base control, enhancement numbers, and
+    part letters with dots. CCIS workbooks delimit these inconsistently
+    (parens, spaces, dots, or a mix), so we split off the ``family-number``
+    head and tokenize whatever trails it rather than patching one delimiter
+    at a time. A space-delimited enhancement like ``AC-2 (1)`` or a bare
+    part letter like ``AC-7 a`` used to fall through the old paren-only
+    substitution and produce malformed ids (``ac-2 .1``) that never matched
+    the catalog — silently dropping the control from scope.
+
+    Deterministic and idempotent: re-running on an already-canonical id
+    (``ac-2.1``) is a no-op.
     """
     s = ccis_id.strip().lower()
-    s = re.sub(r"\((\d+)\)", r".\1", s)
-    return s
+    m = re.match(r"([a-z]{2}-\d+)(.*)$", s)
+    if not m:
+        # Unexpected shape — preserve the legacy paren->dot behavior.
+        return re.sub(r"\((\d+)\)", r".\1", s)
+    head, tail = m.group(1), m.group(2)
+    # Keep only the numeric enhancement tokens. Trailing statement-part
+    # letters (the 'a' in 'AC-7 a' / 'IA-5 (1) (a)') are NOT part of the
+    # OSCAL control id — the catalog stores 'ac-7' and 'ia-5.1', and the
+    # part-level detail is carried separately by the CCI. Including the
+    # letter produced ids like 'ac-7.a' that match no control row.
+    nums = re.findall(r"\d+", tail)
+    return head + ("." + ".".join(nums) if nums else "")
 
 
 def read_workbook_summary(workbook_path: str | Path) -> dict[str, Any]:
