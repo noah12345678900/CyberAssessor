@@ -117,8 +117,11 @@ def _write_evidence_tree(root):
     """Lay down: a text file with a doc number, a CKL, and one piece of
     noise (an unsupported .zip) so we can assert _iter_files filters it."""
     root.mkdir(parents=True, exist_ok=True)
+    # Declare the doc number on a labeled line so it's adopted as the file's
+    # own identity (a bare prose mention would be treated as a citation).
     (root / "policy.txt").write_text(
-        "Account management policy per USD00050010.\n", encoding="utf-8"
+        "Document Number: USD00050010\nAccount management policy.\n",
+        encoding="utf-8",
     )
     (root / "win11.ckl").write_text(_CKL_FIXTURE, encoding="utf-8")
     (root / "archive.zip").write_bytes(b"PK\x03\x04not-really-a-zip")

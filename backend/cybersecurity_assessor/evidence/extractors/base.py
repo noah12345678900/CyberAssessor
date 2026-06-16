@@ -153,6 +153,47 @@ def extract(stream: BinaryIO, name: str) -> ExtractedDoc:
 # non-digit lookahead (so a trailing ``_`` or ``.`` doesn't break the match).
 _USD_RE = re.compile(r"(?<![A-Za-z])USD[\s\-_]?0*(\d{5,})(?!\d)", re.IGNORECASE)
 
+# A document's OWN identity, when it appears in the body, is declared on a
+# *labeled* line — "Document Number: USD########", "Doc No USD-…", a CDRL /
+# Control / Reference number field, etc. A USD number in running prose ("per
+# USD00050010", "supersedes USD00050010") is a CITATION of another document,
+# not this file's identity. Adopting a cited number as identity collided two
+# real manuals with a README that merely mentioned their number, and the
+# same-doc_number supersession policy then chained all three together.
+#
+# So the body fallback in resolve_doc_number only accepts a USD number that
+# sits on a label line matching this pattern. The label family is permissive
+# (Document/Doc/CDRL/Control/Reference/Record + Number/No/No./#/ID/Identifier)
+# and the separator allows ":"/"#"/"-"/"–" OR whitespace-only (table cells
+# often render "Document Number    USD…" with no punctuation). The number must
+# follow the label on the SAME line, so a sentence that happens to contain the
+# word "number" elsewhere can't trip it.
+_DOC_NUMBER_LABEL_RE = re.compile(
+    r"^[ \t]*"
+    r"(?:document|doc(?:ument)?|cdrl|control|reference|ref|record)\s*"
+    r"(?:number|no\.?|#|id(?:entifier)?)"
+    r"\s*(?:[:#\-–]|\s)\s*"
+    r"(?:USD[\s\-_]?0*\d{5,})",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _doc_number_from_labeled_line(text: str) -> Optional[str]:
+    """Return the canonical USD number declared on a labeled line, if any.
+
+    Scans for a ``Document Number: USD…`` style declaration (see
+    :data:`_DOC_NUMBER_LABEL_RE`) and canonicalizes the USD token on that
+    line. Returns ``None`` when no labeled declaration is present — a bare
+    prose mention is deliberately NOT enough to claim identity.
+    """
+    if not text:
+        return None
+    for m in _DOC_NUMBER_LABEL_RE.finditer(text):
+        hit = find_doc_number(m.group(0))
+        if hit:
+            return hit
+    return None
+
 
 def find_doc_number(*hay: str) -> Optional[str]:
     """Return the first canonical USD doc number found in any haystack.
@@ -216,9 +257,12 @@ def resolve_doc_number(
 
     1. ``name`` (filename) — names the document itself; authoritative.
     2. ``title`` (metadata title) — also names the document itself.
-    3. ``body`` — last resort only, and truncated at the first References /
-       Applicable-Documents heading so a doc that merely *cites* another
-       USD-numbered doc does not adopt that number as its own identity.
+    3. ``body`` — last resort only. The body is truncated at the first
+       References / Applicable-Documents heading, AND the number must appear
+       on a *labeled declaration line* ("Document Number: USD…", a CDRL /
+       Control / Reference number field, etc.). A USD number in loose prose
+       is a citation of another document, not this file's own identity, so it
+       is NOT adopted. See :data:`_DOC_NUMBER_LABEL_RE`.
 
     This replaces the old ``find_doc_number(text, name)`` call pattern that
     scanned the body first and returned the first USD token anywhere — which
@@ -230,7 +274,7 @@ def resolve_doc_number(
             hit = find_doc_number(src)
             if hit:
                 return hit
-    return find_doc_number(_body_before_references(body or ""))
+    return _doc_number_from_labeled_line(_body_before_references(body or ""))
 
 
 def collect_doc_numbers(text: str) -> List[str]:

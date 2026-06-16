@@ -4,7 +4,14 @@ This pair of files exercises the **evidence-chain** path of the
 deterministic stale-citation rewriter shipped in the
 "patent-aligned stale-citation warnings" slice.
 
+> This doc lives at `demo/` root (NOT under `demo/policies/`) on purpose:
+> it cites the document number `USD20260601` in prose, and if it were
+> ingested as evidence the extractor would mis-attribute that cited number
+> as the README's own doc_number, colliding with the two real manuals.
+
 ## Files
+
+Both live under `demo/policies/`:
 
 - `Example System Demo Account Mgmt Procedure Manual Rev A.txt`
 - `Example System Demo Account Mgmt Procedure Manual Rev B.txt`
