@@ -118,7 +118,9 @@ def test_infer_kind_by_extension():
 
 def test_text_extractor_reads_utf8_and_detects_doc_number(tmp_path):
     p = tmp_path / "note.txt"
-    p.write_text("Account mgmt baseline per USD00050010.", encoding="utf-8")
+    # Identity comes from a LABELED declaration line, not loose prose — a bare
+    # "per USD00050010" mention is a citation, not the doc's own number.
+    p.write_text("Document Number: USD00050010\nAccount mgmt baseline.", encoding="utf-8")
     doc = extract_path(p)
     assert doc.kind == EvidenceKind.TEXT
     assert "USD00050010" in doc.text
@@ -128,10 +130,30 @@ def test_text_extractor_reads_utf8_and_detects_doc_number(tmp_path):
 def test_text_extractor_falls_back_to_cp1252(tmp_path):
     p = tmp_path / "note.txt"
     # 0x92 is a Windows-1252 curly apostrophe that's invalid as UTF-8.
-    p.write_bytes(b"Org\x92s policy doc USD22222.")
+    p.write_bytes(b"Org\x92s policy.\nDoc No: USD22222.")
     doc = extract_path(p)
     assert "Org" in doc.text
     assert doc.doc_number == "USD00022222"
+
+
+def test_text_extractor_does_not_adopt_cited_doc_number_from_prose(tmp_path):
+    """A USD number mentioned only in prose is a citation, not identity.
+
+    Regression for the supersession-chain bug: a README that merely cited
+    a manual's doc number adopted it as its own, colliding with the real
+    manuals and chaining all three together. Identity now requires a
+    labeled declaration line, so a bare prose mention yields no doc_number.
+    """
+    p = tmp_path / "readme.md"
+    p.write_text(
+        "These manuals share Document Number USD00050010; see the Rev B copy.",
+        encoding="utf-8",
+    )
+    doc = extract_path(p)
+    # The number is present in the text (still taggable via collect_doc_numbers)
+    # but is NOT adopted as this file's own identity.
+    assert "USD00050010" in doc.text
+    assert doc.doc_number is None
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +193,9 @@ _MINIMAL_CKL = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def test_ckl_extractor_parses_status_severity_cci(tmp_path):
-    p = tmp_path / "win11.ckl"
+    # Identity rides on the filename (authoritative). The USD in the fixture's
+    # FINDING_DETAILS prose is a citation and must NOT be adopted as identity.
+    p = tmp_path / "USD00050010 win11.ckl"
     p.write_text(_MINIMAL_CKL, encoding="utf-8")
     doc = extract_path(p)
     assert doc.kind == EvidenceKind.STIG_CKL
@@ -227,7 +251,9 @@ def test_cklb_extractor_parses_json(tmp_path):
             }
         ],
     }
-    p = tmp_path / "rhel.cklb"
+    # Identity rides on the filename (authoritative). The USD in the payload's
+    # finding_details prose is a citation and must NOT be adopted as identity.
+    p = tmp_path / "USD-22222 rhel.cklb"
     p.write_text(json.dumps(payload), encoding="utf-8")
     doc = extract_path(p)
     assert doc.kind == EvidenceKind.STIG_CKLB
