@@ -122,13 +122,11 @@ def open_workbook(body: WorkbookCreate, s: Session = Depends(get_session)) -> di
     if existing:
         existing.last_opened = datetime.now(timezone.utc)
         wb = existing
-        is_fresh_workbook = False
     else:
         wb = Workbook(path=str(p), filename=p.name)
         s.add(wb)
         s.commit()
         s.refresh(wb)
-        is_fresh_workbook = True
 
     # Resolve framework: explicit body param wins, then the workbook's
     # last-bound framework. If neither is set we skip baseline-apply
@@ -162,41 +160,14 @@ def open_workbook(body: WorkbookCreate, s: Session = Depends(get_session)) -> di
     s.add(wb)
     s.commit()
 
-    # Fresh-workbook auto-attach for program overlays. The
-    # program_controls_loader auto-attaches its synthetic Baseline to
-    # workbooks that already exist when an overlay loads. The mirror case:
-    # a workbook opened *after* the overlay was loaded would otherwise
-    # never pick up the chip. Re-opens skip this so user "Detach overlay"
-    # choices stick.
-    if is_fresh_workbook and wb.framework_id is not None and wb.id is not None:
-        program_baselines = s.exec(
-            select(Baseline).where(
-                Baseline.framework_id == wb.framework_id,
-                Baseline.source_type == BaselineSourceType.PROGRAM_CONTROLS,
-            )
-        ).all()
-        attached_any = False
-        for bl in program_baselines:
-            if bl.id is None or bl.id == wb.baseline_id:
-                continue
-            already = s.exec(
-                select(WorkbookOverlay).where(
-                    WorkbookOverlay.workbook_id == wb.id,
-                    WorkbookOverlay.baseline_id == bl.id,
-                )
-            ).first()
-            if already:
-                continue
-            s.add(
-                WorkbookOverlay(
-                    workbook_id=wb.id,
-                    baseline_id=bl.id,
-                    note=f"Auto-attached on workbook open ({bl.name})",
-                )
-            )
-            attached_any = True
-        if attached_any:
-            s.commit()
+    # No overlay auto-attach. Opening a workbook is side-effect-free at the
+    # overlay layer: program-controls overlays attach ONLY when the user
+    # explicitly attaches them via the Manage Overlays dialog. The previous
+    # first-open auto-attach pulled in EVERY PROGRAM_CONTROLS baseline that
+    # merely shared the framework (including unrelated demo overlays like
+    # "Example Program …"), which surprised users and over-applied program
+    # scope. This now mirrors program_controls_loader, which also no longer
+    # auto-attaches on load.
 
     # Auto-promote pending pre-workbook SystemContext + boundary docs.
     # The assessor may have dropped SSP/diagram/ATO PDFs on the Sweep

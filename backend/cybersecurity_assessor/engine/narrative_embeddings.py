@@ -333,7 +333,16 @@ def _cosine(a: list[float], b: list[float]) -> float:
     b_norm = sum(y * y for y in b) ** 0.5
     if a_norm == 0.0 or b_norm == 0.0:
         return 0.0
-    return num / (a_norm * b_norm)
+    # Cosine is mathematically bounded to [-1, 1], but floating-point rounding
+    # on denormal magnitudes (e.g. a component ~1e-162) can let the division
+    # overshoot to ~1.04. Clamp so downstream score normalization never sees
+    # an out-of-range value.
+    result = num / (a_norm * b_norm)
+    if result > 1.0:
+        return 1.0
+    if result < -1.0:
+        return -1.0
+    return result
 
 
 def _centroid(vectors: list[list[float]]) -> list[float]:

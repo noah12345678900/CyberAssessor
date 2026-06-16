@@ -278,6 +278,51 @@ def test_col_l_with_csp_hint_does_not_fire_8a(csp_hint: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Col L as a yes/no FLAG (eMASS "Inherited?" convention) — must NOT be read
+# as a source name. Regression for the bug where col L = "No" (control needs
+# testing) silently fired structural 8a → Compliant.
+# ---------------------------------------------------------------------------
+
+
+@given(
+    not_inherited=st.sampled_from(
+        ["No", "no", "NO", " No ", "N", "False", "Not Inherited", "None", "N/A", "NA"]
+    ),
+)
+def test_col_l_no_flag_does_not_fire_8a(not_inherited: str) -> None:
+    """Col L = "No" (and not-inherited synonyms) means the control is NOT
+    inherited and needs a normal assessment — it must never be treated as an
+    inheritance source named "No" and auto-Compliant'd.
+    """
+    row = _row(
+        guidance=_NEUTRAL_GUIDANCE,
+        procedures=_NEUTRAL_PROCEDURES,
+        inherited=not_inherited,
+    )
+    result = classify_row(row)
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
+
+
+@given(
+    yes_flag=st.sampled_from(["Yes", "yes", "YES", " Yes ", "Y", "True", "Inherited"]),
+)
+def test_col_l_yes_flag_without_source_is_unclear_8c(yes_flag: str) -> None:
+    """Col L = "Yes" says the control IS inherited but names no source, so we
+    can't tell internal (8a→Compliant) from external CSP (8b→NA). It must
+    escalate (UNCLEAR_8C), never auto-Compliant on a bare "Yes".
+    """
+    row = _row(
+        guidance=_NEUTRAL_GUIDANCE,
+        procedures=_NEUTRAL_PROCEDURES,
+        inherited=yes_flag,
+    )
+    result = classify_row(row)
+    assert result.verdict is AutoStatusVerdict.UNCLEAR_8C
+    assert result.status is None
+
+
+# ---------------------------------------------------------------------------
 # 8b in col Q/U beats structural 8a in L
 # ---------------------------------------------------------------------------
 

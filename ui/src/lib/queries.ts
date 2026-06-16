@@ -1751,7 +1751,10 @@ export const useClearEvidence = (
       //   poams — POAM cards show evidence_count joined off EvidenceTag;
       //              that number must drop to 0 on clear
       qc.invalidateQueries({ queryKey: ["evidence"] });
-      qc.invalidateQueries({ queryKey: ["evidence-for-objective"] });
+      // EVICT inactive per-objective caches (see useDeleteEvidence) so a wiped
+      // artifact can't linger on a Control detail opened within the staleTime
+      // window. invalidate alone doesn't refetch an unmounted query.
+      qc.removeQueries({ queryKey: ["evidence-for-objective"] });
       qc.invalidateQueries({ queryKey: ["workbook"] });
       qc.invalidateQueries({ queryKey: ["assessments"] });
       qc.invalidateQueries({ queryKey: ["poams"] });
@@ -1783,7 +1786,15 @@ export const useDeleteEvidence = (
     ...restOpts,
     onSuccess: (...args) => {
       qc.invalidateQueries({ queryKey: ["evidence"] });
-      qc.invalidateQueries({ queryKey: ["evidence-for-objective"] });
+      // EVICT (not just invalidate) the per-objective evidence caches. The
+      // delete usually happens on the Evidence page while the Control detail's
+      // useEvidenceForObjective query is INACTIVE (unmounted). React Query
+      // marks inactive queries stale but does not refetch them, and with the
+      // global staleTime=30s a remount within the window can render the cached
+      // pre-delete rows — so the deleted artifact "stays" on the control.
+      // removeQueries drops the cached data outright, forcing a fresh fetch
+      // the next time the control is opened.
+      qc.removeQueries({ queryKey: ["evidence-for-objective"] });
       qc.invalidateQueries({ queryKey: ["workbook"] });
       qc.invalidateQueries({ queryKey: ["assessments"] });
       qc.invalidateQueries({ queryKey: ["poams"] });
