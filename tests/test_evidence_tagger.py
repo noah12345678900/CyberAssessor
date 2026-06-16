@@ -61,7 +61,8 @@ def session() -> Session:
     ac2 = Control(framework_id=fw.id, control_id="ac-2", title="Account Management", family="AC")
     au2 = Control(framework_id=fw.id, control_id="au-2", title="Audit Events", family="AU")
     cm6 = Control(framework_id=fw.id, control_id="cm-6", title="Configuration Settings", family="CM")
-    s.add_all([ac2, au2, cm6])
+    ra5 = Control(framework_id=fw.id, control_id="ra-5", title="Vulnerability Monitoring and Scanning", family="RA")
+    s.add_all([ac2, au2, cm6, ra5])
     s.flush()
 
     s.add_all(
@@ -88,6 +89,11 @@ def session() -> Session:
                 control_id_fk=cm6.id,
                 objective_id="CCI-000366",
                 text="Implement configuration settings.",
+            ),
+            Objective(
+                control_id_fk=ra5.id,
+                objective_id="CCI-001054",
+                text="Scan for vulnerabilities in the information system.",
             ),
         ]
     )
@@ -182,6 +188,40 @@ def test_tagger_links_cci_scraped_from_body(session):
     cci366 = session.exec(select(Objective).where(Objective.objective_id == "CCI-000366")).one()
     tags = session.exec(select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)).all()
     assert cci366.id in {t.objective_id for t in tags}
+
+
+# ---------------------------------------------------------------------------
+# Kind-implies-objective: a Nessus/ACAS scan anchors to RA-5 (CCI-001054)
+# ---------------------------------------------------------------------------
+
+
+def test_nessus_scan_tags_ra5_by_kind(session):
+    """A NESSUS scan with NO inline CCIs still tags RA-5 (CCI-001054).
+
+    .nessus files carry plugin IDs + host data, not CCI_REF tokens, so they
+    used to produce zero deterministic tags and never appeared on the RA-5
+    control page. The kind-implies-objective rule anchors any vulnerability
+    scan to RA-5 by KIND, mirroring how STIG findings tag via CCI_REF.
+    """
+    e = _make_evidence(session, kind=EvidenceKind.NESSUS)
+    # Body has host/plugin prose but NO CCI tokens — the realistic .nessus case.
+    tag_evidence(session, e, text="Credentialed scan of host ws01; 14 plugins reported.")
+    ra5 = session.exec(select(Objective).where(Objective.objective_id == "CCI-001054")).one()
+    tags = session.exec(select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)).all()
+    assert ra5.id in {t.objective_id for t in tags}
+
+
+def test_non_scan_kind_does_not_tag_ra5(session):
+    """The RA-5 kind-rule is scoped to NESSUS — a plain PDF must NOT tag RA-5.
+
+    Guards against the rule over-firing: only a vulnerability scan anchors to
+    RA-5 by kind; a policy PDF mentioning scanning in prose does not.
+    """
+    e = _make_evidence(session, kind=EvidenceKind.PDF)
+    tag_evidence(session, e, text="Our policy requires vulnerability scanning quarterly.")
+    ra5 = session.exec(select(Objective).where(Objective.objective_id == "CCI-001054")).one()
+    tags = session.exec(select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)).all()
+    assert ra5.id not in {t.objective_id for t in tags}
 
 
 # ---------------------------------------------------------------------------

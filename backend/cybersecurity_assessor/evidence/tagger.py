@@ -340,6 +340,20 @@ _STRUCTURED_FINDING_KINDS = frozenset({
     EvidenceKind.NESSUS,
 })
 
+# Kind-implies-objective rule for vulnerability scans. STIG checklists tag to
+# their controls "for free" because their findings carry CCI_REF tokens; a
+# Nessus/ACAS ``.nessus`` almost never carries inline CCIs (it has plugin IDs
+# + host data), so it otherwise produces ZERO deterministic tags and the
+# control's evidence list comes up empty. But the existence of a credentialed
+# vulnerability scan IS, by definition, the evidence RA-5 a asks for ("the
+# organization scans for vulnerabilities in the information system"). So we
+# deterministically anchor every NESSUS scan to RA-5's CCI-001054. This is the
+# scan analogue of a STIG's CCI_REF: kind alone establishes the mapping, no
+# text scrape required. The scan's host data still flows to the coverage
+# cross-check separately; this rule is what makes the artifact appear on the
+# RA-5 control page and reach the LLM/kernel as real per-objective evidence.
+_NESSUS_RA5_CCI = "CCI-001054"
+
 
 @dataclass
 class TaggingResult:
@@ -1118,6 +1132,33 @@ def tag_evidence(
                 relevance=1.0,
                 confidence=0.95,
                 rationale=f"Direct CCI reference ({obj.objective_id}) found in evidence.",
+            )
+            cci_hits += 1
+
+    # 2b. Kind-implies-objective for vulnerability scans. A NESSUS/ACAS scan
+    #     anchors to RA-5 (CCI-001054) by KIND — the scan's existence is the
+    #     evidence RA-5 a requires, and .nessus files don't carry inline CCIs
+    #     to ride the Tier-2 scrape above. Resolved + emitted through the same
+    #     helpers as Tier 2 so framework stamping, de-dup, and assessment
+    #     invalidation are identical. _add de-dups, so if the scan already
+    #     tagged CCI-001054 above (rare inline CCI), this is a no-op. Runs
+    #     before the Tier-5 low-tag gate so the scan counts as a deterministic
+    #     anchor and doesn't needlessly invoke the LLM backstop.
+    if evidence.kind == EvidenceKind.NESSUS:
+        for obj in _objectives_by_cci(
+            session, {_NESSUS_RA5_CCI}, framework_id=framework_id
+        ):
+            if obj.id is None:
+                continue
+            _add(
+                obj.id,
+                relevance=1.0,
+                confidence=0.9,
+                rationale=(
+                    "Nessus/ACAS vulnerability scan present — satisfies RA-5 "
+                    f"({obj.objective_id}), the organization scans for "
+                    "vulnerabilities."
+                ),
             )
             cci_hits += 1
 

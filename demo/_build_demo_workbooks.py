@@ -155,16 +155,17 @@ NIST_800_53 = FrameworkDemo(
         ),
         Req(
             "CM-6 a", "Configuration Settings",
-            "CM", "The Example System Demo workstation is hardened to the Windows Server "
-            "2022 STIG; most recent checklist dated 2026-05-18.",
-            "The organization establishes and documents configuration settings "
-            "using organization-defined security configuration checklists.",
+            "CM", "The Example System Demo hosts are hardened to their DISA STIGs; "
+            "the RHEL 9 and Windows Server 2022 checklists are the most recent "
+            "configuration baselines on record.",
+            "The organization implements the security configuration settings.",
             "Provide a STIG checklist for each major OS/application in scope.",
             "Examine the checklist. Verify open findings are tracked in the POA&M.",
             status="Compliant",
-            results="Examined Windows_Server_2022_STIG_Sample.ckl dated "
-            "2026-05-18. Open findings are tracked in the POA&M.",
-            cci="CCI-000363",
+            results="Examined RHEL_9_STIG_Sample.cklb and "
+            "Windows_Server_2022_STIG_Sample.ckl. Open findings are tracked in "
+            "the POA&M.",
+            cci="CCI-000366",
         ),
         Req(
             "RA-5 a", "Vulnerability Monitoring and Scanning",
@@ -177,7 +178,7 @@ NIST_800_53 = FrameworkDemo(
             status="Compliant",
             results="Examined acas_nessus_subnet_10_10_5_0.nessus dated "
             "2026-05-20; credentialed scan confirmed; host example-system-demo-ws01 in scope.",
-            cci="CCI-001067",
+            cci="CCI-001054",
         ),
         Req(
             "SC-7", "Boundary Protection",
