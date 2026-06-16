@@ -39,6 +39,7 @@ import {
   type CrossCheckResult,
   type MarkSuspicionFalsePositiveBody,
   type MetricsPayload,
+  type SupersessionChain,
   type DisaCciLoadResult,
   type OverlayImportResult,
   type OverlayKind,
@@ -135,6 +136,8 @@ export const qk = {
    * naturally — no manual invalidation needed.
    */
   overlaySheets: (path: string) => ["catalog", "overlay-sheets", path] as const,
+  supersessionChains: (workbookId: number) =>
+    ["supersession", "chains", workbookId] as const,
   controls: (frameworkId: number) => ["controls", frameworkId] as const,
   control: (controlId: number) => ["control", controlId] as const,
   objectives: (controlId: number) => ["control", controlId, "objectives"] as const,
@@ -1257,6 +1260,17 @@ export const useRun = (id: number | undefined) =>
 
 export const useMetrics = () =>
   useQuery<MetricsPayload>({ queryKey: qk.metrics, queryFn: () => api.getMetrics() });
+
+/**
+ * Auto-detected document supersession chains for one workbook. Enabled only
+ * when a workbook is selected (workbookId > 0).
+ */
+export const useSupersessionChains = (workbookId: number | null) =>
+  useQuery<SupersessionChain[]>({
+    queryKey: qk.supersessionChains(workbookId ?? 0),
+    queryFn: () => api.listSupersessionChains(workbookId as number),
+    enabled: workbookId != null && workbookId > 0,
+  });
 
 // ---------------------------------------------------------------------------
 // Mutations

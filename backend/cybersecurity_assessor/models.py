@@ -1462,21 +1462,18 @@ class Assessment(SQLModel, table=True):
     # 1.0. Uncalibrated in v0.2; calibration pass deferred to v0.3 once
     # there's a labeled reviewer-corrected corpus to fit on.
     confidence: float | None = None
-    # v0.2 — citation-hygiene flag, NOT an abstain. Set when the narrative
-    # references a doc the supersession registry has marked as renamed/retired
-    # (find_stale_references safety-net) or when an NA verdict cites a retired
-    # doc (na_reconsideration_warning). The verdict is still trusted — NA is
-    # determined by CRM + workbook scope, not by what doc the prior assessor
-    # cited — but exporters surface a "Cite refresh requested: '{legacy}' →
-    # '{current}'" note in POAM milestones / CCIS column Q so the reviewer
-    # updates the citation as part of the next narrative pass. needs_review
-    # stays False; the row flows into POAM/SAR/Bundle normally.
+    # v0.2 — citation-hygiene flag, NOT an abstain. Retained as a column for
+    # downstream POAM/SAR/CCIS exporters. The manual stale-reference and
+    # NA-reconsideration signals that used to set it were removed with the
+    # manual supersession registry, so it now stays False (evidence-chain
+    # rewrites correct narratives in place during assessment instead). The
+    # verdict is always trusted — NA is determined by CRM + workbook scope.
     rewrite_requested: bool = Field(default=False, index=True)
-    # JSON-encoded list of [legacy, current] pairs from SupersessionEntry.
-    # Format: '[["SDA T1 O&I Account Management User Guide", "USD00050010 Example System
-    # Account Management Plan Rev -"], ...]'. Null when rewrite_requested
-    # is False. JSON-as-string mirrors the rejection_log serialization in
-    # AssessmentRun.notes — keeps SQLite schema flat.
+    # JSON-encoded list of [legacy, current] pairs. Format:
+    # '[["Legacy Doc Title", "USD00012345 Current Doc Rev -"], ...]'. Null
+    # when rewrite_requested is False (the steady state now). JSON-as-string
+    # mirrors the rejection_log serialization in AssessmentRun.notes — keeps
+    # the SQLite schema flat.
     rewrite_requested_refs: str | None = None
     # v0.2 patent-supporting provenance tag. Single indexed enum column
     # that collapses ``Decision.source`` + ``cache_source`` + ``needs_review``

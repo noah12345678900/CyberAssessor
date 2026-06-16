@@ -50,13 +50,21 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type {
   MetricsMechanisms,
   MetricsPayload,
   MetricsReferenceEntry,
   MetricsSavings,
 } from "@/lib/api";
-import { useMetrics } from "@/lib/queries";
+import { useMetrics, useSupersessionChains, useWorkbooks } from "@/lib/queries";
+import { useEffect, useState } from "react";
 
 export function Metrics() {
   const metrics = useMetrics();
@@ -287,6 +295,20 @@ function AccuracySection({
 
 function MechanismsSubsection({ data }: { data: MetricsPayload }) {
   const m = data.mechanisms;
+
+  // Per-workbook supersession view. The chains are auto-detected at ingest
+  // (Rev A superseded by Rev B), so they differ per workbook — pick one.
+  const workbooks = useWorkbooks();
+  const [workbookId, setWorkbookId] = useState<number | undefined>();
+  useEffect(() => {
+    if (workbookId === undefined && workbooks.data && workbooks.data.length > 0) {
+      setWorkbookId(workbooks.data[0].id);
+    }
+  }, [workbookId, workbooks.data]);
+  const selectedWorkbook = workbooks.data?.find((w) => w.id === workbookId);
+  const chains = useSupersessionChains(workbookId ?? null);
+  const chainRows = chains.data ?? [];
+
   return (
     <Card>
       <CardHeader>
@@ -302,8 +324,10 @@ function MechanismsSubsection({ data }: { data: MetricsPayload }) {
       <CardContent className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <StatCard
-            label="Supersession registry"
-            value={m.supersession.registry_size.toLocaleString()}
+            label="Supersession rewrites"
+            value={
+              selectedWorkbook ? chainRows.length.toLocaleString() : "—"
+            }
             icon={Repeat}
             sublabel={`${m.supersession.total_hits.toLocaleString()} hits across all runs`}
           />
@@ -325,38 +349,66 @@ function MechanismsSubsection({ data }: { data: MetricsPayload }) {
 
         <div>
           <div className="text-sm font-medium mb-2 flex items-center gap-2">
-            Supersession registry
+            Document supersessions
             <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
               Deterministic · no LLM
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
-            Regex rewrites for stale citation strings the LLM has no way to know
-            are obsolete (renamed standards, withdrawn revisions). Edited only
-            in code — read-only here.
+            Auto-detected for this workbook: when a newer artifact (e.g. Rev B)
+            is ingested over an older one (Rev A), narratives that cite the old
+            document are rewritten to the current one. Derived from the evidence
+            chain, not hand-edited.
           </p>
+          <div className="mb-3">
+            <Select
+              value={workbookId !== undefined ? String(workbookId) : "__none__"}
+              onValueChange={(v) =>
+                setWorkbookId(v === "__none__" ? undefined : Number(v))
+              }
+            >
+              <SelectTrigger className="w-[320px]">
+                <SelectValue placeholder="Pick a workbook" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">None</SelectItem>
+                {(workbooks.data ?? []).map((w) => (
+                  <SelectItem key={w.id} value={String(w.id)}>
+                    {w.filename}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Legacy phrase</TableHead>
-                <TableHead>Current</TableHead>
-                <TableHead>Notes</TableHead>
+                <TableHead>Legacy document</TableHead>
+                <TableHead>Current document</TableHead>
+                <TableHead>Matched on</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {m.supersession.entries.length === 0 && (
+              {!selectedWorkbook && (
                 <TableRow>
                   <TableCell colSpan={3} className="text-center text-sm text-muted-foreground py-6">
-                    Registry is empty.
+                    Select a workbook to view its detected supersessions.
                   </TableCell>
                 </TableRow>
               )}
-              {m.supersession.entries.map((e, i) => (
-                <TableRow key={`${e.legacy}-${i}`}>
-                  <TableCell className="font-mono text-xs">{e.legacy}</TableCell>
-                  <TableCell className="font-mono text-xs">{e.current}</TableCell>
+              {selectedWorkbook && chainRows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-sm text-muted-foreground py-6">
+                    No superseded evidence detected for this workbook yet.
+                  </TableCell>
+                </TableRow>
+              )}
+              {chainRows.map((c, i) => (
+                <TableRow key={`${c.stale_evidence_id}-${c.current_evidence_id}-${i}`}>
+                  <TableCell className="font-mono text-xs">{c.legacy}</TableCell>
+                  <TableCell className="font-mono text-xs">{c.current}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {e.notes ?? "—"}
+                    {c.kind === "doc_number" ? "Doc number" : "Title"}
                   </TableCell>
                 </TableRow>
               ))}

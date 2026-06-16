@@ -56,6 +56,7 @@ from .routes import (  # noqa: E402
     sharepoint,
     splunk,
     stig,
+    supersession,
     system_context,
     tenable,
     workbooks,
@@ -202,6 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(jira.router)
     app.include_router(system_context.router)
     app.include_router(metrics.router)
+    app.include_router(supersession.router)
     app.include_router(calibration.router)
 
     return app

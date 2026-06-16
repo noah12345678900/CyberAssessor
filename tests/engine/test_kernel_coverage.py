@@ -21,11 +21,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from cybersecurity_assessor.engine import supersession, validator
 from cybersecurity_assessor.engine.supersession import (
-    SupersessionResult,
-    find_stale_references,
-    na_reconsideration_warning,
     resolve_current_evidence_id,
-    _normalize_cci_id,
 )
 from cybersecurity_assessor.engine.validator import (
     _is_requirement_restatement,
@@ -75,36 +71,6 @@ def _row(**overrides) -> CcisRow:
 # ===========================================================================
 # supersession.py — coverage gaps
 # ===========================================================================
-
-
-# --- _normalize_cci_id (line 327) ------------------------------------------
-
-
-def test_normalize_cci_id_returns_input_when_no_digits() -> None:
-    """``_normalize_cci_id`` falls through to ``return cci`` when the input
-    contains no digits — covers supersession.py:327.
-    """
-    assert _normalize_cci_id("CCI-NONE") == "CCI-NONE"
-    assert _normalize_cci_id("not-a-cci") == "not-a-cci"
-    assert _normalize_cci_id("") == ""
-
-
-def test_normalize_cci_id_pads_short_numeric_inputs() -> None:
-    """Sanity companion: digit-bearing inputs DO hit the normalization
-    branch (the negative-space pair to the no-digits test)."""
-    assert _normalize_cci_id("15") == "CCI-000015"
-    assert _normalize_cci_id("cci 000015") == "CCI-000015"
-    assert _normalize_cci_id("CCI-15") == "CCI-000015"
-
-
-# --- find_stale_references (line 214) --------------------------------------
-
-
-def test_find_stale_references_empty_text_returns_empty_list() -> None:
-    """Empty/None text short-circuits before pattern iteration —
-    covers supersession.py:214."""
-    assert find_stale_references("") == []
-    assert find_stale_references(None) == []  # type: ignore[arg-type]
 
 
 # --- resolve_current_evidence_id (lines 232-245) --------------------------
@@ -209,45 +175,6 @@ def test_resolve_current_evidence_id_respects_max_hops(
     # After 2 hops we'd be at n3; the implementation may return any node
     # past the cap depending on whether it hits the next-id check first.
     assert capped in {n2.id, n3.id}
-
-
-# --- na_reconsideration_warning (line 291) --------------------------------
-
-
-def test_na_reconsideration_warning_returns_none_when_status_not_na() -> None:
-    """Non-NA current status short-circuits to None — covers the first
-    ``return None`` guard at :289."""
-    assert (
-        na_reconsideration_warning("CCI-000015", "Compliant", "SSAA cited")
-        is None
-    )
-    assert na_reconsideration_warning("CCI-000015", None, "SSAA cited") is None
-
-
-def test_na_reconsideration_warning_returns_none_when_no_prior_text() -> None:
-    """Empty / None prior_results_text returns None — covers
-    supersession.py:291."""
-    assert (
-        na_reconsideration_warning("CCI-000015", "Not Applicable", None)
-        is None
-    )
-    assert (
-        na_reconsideration_warning("CCI-000015", "Not Applicable", "")
-        is None
-    )
-
-
-def test_na_reconsideration_warning_returns_none_when_no_ssaa_in_prior() -> None:
-    """Prior text without an SSAA reference returns None (no warning
-    needed). Exercises the ``not any(...)`` short-circuit at :292-293."""
-    assert (
-        na_reconsideration_warning(
-            "CCI-000015",
-            "Not Applicable",
-            "Inherited from DoW Enterprise per prior assessor.",
-        )
-        is None
-    )
 
 
 # ===========================================================================
@@ -662,100 +589,6 @@ def test_verify_cites_continues_past_duplicate_token_to_check_later_tokens() -> 
 # ===========================================================================
 # Supersession kernel — cosmic-ray triage kills
 # ===========================================================================
-#
-# Below are kill-tests targeting survivors that ``cosmic-ray exec
-# cosmic-ray-supersession.toml`` (session-supersession.sqlite) reported
-# against ``engine/supersession.py``. Lines reference the on-disk source
-# at HEAD; cosmic-ray's snapshot rows are offset (~+14) because the
-# session was initialized before a recent refactor — the column numbers
-# are still accurate.
-
-
-# --- L302: ``current_status.strip().lower() != "not applicable"``  -----
-# NotEq → Is and NotEq → Lt both survived the golden + property suite.
-# Both mutants make the early-exit guard misbehave on inputs we never
-# exercised before this kill-test pair.
-def test_na_reconsideration_warning_returns_none_for_non_na_status() -> None:
-    """``na_reconsideration_warning`` must return ``None`` outright when the
-    current status is anything other than "not applicable" — there is
-    nothing to reconsider if the assessor already chose a real verdict.
-
-    The mutants:
-
-      - NotEq → Is: ``status.lower() != "not applicable"`` becomes
-        ``status.lower() is "not applicable"`` which is always False for
-        any string produced by ``.lower()`` (fresh object identity), so
-        the guard never short-circuits. The function proceeds, hits the
-        SSAA-citation check, falls into the lookup branch, and emits a
-        ``ReconsiderationWarning`` for a row that is not even N/A.
-      - NotEq → Lt: lex-compare. For ``status == "compliant"`` both
-        ``!=`` and ``<`` return True (``c < n``), so this input does NOT
-        kill ``Lt``. We need a status that is lex-greater than
-        "not applicable" — see the second kill-test below.
-    """
-    # CCI is a verified mapping so the lookup branch WOULD return a warning
-    # if we ever reached it. Prior results cite the SSAA so the second
-    # guard would also not short-circuit. The ONLY thing keeping the
-    # function quiet is the status-check guard we're targeting.
-    out = na_reconsideration_warning(
-        cci_id="CCI-001485",
-        current_status="compliant",
-        prior_results_text="Prior assessor cited the SSAA as authoritative.",
-    )
-    assert out is None, (
-        "Non-N/A status must short-circuit before any lookup. "
-        "NotEq→Is mutant proceeds and returns a warning."
-    )
-
-
-def test_na_reconsideration_warning_handles_status_lex_greater_than_na() -> None:
-    """Second half of the L302 kill: NotEq → Lt only diverges when the
-    current status is lex-greater than "not applicable". ``"zebra"`` is
-    such an input:
-
-      - Original ``!=``: ``"zebra" != "not applicable"`` → True →
-        function returns None (correctly — "zebra" is not N/A).
-      - Mutant ``<``:    ``"zebra" < "not applicable"``  → False →
-        guard does NOT trip, function proceeds and (because the SSAA is
-        cited + the CCI maps to a verified entry) emits a warning that
-        the assessor never asked for.
-
-    Together with the test above this kills both NotEq→Is and NotEq→Lt
-    on validator-equivalent line ``supersession.py:302``.
-    """
-    out = na_reconsideration_warning(
-        cci_id="CCI-001485",
-        current_status="zebra",  # lex-greater than "not applicable"
-        prior_results_text="Prior assessor cited the SSAA as authoritative.",
-    )
-    assert out is None, (
-        "Status lex-greater than 'not applicable' must still short-circuit. "
-        "NotEq→Lt mutant fails this check."
-    )
-
-
-# --- L334: ``_CCI_NUM_RE = re.compile(r"(\\d{1,7})")``  -----------------
-# NumberReplacer mutated the regex's upper bound ``7``. The mutation that
-# survived is the one that doesn't break the regex's syntactic validity
-# but does silently undercount digits. The fix is to assert a 7-digit
-# CCI round-trips through ``_normalize_cci_id`` unchanged.
-def test_normalize_cci_id_preserves_seven_digit_cci() -> None:
-    """Real CCIs are 6 digits today but the framework reserves a 7-digit
-    namespace — the regex deliberately allows ``{1,7}`` so newer CCIs
-    don't get truncated. NumberReplacer that mutates ``7`` to a smaller
-    value (e.g. ``1``) causes the regex to match only the first digit,
-    and ``_normalize_cci_id("CCI-1234567")`` returns ``"CCI-000001"``
-    instead of ``"CCI-1234567"``.
-
-    This test was added because cosmic-ray's NumberReplacer survivor on
-    ``supersession.py:334`` proved no existing test exercised a
-    >6-digit CCI. The pre-existing golden suite only uses 6-digit IDs.
-    """
-    out = _normalize_cci_id("CCI-1234567")
-    assert out == "CCI-1234567", (
-        f"7-digit CCI must round-trip; got {out!r}. NumberReplacer that "
-        f"shrinks the regex's {{1,7}} upper bound truncates to 1 digit."
-    )
 
 
 # --- L32 / L119: ``@dataclass(frozen=True)`` --  DOCUMENTED EQUIVALENT

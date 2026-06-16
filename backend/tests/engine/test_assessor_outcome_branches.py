@@ -54,7 +54,6 @@ from cybersecurity_assessor.engine.crm_context import (  # noqa: E402
     CrmEntry,
 )
 from cybersecurity_assessor.engine.measurement import RunRecorder  # noqa: E402
-from cybersecurity_assessor.engine.supersession import SupersessionResult  # noqa: E402
 from cybersecurity_assessor.engine.validator import (  # noqa: E402
     NarrativeClass,
     RejectionReason,
@@ -222,59 +221,6 @@ def test_recorder_records_abstain_when_retries_exhausted(session, workbook):
 # ---------------------------------------------------------------------------
 
 
-def test_crm_overlay_narrative_with_legacy_doc_is_superseded(session, workbook):
-    """CRM entry quotes a legacy doc → rewritten before being stored as the narrative.
-
-    Pins assessor.py:521-533. CRM overlays are authored by humans (CRM
-    spreadsheet author) and there's nothing forcing them to use current
-    doc numbers. The orchestrator must run CRM narratives through the
-    supersession map specifically so a stale ref in the overlay can't
-    silently land in col Q. Surfaces via Decision.supersession_log
-    (source="crm_overlay" — distinct from "llm" and "col_u_carryover"
-    so the run record shows where each rewrite originated).
-    """
-    recorder = RunRecorder.start(session, workbook_id=workbook.id)
-    row = _row(control_id="AC-2")
-    crm = CrmContext(
-        by_control={
-            "ac-2": CrmEntry(
-                control_id="ac-2",
-                responsibility="inherited",
-                narrative=(
-                    "Inherited from authorizing system; procedures are documented "
-                    "in the SDA T1 O&I Account Management User Guide §3.2."
-                ),
-                source_baseline_id=1,
-            )
-        }
-    )
-    stub = StubLlmClient([])  # CRM short-circuit; no LLM call
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(row, crm_context=crm, recorder=recorder)
-
-    assert decision.source == "crm_inherited"
-    assert decision.accepted is True
-    # Legacy ref rewritten; current USD doc landed.
-    assert "SDA T1 O&I Account Management User Guide" not in decision.narrative
-    assert "USD00050010" in decision.narrative
-
-    # Supersession log records one rewrite with source="crm_overlay" — distinct
-    # from "llm" (the LLM-path label) so analytics can separate "CRM author
-    # cited stale doc" from "LLM cited stale doc". Different remediation
-    # actions: educate the CRM author vs tune the prompt.
-    assert len(decision.supersession_log) == 1
-    hit = decision.supersession_log[0]
-    assert hit.stale_ref == "SDA T1 O&I Account Management User Guide"
-    assert "USD00050010" in hit.current_ref
-    assert hit.source == "crm_overlay"
-
-    # Persisted on the run row too.
-    run = recorder.finish()
-    persisted = session.exec(select(AssessmentRun).where(AssessmentRun.id == run.id)).one()
-    assert persisted.supersession_hits == 1
-    assert persisted.ccis_accepted == 1
-    assert persisted.retry_count == 0
 
 
 def test_recorder_records_accepted_for_crm_short_circuit(session, workbook):
@@ -438,61 +384,6 @@ def test_unclear_8c_reminder_appended_on_retry():
 # would surface here before silently dropping audit events on real bugs.
 
 
-def test_defensive_guard_logs_supersession_hit_when_rule8_template_unexpectedly_contains_stale_ref(
-    session, workbook, monkeypatch
-):
-    """Inject a stale-ref hit into the rule-#8 supersession step → Decision log + recorder both see it.
-
-    Pins assessor.py:390-399. The rule-#8 path runs the auto-generated
-    narrative through ``supersession.rewrite_narrative`` even though the
-    deterministic templates do not currently cite any legacy doc names.
-    If a future template author accidentally hard-codes a legacy ref (or
-    a new entry in ``_LEGACY_TO_CURRENT`` starts matching common
-    template phrasing), the hit MUST be logged on both the Decision and
-    the recorder so the audit trail surfaces the formatter bug rather
-    than silently rewriting and moving on.
-
-    Inject by monkeypatching ``supersession.rewrite_narrative`` to return
-    a single hit regardless of input — the only deterministic way to
-    reach this branch from a rule-#8 row.
-    """
-    row = _row(procedures="This CCI is automatically compliant; no system-level evidence required.")
-    fake_current = "USD00099999 Fake Replacement Doc Rev -"
-
-    def _fake_rewrite(text: str) -> SupersessionResult:
-        return SupersessionResult(
-            rewritten_text=f"{text} [rewritten]",
-            hits=[("SDA T1 Phantom Doc", fake_current)],
-        )
-
-    monkeypatch.setattr(supersession, "rewrite_narrative", _fake_rewrite)
-
-    recorder = RunRecorder.start(session, workbook_id=workbook.id)
-    stub = StubLlmClient([])  # rule_8a short-circuits — any LLM call would AssertionError
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(row, recorder=recorder)
-
-    assert decision.source == "rule_8a"
-    # The injected hit landed on the Decision log with the "col_u_carryover"
-    # source label (assessor.py:395). Pin the source string verbatim — the
-    # analytics pipeline reads it to attribute rewrites by origin.
-    assert len(decision.supersession_log) == 1
-    hit = decision.supersession_log[0]
-    assert hit.stale_ref == "SDA T1 Phantom Doc"
-    assert hit.current_ref == fake_current
-    assert hit.source == "col_u_carryover"
-    # Rewritten text propagated into the narrative.
-    assert decision.accepted is True
-    assert "[rewritten]" in decision.narrative
-
-    # AND the recorder picked it up — proving the "if outcome is not None"
-    # branch at assessor.py:398-399 fired. This is the load-bearing audit-
-    # log guarantee; without it, formatter bugs would silently rewrite
-    # without surfacing in the run aggregate.
-    run = recorder.finish()
-    persisted = session.exec(select(AssessmentRun).where(AssessmentRun.id == run.id)).one()
-    assert persisted.supersession_hits == 1
 
 
 def test_defensive_guard_logs_validator_rejection_when_rule8_template_unexpectedly_invalid(

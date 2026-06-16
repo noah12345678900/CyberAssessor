@@ -1896,17 +1896,26 @@ export interface MetricsLive {
   time: MetricsTimeLive;
 }
 
-export interface SupersessionRegistryEntry {
+/**
+ * One auto-detected document supersession for a workbook. Derived from the
+ * evidence chain (an older artifact superseded by a newer one at ingest),
+ * NOT a hand-edited registry. Served per-workbook by
+ * `GET /api/supersession/chains`.
+ */
+export interface SupersessionChain {
   legacy: string;
   current: string;
-  notes: string | null;
+  /** "doc_number" | "title" — which field matched. */
+  kind: string;
+  stale_evidence_id: number;
+  current_evidence_id: number;
 }
 
 export interface MetricsMechanisms {
   supersession: {
-    registry_size: number;
+    /** Cumulative rewrite count across all runs (per-workbook entries are
+     *  fetched separately via listSupersessionChains). */
     total_hits: number;
-    entries: SupersessionRegistryEntry[];
   };
   validator: {
     total_rejections: number;
@@ -3534,6 +3543,15 @@ export const api = {
   listOverlaySheets: (path: string) =>
     request<OverlaySheetsResult>(
       `/api/catalog/overlays/sheets?path=${encodeURIComponent(path)}`,
+    ),
+  /**
+   * Auto-detected document supersessions for one workbook — the legacy →
+   * current rewrites the assessor would apply, derived from the evidence
+   * chain (Rev A superseded by Rev B at ingest). Read-only; per workbook.
+   */
+  listSupersessionChains: (workbookId: number) =>
+    request<SupersessionChain[]>(
+      `/api/supersession/chains?workbook_id=${workbookId}`,
     ),
   /**
    * Load a program-specific controls overlay into the global RequirementSource

@@ -48,12 +48,12 @@ stamps the new audit fields:
   (`superseded_at`, `superseded_policy`, `superseded_reason`) are
   populated and visible in any DB-level query.
 
-## Why this isolates the chain rewriter (vs. the doc-phrase rewriter)
+## Where this shows up in the UI
 
-The legacy phrase `Example System Demo Account Mgmt Procedure Manual Rev A` is
-**not** in `engine.supersession._LEGACY_TO_CURRENT` (that table only
-covers historical SDA T1/SSAA phrasings). So the existing
-`rewrite_narrative` doc-phrase pass is a no-op on this column-U text —
-the only hit you'll see is the new `evidence_chain` one. That makes
-the demo a clean unit-of-one for showing the patent-supporting
-evidence-aware path.
+Supersession is fully data-driven off the evidence chain (there is no
+hand-edited phrase registry). After ingesting Rev A + Rev B for a
+workbook, open **Metrics → Accuracy mechanisms → Document supersessions**
+and pick that workbook: the detected chain appears as
+`Example System Demo Account Mgmt Procedure Manual Rev A → USD20260601`,
+matched on **Doc number**. The view is per workbook, so a different
+workbook with no superseded evidence shows the empty state.

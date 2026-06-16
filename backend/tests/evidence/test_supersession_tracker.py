@@ -1,18 +1,19 @@
-"""Supersession-link writer — both policies + integration with ingest.
+"""Supersession-link writer — same-doc_number policy + integration with ingest.
 
 The :data:`Evidence.superseded_by_id` column has been respected by the
 read paths (evidence_bundle, asset_crosscheck) since v0.1, but until
 :mod:`evidence.supersession_tracker` landed nothing wrote it. These
-tests pin both behaviors:
+tests pin the writer:
 
-  * **Policy A** — same ``doc_number``, older rows lose. Covers the
-    common case of uploading a new Rev of a known doc.
-  * **Policy B** — legacy-phrase → current USD doc. Covers the
-    nist-assessor-ported map (``engine.supersession._LEGACY_TO_CURRENT``)
-    used by SDA T1 → T2 migrations.
+  * Same ``doc_number``, older rows lose. Covers the common case of
+    uploading a new Rev of a known doc.
 
 We also cover a couple of "should NOT chain" cases because false
 positives mute real evidence from the LLM bundle.
+
+(A second, manual legacy-phrase policy was removed with the manual
+supersession registry — supersession is now driven entirely off
+``doc_number`` revisions.)
 """
 
 from __future__ import annotations
@@ -30,42 +31,11 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from cybersecurity_assessor import models  # noqa: F401,E402 -- registers tables
-from cybersecurity_assessor.evidence import supersession_tracker  # noqa: E402
 from cybersecurity_assessor.evidence.supersession_tracker import (  # noqa: E402
     apply_supersession_at_ingest,
 )
 from cybersecurity_assessor.models import Evidence, EvidenceKind  # noqa: E402
 from cybersecurity_assessor.models import Workbook as WorkbookModel  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Fictional synthetic registry — NO program data. Policy B reads the module
-# global ``_CURRENT_TO_LEGACIES`` (built at import from the now-empty shipped
-# ``engine.supersession._LEGACY_TO_CURRENT``). The shipped map is therefore
-# ``{}`` and Policy B never fires in production; the ``synthetic_registry``
-# fixture installs a fictional Acme map so the machinery can be exercised
-# without baking program data into the suite. Mirrors the fictional entries
-# used in tests/test_supersession.py.
-# ---------------------------------------------------------------------------
-
-_FAKE_CURRENT = "ACME-DOC-0010 Acme Widget Operations Plan Rev 2"
-_FAKE_LEGACIES = [
-    "Acme Widget Legacy Operations User Guide",
-    "Acme Widget Legacy Operations Plan",
-]
-
-
-@pytest.fixture
-def synthetic_registry(monkeypatch):
-    """Install a fictional legacy→current map so Policy B can be exercised
-    without program data. The shipped ``_CURRENT_TO_LEGACIES`` is empty
-    (registry scrubbed)."""
-    monkeypatch.setattr(
-        supersession_tracker,
-        "_CURRENT_TO_LEGACIES",
-        {_FAKE_CURRENT: list(_FAKE_LEGACIES)},
-    )
-    return supersession_tracker
 
 
 # ---------------------------------------------------------------------------
@@ -366,135 +336,6 @@ def test_same_doc_number_links_when_one_title_generic(session):
     assert older.superseded_by_id == newer.id
 
 
-# ---------------------------------------------------------------------------
-# Policy B — legacy-phrase rewrites
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_title_rewrite_chains_t1_to_t2(session, synthetic_registry):
-    """Uploading the canonical current doc retires its legacy-titled artifacts.
-
-    Exercised against the fictional Acme map installed by
-    ``synthetic_registry`` — the shipped registry is scrubbed empty, so
-    Policy B is otherwise a no-op (see
-    ``test_legacy_title_rewrite_noop_when_registry_empty``).
-    """
-    now = datetime.now(timezone.utc)
-    # Two legacy artifacts under different titles, both registered to the
-    # same current doc in the fictional map.
-    legacy_guide = _add(
-        session,
-        path="file:///sp/legacy_ops_user_guide.pdf",
-        title="Acme Widget Legacy Operations User Guide",
-        doc_number=None,
-        ingested_at=now - timedelta(days=90),
-    )
-    legacy_plan = _add(
-        session,
-        path="file:///sp/legacy_ops_plan.pdf",
-        title="Acme Widget Legacy Operations Plan",
-        doc_number=None,
-        ingested_at=now - timedelta(days=90),
-    )
-    # Newly ingested canonical current doc.
-    current = _add(
-        session,
-        path="file:///sp/acme_doc_0010_ops_plan.pdf",
-        title="ACME-DOC-0010 Acme Widget Operations Plan Rev 2",
-        doc_number="ACME-DOC-0010",
-        ingested_at=now,
-    )
-
-    linked = apply_supersession_at_ingest(session, current)
-
-    # Both legacy rows retired.
-    assert linked == 2
-    session.refresh(legacy_guide)
-    session.refresh(legacy_plan)
-    assert legacy_guide.superseded_by_id == current.id
-    assert legacy_plan.superseded_by_id == current.id
-    # Audit fields populated; reason names the exact legacy phrase that
-    # tripped Policy B so the chain is self-explaining.
-    assert legacy_guide.superseded_policy == "legacy_title_rewrite"
-    assert legacy_plan.superseded_policy == "legacy_title_rewrite"
-    assert legacy_guide.superseded_at is not None
-    assert legacy_plan.superseded_at is not None
-    assert legacy_guide.superseded_reason is not None
-    assert legacy_plan.superseded_reason is not None
-    assert "legacy phrase" in legacy_guide.superseded_reason.lower()
-    assert "legacy phrase" in legacy_plan.superseded_reason.lower()
-
-
-def test_legacy_rewrite_skips_already_superseded(session, synthetic_registry):
-    """Already-superseded rows are left alone — prior decision wins."""
-    now = datetime.now(timezone.utc)
-    legacy = _add(
-        session,
-        path="file:///sp/legacy_ops_plan.pdf",
-        title="Acme Widget Legacy Operations Plan",
-        doc_number=None,
-        ingested_at=now - timedelta(days=120),
-    )
-    decoy_target = _add(
-        session,
-        path="file:///sp/decoy.pdf",
-        title="some other doc",
-        doc_number=None,
-        ingested_at=now - timedelta(days=60),
-    )
-    # Pretend the user manually linked legacy → decoy already.
-    legacy.superseded_by_id = decoy_target.id
-    session.add(legacy)
-    session.flush()
-
-    current = _add(
-        session,
-        path="file:///sp/acme_doc_0010_ops_plan.pdf",
-        title="ACME-DOC-0010 Acme Widget Operations Plan Rev 2",
-        doc_number="ACME-DOC-0010",
-        ingested_at=now,
-    )
-
-    linked = apply_supersession_at_ingest(session, current)
-
-    # No legacy link rewritten — the policy filter excludes non-null
-    # superseded_by_id rows. (We may still link other things, so don't
-    # assert ==0 on linked.)
-    session.refresh(legacy)
-    assert legacy.superseded_by_id == decoy_target.id
-
-
-def test_legacy_title_rewrite_noop_when_registry_empty(session):
-    """With the shipped (scrubbed) registry, Policy B never fires.
-
-    No ``synthetic_registry`` fixture here — this exercises the real
-    module-level ``_CURRENT_TO_LEGACIES`` (built at import from the empty
-    shipped ``_LEGACY_TO_CURRENT``), so the legacy-titled row must survive
-    untouched even though its title would match a fictional entry.
-    """
-    now = datetime.now(timezone.utc)
-    legacy = _add(
-        session,
-        path="file:///sp/legacy_ops_plan.pdf",
-        title="Acme Widget Legacy Operations Plan",
-        doc_number=None,
-        ingested_at=now - timedelta(days=90),
-    )
-    current = _add(
-        session,
-        path="file:///sp/acme_doc_0010_ops_plan.pdf",
-        title="ACME-DOC-0010 Acme Widget Operations Plan Rev 2",
-        doc_number="ACME-DOC-0010",
-        ingested_at=now,
-    )
-
-    # Empty registry ⇒ Policy B finds no legacies ⇒ no link.
-    assert apply_supersession_at_ingest(session, current) == 0
-    session.refresh(legacy)
-    assert legacy.superseded_by_id is None
-    assert legacy.superseded_policy is None
-
-
 def test_unrelated_titles_are_not_linked(session):
     """A new USD doc must not silently retire random PDFs in the folder."""
     now = datetime.now(timezone.utc)
@@ -539,34 +380,33 @@ def test_apply_returns_zero_when_id_missing(session):
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_summary_reports_superseded_links(
-    session, wb_id, tmp_path, synthetic_registry
-):
+def test_ingest_summary_reports_superseded_links(session, wb_id, tmp_path):
     """A real ingest run populates ``IngestSummary.superseded_links``.
 
-    Exercised against the fictional Acme map (``synthetic_registry``) —
-    the shipped registry is scrubbed empty, so without the fixture Policy
-    B contributes nothing and ``superseded_links`` would be 0.
+    Exercises the same-``doc_number`` policy end-to-end: a prior Rev of a
+    USD-numbered doc already exists; ingesting a newer file that resolves to
+    the same doc_number retires it and bumps ``superseded_links``.
     """
     from cybersecurity_assessor.evidence.ingest import ingest_folder
 
-    # Pre-populate a legacy doc as if a prior ingest had picked it up.
-    # Scoped to the same workbook so the supersession matcher sees it.
+    # Pre-populate Rev 1 of a USD-numbered doc as if a prior ingest picked
+    # it up. Scoped to the same workbook so the matcher sees it.
     legacy = Evidence(
-        path="file:///prior/legacy_ops_plan.pdf",
+        path="file:///prior/USD00050010_ops_plan_rev1.pdf",
         sha256="sha-legacy",
         kind=EvidenceKind.PDF,
         size_bytes=1,
-        title="Acme Widget Legacy Operations Plan",
+        title="USD00050010 Operations Plan Rev 1",
+        doc_number="USD00050010",
         workbook_id=wb_id,
     )
     session.add(legacy)
     session.commit()
 
-    # Drop a plain text file whose title (== stem) matches the canonical
-    # current string. The text extractor will pick up the stem as title;
-    # we set the contents to something benign.
-    target = tmp_path / "ACME-DOC-0010 Acme Widget Operations Plan Rev 2.txt"
+    # Drop Rev 2 of the same doc. The filename carries the USD number, so
+    # resolve_doc_number assigns the matching doc_number; the shared "plan"/
+    # "operations" tokens satisfy the title-corroboration guard.
+    target = tmp_path / "USD00050010 Operations Plan Rev 2.txt"
     target.write_text("Operations Plan body", encoding="utf-8")
 
     summary = ingest_folder(session, tmp_path, workbook_id=wb_id)
