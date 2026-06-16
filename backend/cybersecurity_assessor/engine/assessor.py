@@ -360,13 +360,11 @@ class Decision:
     # abstain (status=None) but got <status>"). None for non-abstain
     # paths (status is the trusted verdict there).
     proposed_status: ComplianceStatus | None = None
-    # v0.2 citation-hygiene flag (NOT an abstain). Set when the narrative
-    # cites a doc the supersession registry has marked renamed/retired
-    # (find_stale_references catch-net) or when an NA verdict was cited
-    # via a retired doc. The verdict stays trusted — NA is decided by
-    # CRM + workbook scope, not citation provenance — but exporters
-    # surface a "Cite refresh requested: '{legacy}' → '{current}'" note
-    # in POAM milestones / CCIS column Q. needs_review stays False.
+    # v0.2 citation-hygiene flag (NOT an abstain). Retained as an outcome
+    # field for downstream POAM/SAR/CCIS exporters; the manual stale-cite
+    # and NA-reconsideration signals that used to set it were removed with
+    # the manual supersession registry, so it now stays False (evidence-
+    # chain rewrites correct the narrative in place instead).
     # rewrite_requested_refs is the list of (legacy, current) pairs the
     # exporter renders; None when rewrite_requested is False.
     rewrite_requested: bool = False
@@ -1315,52 +1313,6 @@ class Assessor:
                     else hybrid_block
                 )
 
-        # ---- Step 1.6: Rule 8c — verified SDA Controls mapping ---------
-        # The whitelist in supersession._SSAA_TO_SDA_MAPPINGS records CCIs
-        # whose authoritative source has been independently verified to
-        # live in the SDA Controls tab. A program-specific control (PSC)
-        # mapping tells you the requirement is IN SCOPE for this program —
-        # it does NOT tell you the requirement has been *implemented*. The
-        # SDA Controls shall-statement is a "thou shalt", not a record of
-        # doing; treating its text as proof of compliance is exactly the
-        # major bug we are fixing here. So Rule 8c no longer auto-Compliants.
-        #
-        # New contract:
-        #   * No customer-side artifact tagged → deterministic Non-Compliant
-        #     gap (``_finalize_sda_gap_decision``). The mapping names the
-        #     requirement as in-scope-but-undemonstrated and opens a POA&M.
-        #     No LLM call — absence of evidence is a finding, not a guess.
-        #   * Customer-side artifact present → the mapping is demoted to a
-        #     SCOPING HINT prepended to the evidence bundle (applicability,
-        #     explicitly "not evidence") and we fall through to the LLM,
-        #     which assesses the artifacts on their own merits. The PSC text
-        #     can never by itself carry the verdict to Compliant.
-        if not force_llm:
-            sda_hit = supersession.lookup_verified_sda_mapping(row.cci_id or "")
-            if sda_hit is not None:
-                no_sda_artifact = False
-                if evidence_block is not None:
-                    no_sda_artifact = (
-                        evidence_block.text is None
-                        or not evidence_block.has_artifacts
-                    )
-                else:
-                    no_sda_artifact = (
-                        tagged_evidence is None or not tagged_evidence.strip()
-                    )
-                if no_sda_artifact:
-                    return self._finalize_sda_gap_decision(
-                        row, cci, sda_hit, outcome=outcome,
-                    )
-                # Artifact present — thread the mapping in as scope context
-                # only, then let the LLM (Step 2) decide on the evidence.
-                scope_hint = self._render_sda_scope_hint(sda_hit)
-                tagged_evidence = (
-                    f"{scope_hint}\n\n{tagged_evidence}"
-                    if tagged_evidence
-                    else scope_hint
-                )
-
         # ---- Step 1.65: No-evidence short-circuit ----------------------
         # If we got here with no per-objective artifact text, none of the
         # deterministic rules fired AND there's nothing for the LLM to
@@ -1740,28 +1692,16 @@ class Assessor:
 
             # Supersession rewrite happens BEFORE validation so the
             # validator sees the corrected narrative — otherwise an
-            # otherwise-good narrative citing a legacy doc would pass
+            # otherwise-good narrative citing a superseded doc would pass
             # validation and the stale ref would slip into col Q.
-            rewrite = supersession.rewrite_narrative(proposal.narrative)
-            narrative = rewrite.rewritten_text
-            for stale, current in rewrite.hits:
-                hit = SupersessionHit(
-                    cci=cci,
-                    stale_ref=stale,
-                    current_ref=current,
-                    source="llm",
-                )
-                supersession_log.append(hit)
-                if outcome is not None:
-                    outcome.supersession_hits.append(hit)
-
-            # Patent-aligned stale-EVIDENCE catch-net. The doc-phrase
-            # rewriter above only knows about the ~30 narrative phrases in
-            # ``_LEGACY_TO_CURRENT``; this pass scans the narrative for
-            # references to Evidence rows that have been auto-superseded
-            # at ingest (Rev A → Rev B). No-op when the route hasn't
-            # plumbed a session — keeps Assessor(llm=...) tests session-free.
-            # Lock-wrapped because workers share self._cache_session.
+            #
+            # Patent-aligned stale-EVIDENCE catch: scans the narrative for
+            # references to Evidence rows that have been auto-superseded at
+            # ingest (Rev A → Rev B), per workbook. No-op when the route
+            # hasn't plumbed a session — keeps Assessor(llm=...) tests
+            # session-free. Lock-wrapped because workers share
+            # self._cache_session.
+            narrative = proposal.narrative
             chain = self._locked_rewrite_evidence_chain(
                 narrative, workbook_id=workbook_id,
             )
@@ -1881,50 +1821,21 @@ class Assessor:
                     )
 
                 # ----------------------------------------------------------
-                # Mechanism 5 — supersession + boundary gates.
-                #
-                # Per the v0.2 design pivot (see Assessment.rewrite_requested
-                # in models.py): stale-reference and NA-reconsideration are
-                # **citation-hygiene** signals, NOT verdict abstains. The
-                # supersession registry already rewrote the legacy refs we
-                # know about; find_stale_references is the catch-net for
-                # patterns the rewriter missed (or that snuck back in via a
-                # retry). NA applicability is determined by CRM + workbook
-                # scope, not by which doc the prior assessor cited — so a
-                # retired-SSAA citation on an NA verdict means "update the
-                # cite", not "re-decide". Both demote to rewrite_requested
-                # so the row flows to POAM/SAR/CCIS with a "Cite refresh
-                # requested: '{legacy}' → '{current}'" note attached.
+                # Mechanism 5 — boundary gate.
                 #
                 # Boundary conflict (narrative says outside-boundary but
-                # status != NA) DOES still abstain — that contradiction
-                # questions the verdict itself, not the citation. Per
-                # feedback_boundary_reasoning.md.
+                # status != NA) abstains — that contradiction questions the
+                # verdict itself. Per feedback_boundary_reasoning.md.
+                #
+                # ``rewrite_requested`` is retained as an outcome field for
+                # downstream POAM/SAR/CCIS consumers; the manual stale-cite
+                # and NA-reconsideration signals that used to set it were
+                # removed with the manual supersession registry. Evidence-
+                # chain rewrites (above) already corrected the narrative in
+                # place, so no separate "cite refresh" demotion is needed.
                 # ----------------------------------------------------------
                 rewrite_requested_local = False
                 rewrite_requested_refs_local: list[tuple[str, str]] | None = None
-
-                stale_entries = supersession.find_stale_references(narrative)
-                if stale_entries:
-                    rewrite_requested_local = True
-                    rewrite_requested_refs_local = [
-                        (e.legacy, e.current) for e in stale_entries
-                    ]
-
-                recon = supersession.na_reconsideration_warning(
-                    cci_id=cci,
-                    current_status=proposal.status.value,
-                    prior_results_text=row.previous_results,
-                )
-                if recon is not None and recon.severity == "warning":
-                    rewrite_requested_local = True
-                    # NA-reconsideration is triggered by previous_results
-                    # (the prior assessor's notes), not by the new narrative.
-                    # If the stale-ref pass above didn't already populate
-                    # refs from the narrative, leave refs as None — the
-                    # exporter renders a generic "Cite refresh requested"
-                    # note in that case so the reviewer still sees the
-                    # signal, just without the legacy→current pair.
 
                 boundary = _boundary_conflict(narrative, proposal.status)
                 if boundary is not None:
@@ -2140,25 +2051,13 @@ class Assessor:
         workbook_id: int | None = None,
     ) -> Decision:
         """Wrap a rule-#8 verdict as a Decision. Still runs the narrative
-        through supersession + validation so the auto-generated text is
-        held to the same bar as LLM output.
+        through the evidence-chain rewrite + validation so the auto-generated
+        text is held to the same bar as LLM output.
         """
         narrative = auto.narrative or ""
-        rewrite = supersession.rewrite_narrative(narrative)
-        narrative = rewrite.rewritten_text
         supersession_log: list[SupersessionHit] = []
-        for stale, current in rewrite.hits:
-            hit = SupersessionHit(
-                cci=cci,
-                stale_ref=stale,
-                current_ref=current,
-                source="col_u_carryover",
-            )
-            supersession_log.append(hit)
-            if outcome is not None:
-                outcome.supersession_hits.append(hit)
 
-        # Patent-aligned stale-EVIDENCE catch-net (see _run for context).
+        # Patent-aligned stale-EVIDENCE catch (see _run for context).
         # Rule-#8 narratives are templated, but the templates sometimes
         # inline col-U text verbatim — so a retired evidence reference can
         # still slip in here. Session-free Assessor (test path) skips this.
@@ -2468,94 +2367,6 @@ class Assessor:
         )
 
     # ------------------------------------------------------------------
-    # Rule 8c — verified SDA Controls mapping (scope hint, NOT evidence)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _render_sda_scope_hint(mapping: supersession.VerifiedSdaMapping) -> str:
-        """Render the SDA Controls mapping as an applicability/scope hint.
-
-        A program-specific control (PSC) mapping says the requirement is in
-        scope for this program — it is NOT a record that the requirement was
-        implemented. When customer-side artifacts ARE tagged for the CCI we
-        thread this block into the evidence bundle so the LLM knows the
-        requirement applies, but the block explicitly disclaims any
-        evidentiary weight: the verdict must rest on the artifacts below it,
-        never on the shall-statement text. This is the fix for the
-        "program-specific controls used as evidence" bug.
-        """
-        return (
-            "## program_control_scope\n"
-            f"SDA Controls tab Req {mapping.sda_req_number} "
-            f"({mapping.control_id}) maps this CCI into program scope. This "
-            "mapping defines the requirement's APPLICABILITY ONLY — it is "
-            "NOT evidence of implementation. Assess the customer-side "
-            "artifacts below on their own merits; do not treat the "
-            "program-control requirement text as proof the control is met."
-        )
-
-    def _finalize_sda_gap_decision(
-        self,
-        row: CcisRow,
-        cci: str,
-        mapping: supersession.VerifiedSdaMapping,
-        *,
-        outcome,
-    ) -> Decision:
-        """Mint a deterministic Non-Compliant gap when a PSC maps the CCI
-        in-scope but no customer-side artifact demonstrates implementation.
-
-        Rule 8c used to short-circuit to COMPLIANT by restating the SDA
-        Controls shall-statement as the narrative — i.e. it used a
-        program-specific control's requirement text as proof the control was
-        met. That is the major bug this fix removes. A PSC mapping only
-        establishes applicability; it carries zero evidence that the program
-        actually did the thing. So when the mapping fires with no tagged
-        artifact, the precision-over-recall contract makes this a finding,
-        not a Compliant verdict: deterministic Non-Compliant, POA&M opened,
-        no LLM call.
-
-        The narrative names the SDA Req as in-scope-but-undemonstrated WITHOUT
-        quoting the shall-statement (rule #11.2: no requirement restatement)
-        and contains "POA&M"/"presumed not satisfied" so the validator's gap
-        classifier and POA&M advisory both fire. ``source='rule-8c'`` keeps
-        VerdictSource routing intact; ``needs_review=False`` lets the NC flow
-        to the workbook/POAM exports like any other evidence-gap finding.
-        """
-        narrative = (
-            f"SDA Controls tab Req {mapping.sda_req_number} "
-            f"({mapping.control_id}) maps this CCI into program scope, but no "
-            "customer-side artifact was retrieved demonstrating implementation; "
-            "the program-control requirement defines what is required, not "
-            "evidence that it was done. Control objective is presumed not "
-            "satisfied pending submission of supporting evidence; POA&M opened."
-        )
-        if outcome is not None:
-            outcome.accepted = True
-            outcome.retries_before_accept = 0
-        return Decision(
-            cci_id=cci,
-            excel_row=row.excel_row,
-            accepted=True,
-            status=ComplianceStatus.NON_COMPLIANT,
-            narrative=narrative,
-            narrative_class=NarrativeClass.GAP_DESCRIBING,
-            source="rule-8c",
-            rule="sda-mapping-undemonstrated",
-            retries=0,
-            confidence=1.0,
-            notes=[
-                f"Rule #8c: SDA Controls mapping ({mapping.cci_id} → Req "
-                f"{mapping.sda_req_number}) establishes applicability only. No "
-                "customer-side artifact tagged — the program-control "
-                "requirement text is NOT evidence of implementation, so the "
-                "deterministic verdict is Non-Compliant. No LLM call made."
-            ],
-            # Evidence gap is an on-prem-side finding by default.
-            narrative_on_prem=narrative,
-        )
-
-    # ------------------------------------------------------------------
     # CRM helpers
     # ------------------------------------------------------------------
 
@@ -2727,26 +2538,12 @@ class Assessor:
         else:
             narrative = onprem_narr_text or ""
 
-        # Still rewrite through the supersession map — a CRM narrative may
-        # cite a stale doc number and we want col Q to land on the current
-        # ref regardless of source.
-        rewrite = supersession.rewrite_narrative(narrative)
-        narrative = rewrite.rewritten_text
         supersession_log: list[SupersessionHit] = []
-        for stale, current in rewrite.hits:
-            hit = SupersessionHit(
-                cci=cci,
-                stale_ref=stale,
-                current_ref=current,
-                source="crm_overlay",
-            )
-            supersession_log.append(hit)
-            if outcome is not None:
-                outcome.supersession_hits.append(hit)
 
-        # Patent-aligned stale-EVIDENCE catch-net (see _run for context).
+        # Patent-aligned stale-EVIDENCE catch (see _run for context).
         # CRM narratives carry the customer's verbatim text and can name
-        # specific evidence files; this catches retired Rev-A references.
+        # specific evidence files; this catches retired Rev-A references
+        # so col Q lands on the current ref regardless of source.
         # Lock-wrapped because workers share self._cache_session.
         chain = self._locked_rewrite_evidence_chain(
             narrative, workbook_id=workbook_id,

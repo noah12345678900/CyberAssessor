@@ -27,7 +27,6 @@ from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..engine.supersession import _LEGACY_TO_CURRENT
 from ..llm.pricing import RATES, RATES_REVISED
 from ..metrics.references import load_references, rates_revised
 from ..models import AssessmentRun, BaselineControl, CrmShortCircuitEvent
@@ -290,11 +289,16 @@ def _crm_overlay_coverage(s: Session) -> dict[str, Any]:
 
 
 def _mechanisms(rows: list[AssessmentRun], s: Session) -> dict[str, Any]:
-    """Deterministic accuracy controls — registry sizes + cumulative hits.
+    """Deterministic accuracy controls — cumulative hits.
 
-    Per-entry hit counts are NOT tracked in the schema (supersession_hits is
-    an int counter on AssessmentRun, not a per-entry table), so we list the
-    full registry once and surface the aggregate hits number alongside.
+    Supersession is data-driven per workbook (the evidence-chain rewriter
+    walks ``Evidence.superseded_by_id``); there is no global registry to
+    size. ``total_hits`` is the cumulative rewrite count across all runs
+    (``supersession_hits`` is an int counter on AssessmentRun). The
+    per-workbook chain *entries* are served by the in-app
+    ``GET /api/supersession/chains`` endpoint — never here, because
+    ``_mechanisms`` also feeds the Nuon-safe ``/public`` payload and chain
+    entries carry program doc numbers/titles.
     """
     total_hits = sum(r.supersession_hits for r in rows)
     total_rejects = sum(r.validator_rejections for r in rows)
@@ -302,16 +306,7 @@ def _mechanisms(rows: list[AssessmentRun], s: Session) -> dict[str, Any]:
 
     return {
         "supersession": {
-            "registry_size": len(_LEGACY_TO_CURRENT),
             "total_hits": total_hits,
-            "entries": [
-                {
-                    "legacy": e.legacy,
-                    "current": e.current,
-                    "notes": e.notes,
-                }
-                for e in _LEGACY_TO_CURRENT
-            ],
         },
         "validator": {
             "total_rejections": total_rejects,

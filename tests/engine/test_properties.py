@@ -1,10 +1,10 @@
-"""Property-based tests for the three deterministic kernel modules.
+"""Property-based tests for the deterministic kernel modules.
 
-Covers validator, supersession, and rules — the kernel surface whose
-bugs silently corrupt assessments. The example-based tests in
-``test_assessor.py`` prove the documented happy paths; these tests use
-Hypothesis to fuzz the input space and prove that the documented
-invariants hold across arbitrary text, not just the canonical fixtures.
+Covers validator and rules — the kernel surface whose bugs silently
+corrupt assessments. The example-based tests in ``test_assessor.py``
+prove the documented happy paths; these tests use Hypothesis to fuzz the
+input space and prove that the documented invariants hold across
+arbitrary text, not just the canonical fixtures.
 
 Invariants proven here:
 
@@ -12,13 +12,6 @@ Invariants proven here:
   paired with COMPLIANT must reject. The gap phrase forces the
   narrative into GAP_DESCRIBING (or AMBIGUOUS when combined with an
   affirming phrase) — either way, status COMPLIANT can never validate.
-* Supersession: ``rewrite_narrative`` is idempotent. Running it twice
-  produces the same output as running it once. This protects the
-  recorder, which may run a narrative through supersession multiple
-  times (column U carryover → LLM output → final write).
-* Supersession: no legacy phrase from ``_LEGACY_TO_CURRENT`` survives a
-  single pass — each replacement string is disjoint from every legacy
-  phrase, so one application eliminates the citation entirely.
 * Rules: the rule-8a phrase ``automatically compliant`` is invariant
   under surrounding noise. Whatever the operator (or prior assessor)
   wrapped the phrase in, the row routes to rule_8a — provided no 8b
@@ -42,11 +35,6 @@ from cybersecurity_assessor.engine.rules import (  # noqa: E402
     _R8B_NA_SCOPE_PHRASES,
     AutoStatusVerdict,
     classify_row,
-)
-from cybersecurity_assessor.engine.supersession import (  # noqa: E402
-    _LEGACY_TO_CURRENT,
-    find_stale_references,
-    rewrite_narrative,
 )
 from cybersecurity_assessor.engine.validator import (  # noqa: E402
     _ONPREM_ONLY_PHRASES,
@@ -124,143 +112,6 @@ def test_validator_no_artifact_phrase_always_rejects_compliant(noise: str) -> No
         proposed_narrative=narrative,
     )
     assert not result.ok
-
-
-# ---------------------------------------------------------------------------
-# Supersession invariants
-# ---------------------------------------------------------------------------
-
-
-@given(text=st.text(max_size=2000))
-def test_supersession_idempotent(text: str) -> None:
-    """``rewrite_narrative(rewrite_narrative(x).rewritten_text) ==
-    rewrite_narrative(x).rewritten_text``.
-
-    The docstring on ``rewrite_narrative`` promises idempotence; this
-    test enforces it across arbitrary input. A regression here would
-    mean a replacement string accidentally contains a legacy substring
-    that re-fires on the second pass — exactly the kind of bug the
-    deterministic kernel can't have.
-    """
-    once = rewrite_narrative(text).rewritten_text
-    twice = rewrite_narrative(once).rewritten_text
-    assert once == twice
-
-
-# Build a strategy that always seeds at least one known stale ref into
-# the text, surrounded by arbitrary noise. Pure ``st.text()`` would
-# almost never produce one of the legacy phrases, so the assertion
-# would be vacuous on most inputs.
-_LEGACY_PHRASES = [e.legacy for e in _LEGACY_TO_CURRENT]
-
-
-@given(
-    legacy=st.sampled_from(_LEGACY_PHRASES),
-    prefix=st.text(max_size=200),
-    suffix=st.text(max_size=200),
-)
-def test_supersession_removes_all_known_stale_refs(
-    legacy: str, prefix: str, suffix: str
-) -> None:
-    """One pass of ``rewrite_narrative`` eliminates every known legacy
-    phrase from the text. The replacement strings in
-    ``_LEGACY_TO_CURRENT`` are disjoint from the legacy strings, so a
-    single application is sufficient.
-
-    Case-insensitive compare because ``rewrite_narrative`` matches
-    case-insensitively but preserves the replacement's case. The
-    invariant is "the stale citation is no longer reachable", not "the
-    bytes are identical".
-    """
-    text = f"{prefix}{legacy}{suffix}"
-    out = rewrite_narrative(text).rewritten_text
-    out_lower = out.lower()
-    for stale in _LEGACY_PHRASES:
-        assert stale.lower() not in out_lower, (
-            f"Legacy phrase {stale!r} survived rewrite_narrative; "
-            f"input had {legacy!r}, output was {out!r}"
-        )
-
-
-@given(text=st.sampled_from(["", "   ", "\n\n", "\t", "  \n\t  "]))
-def test_supersession_empty_input_contract(text: str) -> None:
-    """Empty/whitespace input returns text unchanged and an empty hits list.
-
-    The early-return at the top of ``rewrite_narrative`` is load-bearing:
-    a regression that removes it would run regex over every empty/blank
-    narrative the recorder sees (every NA-justified row, every freshly
-    initialized cell), wasting CPU and inviting false-positive hits if
-    a pattern ever accidentally matches the empty string.
-    """
-    result = rewrite_narrative(text)
-    assert result.rewritten_text == text
-    assert result.hits == []
-    assert result.changed is False
-
-
-@given(text=st.text(max_size=2000))
-def test_supersession_hits_are_grounded_in_input(text: str) -> None:
-    """Every (legacy, current) pair in ``result.hits`` corresponds to a
-    legacy phrase that actually appeared in the original input.
-
-    This is the measurement-recorder contract: the patent's accuracy
-    claim ("we rewrote N stale citations") is one SQL query away from
-    the persisted ``SupersessionHit`` rows. If ``hits`` ever drifts from
-    reality — fabricated entries, missing entries, or wrong (legacy,
-    current) pairings — the audit trail lies.
-    """
-    result = rewrite_narrative(text)
-    text_lower = text.lower()
-    for legacy, current in result.hits:
-        assert legacy.lower() in text_lower, (
-            f"hits reported legacy={legacy!r} but input did not contain it: {text!r}"
-        )
-        # The (legacy, current) pair must be a real row in the map.
-        assert any(
-            e.legacy == legacy and e.current == current for e in _LEGACY_TO_CURRENT
-        ), f"hits entry ({legacy!r}, {current!r}) is not in _LEGACY_TO_CURRENT"
-
-
-# Build a "definitely no legacy phrase" alphabet by restricting to chars
-# that can't form any of the legacy substrings. The legacy phrases are
-# all ASCII letters / digits / a few punctuation marks; restricting to
-# pure digits + whitespace guarantees no overlap.
-@given(text=st.text(max_size=2000))
-def test_supersession_find_and_rewrite_agree(text: str) -> None:
-    """``find_stale_references`` and ``rewrite_narrative`` report the
-    same set of legacy phrases for any input.
-
-    The two functions exist for different audiences (review tooling vs.
-    write-path), but they MUST agree on what counts as a stale citation
-    — otherwise the review UI shows phrases the recorder didn't rewrite
-    (or vice versa), and the assessor loses trust in both. Both walk
-    the same ``_COMPILED_PATTERNS`` list; this property guards against
-    a refactor that diverges them.
-    """
-    found = {entry.legacy for entry in find_stale_references(text)}
-    rewritten = {legacy for legacy, _ in rewrite_narrative(text).hits}
-    assert found == rewritten, (
-        f"find_stale_references and rewrite_narrative disagree on {text!r}: "
-        f"find={found}, rewrite={rewritten}"
-    )
-
-
-@given(
-    text=st.text(alphabet="0123456789 \t\n.,;:", max_size=500),
-)
-def test_supersession_no_legacy_means_passthrough(text: str) -> None:
-    """If no legacy phrase appears in the input, the output equals the
-    input and ``changed`` is False.
-
-    Guards against an over-aggressive replacement bug — e.g., a future
-    refactor that adds a default substitution or strips whitespace
-    "while we're in here". The deterministic kernel must NOT mutate text
-    it had no rule to touch.
-    """
-    result = rewrite_narrative(text)
-    assert result.rewritten_text == text
-    assert result.hits == []
-    assert result.changed is False
 
 
 # ---------------------------------------------------------------------------

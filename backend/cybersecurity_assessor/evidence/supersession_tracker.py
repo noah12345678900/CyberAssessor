@@ -7,12 +7,11 @@ read-side respects it (see :mod:`engine.evidence_bundle` and
 so every read-side filter was effectively a no-op. This module is the
 missing writer.
 
-Two deterministic policies. Both are conservative — when in doubt we
-leave the chain alone, because flipping a legacy artifact to
-"superseded" makes it disappear from the LLM bundle and the asset
-diff. Better to under-link than to silently mute real evidence.
+Policy — same ``doc_number``, older loses. Conservative by design: when
+in doubt we leave the chain alone, because flipping a legacy artifact to
+"superseded" makes it disappear from the LLM bundle and the asset diff.
+Better to under-link than to silently mute real evidence.
 
-**Policy A — same ``doc_number``, older loses.**
     When a newly-ingested artifact has a non-empty ``doc_number``
     matching one or more existing un-superseded rows, the older rows
     (by ``ingested_at``) are pointed at the new one. This handles the
@@ -21,22 +20,15 @@ diff. Better to under-link than to silently mute real evidence.
     scan output, screenshots, and free-form notes, and we don't want
     every untitled PDF to chain together.
 
-**Policy B — legacy phrase → current USD-numbered doc.**
-    Uses :data:`engine.supersession._LEGACY_TO_CURRENT` (the narrative
-    rewrite table). When the new artifact looks like one of the
-    ``current`` docs in that table (matched by doc_number prefix or
-    title equality), each existing un-superseded row whose title
-    contains a corresponding ``legacy`` phrase is pointed at the new
-    one. This is how a freshly-uploaded
-    ``USD00050010 Example System Account Management Plan`` retires the older
-    ``SDA T1 O&I Account Management User Guide`` and ``...Plan`` PDFs
-    sitting in the same evidence folder.
-
-Chains stay shallow because policy A re-points existing dependents
+Chains stay shallow because the policy re-points existing dependents
 of the row being superseded — so a third-generation upload doesn't
 leave a two-hop trail. :func:`engine.supersession.resolve_current_evidence_id`
 still walks the chain defensively up to 8 hops if anything ever
 escapes this invariant.
+
+(A second, manual policy that matched hardcoded legacy→current phrase
+pairs was removed with the manual supersession registry — supersession
+is now fully data-driven off ``doc_number`` revisions.)
 
 The orchestrator calls :func:`apply_supersession_at_ingest` once per
 new Evidence row, *after* ``session.flush()`` (so the new row has an
@@ -51,36 +43,14 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Iterable
 
 from sqlmodel import Session, select
 
 from ..db import chunked
-from ..engine.supersession import (
-    _LEGACY_TO_CURRENT,
-    _title_is_matchable,
-    SupersessionEntry,
-)
+from ..engine.supersession import _title_is_matchable
 from ..models import Evidence
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Pre-computed lookup: every distinct "current" → list of its legacy phrases.
-# Built once at import; the legacy table is appended to but never mutated at
-# runtime so a module-level dict is safe.
-# ---------------------------------------------------------------------------
-
-
-def _build_current_to_legacies() -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {}
-    for entry in _LEGACY_TO_CURRENT:
-        out.setdefault(entry.current.strip(), []).append(entry.legacy)
-    return out
-
-
-_CURRENT_TO_LEGACIES: dict[str, list[str]] = _build_current_to_legacies()
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -110,9 +80,8 @@ def apply_supersession_at_ingest(session: Session, new_evidence: Evidence) -> in
     because the orchestrator only needs a counter for IngestSummary).
     Safe to call on every ingest — when nothing matches, returns 0.
 
-    Both policies are run; their results union. Within a single call
-    the same prior row is never linked twice (we filter on
-    ``superseded_by_id IS NULL`` before each update).
+    Within a single call the same prior row is never linked twice (we
+    filter on ``superseded_by_id IS NULL`` before each update).
     """
     if new_evidence.id is None:
         # Caller forgot to flush — refusing to write would chain to
@@ -123,7 +92,6 @@ def apply_supersession_at_ingest(session: Session, new_evidence: Evidence) -> in
     linked = 0
     try:
         linked += _policy_same_doc_number(session, new_evidence)
-        linked += _policy_legacy_title_rewrite(session, new_evidence)
     except Exception:  # pragma: no cover - never let supersession kill ingest
         log.exception("supersession tracker failed for evidence id=%s", new_evidence.id)
         return linked
@@ -295,127 +263,3 @@ def _policy_same_doc_number(session: Session, new_evidence: Evidence) -> int:
         session.add(row)
         linked += 1
     return linked
-
-
-# ---------------------------------------------------------------------------
-# Policy B — legacy-phrase → current USD-numbered doc
-# ---------------------------------------------------------------------------
-
-
-def _policy_legacy_title_rewrite(session: Session, new_evidence: Evidence) -> int:
-    """If ``new_evidence`` is one of the canonical "current" docs, retire its legacies.
-
-    Match: the new row's ``doc_number`` (if any) appears as a token at
-    the start of a ``current`` string in :data:`_LEGACY_TO_CURRENT`,
-    or the new row's ``title`` equals the ``current`` string
-    (case-insensitive). Either is sufficient.
-
-    For every match, every un-superseded Evidence row whose ``title``
-    contains one of the corresponding ``legacy`` phrases (case-
-    insensitive substring) gets pointed at ``new_evidence``.
-    """
-    legacies = _legacies_for_new_evidence(new_evidence)
-    if not legacies:
-        return 0
-
-    # One query, one substring filter per legacy phrase. SQLite ``LIKE`` is
-    # case-insensitive by default for ASCII; collating on Python side avoids
-    # surprises with funky doc titles.
-    candidates = session.exec(
-        select(Evidence).where(
-            Evidence.id != new_evidence.id,
-            Evidence.superseded_by_id.is_(None),
-            Evidence.title.is_not(None),
-        )
-    ).all()
-
-    legacies_lower = [legacy.lower() for legacy in legacies]
-    now = datetime.now(timezone.utc)
-    new_title = (new_evidence.title or "").strip()
-    linked = 0
-    for row in candidates:
-        title = (row.title or "").lower()
-        matched_legacy: str | None = None
-        for legacy, legacy_lower in zip(legacies, legacies_lower):
-            if legacy_lower in title:
-                matched_legacy = legacy
-                break
-        if matched_legacy is None:
-            continue
-        # Skip if the candidate's own doc_number matches the new row's
-        # doc_number — Policy A already linked it.
-        if (
-            row.doc_number
-            and new_evidence.doc_number
-            and row.doc_number.strip() == new_evidence.doc_number.strip()
-        ):
-            continue
-        # Don't supersede a newer row by an older one.
-        row_dt = _as_utc(row.ingested_at)
-        new_dt = _as_utc(new_evidence.ingested_at)
-        if row_dt and new_dt and row_dt > new_dt:
-            continue
-        row.superseded_by_id = new_evidence.id
-        row.superseded_at = now
-        row.superseded_policy = "legacy_title_rewrite"
-        row.superseded_reason = (
-            f"title contained legacy phrase {matched_legacy!r}; "
-            f"superseded by {new_title!r}"
-        )
-        session.add(row)
-        linked += 1
-    return linked
-
-
-def _legacies_for_new_evidence(new_evidence: Evidence) -> list[str]:
-    """Return all legacy phrases whose ``current`` matches this new row.
-
-    A "match" is permissive on purpose — extractors don't always set
-    doc_number, and titles drift from the canonical string by a Rev
-    suffix or a trailing space. We accept either:
-
-      - the new row's ``doc_number`` (stripped) is the leading
-        whitespace-delimited token of one of the ``current`` strings, or
-      - the new row's ``title`` equals a ``current`` string
-        (case-insensitive, whitespace-trimmed).
-    """
-    out: list[str] = []
-    dn = (new_evidence.doc_number or "").strip()
-    title = (new_evidence.title or "").strip().lower()
-
-    for current, legacies in _CURRENT_TO_LEGACIES.items():
-        current_lower = current.lower()
-        # Token-prefix match against doc_number (e.g. "USD00050010" matches
-        # "USD00050010 Example System Account Management Plan Rev -").
-        if dn:
-            first_token = current.split(None, 1)[0]
-            if first_token == dn:
-                out.extend(legacies)
-                continue
-        # Whole-string match against title.
-        if title and title == current_lower:
-            out.extend(legacies)
-    # De-dupe while preserving order.
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for legacy in out:
-        if legacy.lower() in seen:
-            continue
-        seen.add(legacy.lower())
-        deduped.append(legacy)
-    return deduped
-
-
-# ---------------------------------------------------------------------------
-# Test-support helper (kept here so tests don't reach into private names)
-# ---------------------------------------------------------------------------
-
-
-def legacy_phrases_for_current(current: str) -> Iterable[str]:
-    """Return the legacy phrases registered for a given ``current`` string.
-
-    Test-friendly accessor over :data:`_CURRENT_TO_LEGACIES` so unit
-    tests can assert that the canonical map captures what they expect
-    without poking at module-private state.
-    """
-    return list(_CURRENT_TO_LEGACIES.get(current.strip(), []))

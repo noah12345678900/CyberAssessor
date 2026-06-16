@@ -15,9 +15,9 @@ Paths covered:
     5. LLM first-attempt accepted (clean compliant narrative).
     6. LLM rejected then accepted after one corrective round.
     7. LLM exhausts retries → unresolved Decision, full rejection_log.
-    8. Supersession rewrite happens BEFORE validation (stale ref pulled
-       forward before the validator sees it).
-    9. RunRecorder captures rejection + supersession measurements end-to-end.
+    8. RunRecorder captures validator-rejection measurements end-to-end.
+       (Supersession is data-driven off the evidence chain; its end-to-end
+       recording is pinned in ``test_assessor_evidence_chain_hits.py``.)
 
 Notes on assertions:
     * ``Decision.source`` strings are the contract the UI / export layer
@@ -33,7 +33,6 @@ Notes on assertions:
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -47,7 +46,6 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from cybersecurity_assessor import models  # noqa: F401,E402  -- register tables
-from cybersecurity_assessor.engine import supersession  # noqa: E402
 from cybersecurity_assessor.engine.assessor import (  # noqa: E402
     Assessor,
     LlmProposal,
@@ -153,33 +151,6 @@ _PLACEHOLDER_EVIDENCE = (
     "## Tagged evidence\n"
     "- USD00050010 Example System Account Management Plan Rev - — covers account ops.\n"
 )
-
-
-def _install_synthetic_supersession(monkeypatch) -> None:
-    """Install a fictional legacy→current rewrite entry so the supersession
-    integration tests can exercise the rewrite path end-to-end through
-    ``Assessor.assess``.
-
-    The shipped registry (``_LEGACY_TO_CURRENT`` / ``_COMPILED_PATTERNS``)
-    ships **empty** — it held one program's verbatim doc map and was scrubbed
-    so no program data is baked into the app. The supersession globals are read
-    at call time (``rewrite_narrative`` iterates ``_COMPILED_PATTERNS`` live),
-    so patching them here drives the full rewrite path. The synthetic entry's
-    ``current`` cites USD00050010, which is present in ``_PLACEHOLDER_EVIDENCE``
-    so the post-rewrite narrative survives the v0.2 cite-verifier.
-    """
-    entry = supersession.SupersessionEntry(
-        legacy="SDA T1 O&I Account Management User Guide",
-        current="USD00050010 Example System Account Management Plan Rev -",
-        sharepoint_folder=None,
-        notes=None,
-    )
-    monkeypatch.setattr(supersession, "_LEGACY_TO_CURRENT", [entry])
-    monkeypatch.setattr(
-        supersession,
-        "_COMPILED_PATTERNS",
-        [(re.compile(re.escape(entry.legacy), re.IGNORECASE), entry)],
-    )
 
 
 def _row(
@@ -529,69 +500,18 @@ def test_llm_exhausts_retries_abstains():
 
 
 # ---------------------------------------------------------------------------
-# Supersession integration — rewrite happens BEFORE validation
-# ---------------------------------------------------------------------------
-
-
-def test_supersession_rewrite_before_validation(monkeypatch):
-    """LLM cites legacy 'SDA T1 O&I Account Management User Guide' → narrative gets rewritten.
-
-    The accepted Decision must contain the USD doc reference, not the legacy
-    one, AND ``supersession_log`` must record the (stale, current) pair. The
-    fact that the validator approved at all proves the rewrite happened
-    BEFORE validation — a stale-only narrative might fail the primary-citation
-    note path but more importantly we'd see the wrong text in ``narrative``.
-
-    The shipped registry ships empty (scrubbed of program data); a synthetic
-    legacy→current entry is installed so the rewrite path is exercised without
-    baking program data into the test suite.
-    """
-    _install_synthetic_supersession(monkeypatch)
-    row = _row()
-    stub = StubLlmClient(
-        [
-            LlmProposal(
-                status=ComplianceStatus.COMPLIANT,
-                narrative=(
-                    "Account management procedures are documented in the SDA T1 O&I "
-                    "Account Management User Guide §3.2 and verified via inspection."
-                ),
-            )
-        ]
-    )
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(row, tagged_evidence=_PLACEHOLDER_EVIDENCE)
-
-    assert decision.accepted is True
-    # Legacy ref is gone, current ref is present.
-    assert "SDA T1 O&I Account Management User Guide" not in decision.narrative
-    assert "USD00050010" in decision.narrative
-    # Supersession log captured exactly one rewrite, with source="llm".
-    assert len(decision.supersession_log) == 1
-    hit = decision.supersession_log[0]
-    assert hit.stale_ref == "SDA T1 O&I Account Management User Guide"
-    assert "USD00050010" in hit.current_ref
-    assert hit.source == "llm"
-
-
-# ---------------------------------------------------------------------------
 # RunRecorder integration — measurements flow end-to-end
 # ---------------------------------------------------------------------------
 
 
-def test_recorder_captures_rejection_and_supersession(session, monkeypatch):
-    """Pass a real RunRecorder + Workbook; after assess, run row reflects 1 rejection + 1 supersession.
+def test_recorder_captures_rejection_measurements(session):
+    """Pass a real RunRecorder + Workbook; after assess, run row reflects validator rejections.
 
     Pins the patent's accuracy-claim plumbing: every rejection the validator
-    raised must surface on ``AssessmentRun.validator_rejections`` and every
-    supersession rewrite must surface on ``AssessmentRun.supersession_hits``.
-
-    The shipped registry ships empty (scrubbed of program data); a synthetic
-    legacy→current entry is installed so attempt 2's legacy citation triggers
-    exactly one rewrite.
+    raised must surface on ``AssessmentRun.validator_rejections``.
+    (Supersession-hit recording is covered end-to-end against the
+    evidence-chain rewriter in ``test_assessor_evidence_chain_hits.py``.)
     """
-    _install_synthetic_supersession(monkeypatch)
     # Seed a workbook the recorder can FK to.
     wb = Workbook(path="/tmp/test.xlsx", filename="test.xlsx")
     session.add(wb)
@@ -602,19 +522,19 @@ def test_recorder_captures_rejection_and_supersession(session, monkeypatch):
 
     stub = StubLlmClient(
         [
-            # Attempt 1: regex-restatement → 1 rejection.
+            # Attempt 1: regex-restatement → rejections.
             LlmProposal(
                 status=ComplianceStatus.COMPLIANT,
                 narrative=(
                     "The system shall enforce least privilege as required by the control objective."
                 ),
             ),
-            # Attempt 2: clean, but cites a LEGACY doc so supersession rewrites it.
+            # Attempt 2: clean → accepted.
             LlmProposal(
                 status=ComplianceStatus.COMPLIANT,
                 narrative=(
-                    "Procedures are documented in the SDA T1 O&I Account Management "
-                    "User Guide §3.2 and verified via quarterly inspection."
+                    "Procedures are documented in the Account Management Plan "
+                    "and verified via quarterly inspection."
                 ),
             ),
         ]
@@ -634,7 +554,6 @@ def test_recorder_captures_rejection_and_supersession(session, monkeypatch):
     # from AMBIGUOUS classification); attempt 2 was accepted. The recorder sums every
     # ValidatorRejection record, not "attempts that were rejected".
     assert persisted.validator_rejections == 2
-    assert persisted.supersession_hits == 1
     assert persisted.retry_count == 1
     assert persisted.ccis_accepted == 1
     assert persisted.llm_calls == 1  # one CCI processed (not one LLM call)

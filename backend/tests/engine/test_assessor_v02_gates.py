@@ -6,26 +6,16 @@ re-shaped. This file pins the six **new** v0.2 mechanisms whose first
 production caller is the assessor pipeline itself — gaps that would let a
 low-conviction guess or hallucinated cite leak into the export path:
 
-    1. Rule 8c SDA mapping demotion (no artifact → deterministic NC gap +
-       POA&M, no LLM call; artifact present → scope-hint prepend → LLM)
-    2. Dual-pass status disagreement → abstain
-    3. Boundary conflict (narrative says outside boundary but status != NA)
-    4. Low-confidence validator-passed proposal → implicit abstain
-    5. Literal cite-verification (USD/SV/CCI/control-id tokens) → abstain
-    6. Telemetry counters (AssessmentRun.abstained, .dual_pass_disagreements)
+    1. Dual-pass status disagreement → abstain
+    2. Boundary conflict (narrative says outside boundary but status != NA)
+    3. Low-confidence validator-passed proposal → implicit abstain
+    4. Literal cite-verification (USD/SV/CCI/control-id tokens) → abstain
+    5. Telemetry counters (AssessmentRun.abstained, .dual_pass_disagreements)
 
-Per plan ``hashed-launching-frost.md`` verification step 10: *"new tests
-for ``_verify_cites``, ``_abstain``, ``_finalize_sda_gap_decision``,
-``_boundary_conflict``"*. The stale-reference and NA-reconsideration
-gates (``find_stale_references`` + ``na_reconsideration_warning``) are
-exercised via monkeypatch because in steady-state the rewrite layer
-pre-empts the stale-finder (they share ``_COMPILED_PATTERNS``) and
-NA-reconsideration only fires on prior-results text that real fixtures
-don't carry. These tests pin the v0.2 pivot: stale-ref + NA-recon do
-**NOT** abstain — they flag ``rewrite_requested=True`` on a TRUSTED
-verdict so the row flows through POAM/CCIS/SAR with a "Cite refresh
-requested" note. Boundary conflict still abstains because that
-contradiction questions the verdict itself, not just the citation.
+Boundary conflict abstains because that contradiction questions the
+verdict itself. (The earlier manual stale-reference / NA-reconsideration /
+Rule-8c SDA-mapping gates were removed with the manual supersession
+registry; supersession is now driven entirely off the evidence chain.)
 """
 
 from __future__ import annotations
@@ -43,7 +33,6 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from cybersecurity_assessor import models  # noqa: F401,E402  -- register tables
-from cybersecurity_assessor.engine import supersession  # noqa: E402
 from cybersecurity_assessor.engine.assessor import (  # noqa: E402
     Assessor,
     LlmProposal,
@@ -131,112 +120,6 @@ def session():
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
         yield s
-
-
-# ---------------------------------------------------------------------------
-# 1. Rule 8c — verified SDA Controls mapping short-circuits before LLM
-# ---------------------------------------------------------------------------
-
-
-def _install_synthetic_sda_mapping(monkeypatch) -> None:
-    """Install a fictional verified SDA mapping so the Rule 8c path can be
-    exercised without baking program data into the test suite.
-
-    The shipped registry (``_SSAA_TO_SDA_MAPPINGS``) ships **empty** — it held
-    one program's verbatim CCI→SDA-Controls Req# mappings and was scrubbed. The
-    global is read at call time (``lookup_verified_sda_mapping`` iterates it
-    live), so patching it here drives the Rule 8c demotion/short-circuit logic.
-    CCI-001485 / AU-2 / Req #29 is synthetic reference data — CCI numbers are
-    public DISA reference and SSAA is generic federal RMF terminology.
-    """
-    mapping = supersession.VerifiedSdaMapping(
-        cci_id="CCI-001485",
-        control_id="au-2",
-        sda_req_number="#29",
-        shall_statement=(
-            "The system shall generate audit records for the defined "
-            "auditable events."
-        ),
-    )
-    monkeypatch.setattr(supersession, "_SSAA_TO_SDA_MAPPINGS", [mapping])
-
-
-def test_rule_8c_no_artifact_is_non_compliant_gap_not_compliant(monkeypatch):
-    """CCI-001485 hits the SDA-mapping whitelist but NO artifact is tagged.
-
-    This pins the PSC-as-evidence fix. A program-specific control mapping
-    only establishes that the requirement is IN SCOPE — it is never proof
-    the requirement was implemented. Pre-0.8.0 Rule 8c short-circuited to
-    COMPLIANT by restating the SDA Controls shall-statement as the
-    narrative; that used the program-control requirement text as evidence,
-    which is the major bug. The new contract: with no customer-side artifact
-    the deterministic verdict is Non-Compliant (in-scope-but-undemonstrated)
-    and a POA&M is opened — still no LLM call.
-
-    Pins: ``source='rule-8c'`` (VerdictSource routing unchanged),
-    ``rule='sda-mapping-undemonstrated'``, ``status=Non-Compliant``,
-    ``confidence=1.0``, ``needs_review=False`` (NC flows to exports), the
-    narrative carries the Req # provenance token plus "POA&M", and
-    ``stub.calls == []`` (empty-queue stub AssertionErrors if the LLM runs).
-    """
-    _install_synthetic_sda_mapping(monkeypatch)
-    row = _row(cci_id="CCI-001485", control_id="AU-2")
-    stub = StubLlmClient([])  # any LLM call → AssertionError
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(row)
-
-    assert decision.source == "rule-8c"
-    assert decision.rule == "sda-mapping-undemonstrated"
-    assert decision.accepted is True
-    assert decision.status is ComplianceStatus.NON_COMPLIANT
-    assert decision.confidence == 1.0
-    assert decision.needs_review is False
-    # Narrative carries the verified SDA Req # token so reviewers see scope
-    # provenance, and "POA&M" so the gap classifier / advisory fires.
-    assert "Req #29" in (decision.narrative or "")
-    assert "POA&M" in (decision.narrative or "")
-    assert stub.calls == []
-
-
-def test_rule_8c_with_artifact_threads_scope_hint_and_calls_llm(monkeypatch):
-    """CCI-001485 with a customer-side artifact → mapping demoted to a hint.
-
-    When artifacts ARE tagged, the SDA mapping is no longer a verdict — it
-    is a scope/applicability hint prepended to the evidence bundle, and the
-    assessor falls through to the LLM (Step 2) which judges the artifacts on
-    their own merits. Pins: the LLM IS consulted (the stub proposal is
-    consumed) and the scope-hint block reaches the model's evidence view,
-    explicitly disclaiming evidentiary weight.
-    """
-    _install_synthetic_sda_mapping(monkeypatch)
-    row = _row(cci_id="CCI-001485", control_id="AU-2")
-    proposal = LlmProposal(
-        status=ComplianceStatus.COMPLIANT,
-        narrative=(
-            "Audit event selection examined and confirmed via the tagged "
-            "audit configuration export; required events are generated."
-        ),
-        citations=[],
-        confidence=0.9,
-    )
-    stub = StubLlmClient([proposal])
-    assessor = Assessor(llm=stub)
-
-    artifact = (
-        "## Tagged evidence\n"
-        "- Audit configuration export — shows the system generates the "
-        "AU-2 d required audit events.\n"
-    )
-    decision = assessor.assess(row, tagged_evidence=artifact)
-
-    # LLM was consulted (mapping did NOT short-circuit the verdict).
-    assert stub.calls, "expected the LLM to be called on the artifact path"
-    # The scope hint reached the model's evidence view, disclaiming weight.
-    prompt_evidence = stub.calls[-1].get("tagged_evidence") or ""
-    assert "program_control_scope" in prompt_evidence
-    assert "NOT evidence of implementation" in prompt_evidence
-    assert "Audit configuration export" in prompt_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -526,118 +409,6 @@ def test_cite_verification_accepts_when_cited_token_present():
 # ---------------------------------------------------------------------------
 # 6. Stale-reference + NA-reconsideration safety-nets (monkeypatched — both
 #    flag rewrite_requested on a TRUSTED verdict; neither abstains)
-# ---------------------------------------------------------------------------
-
-
-def test_stale_reference_safety_net_flags_rewrite_requested(monkeypatch):
-    """find_stale_references returning non-empty post-rewrite → rewrite_requested.
-
-    In steady-state ``rewrite_narrative`` and ``find_stale_references`` share
-    the same compiled patterns, so the rewrite always pre-empts the
-    safety-net. We monkeypatch find_stale_references to return a synthetic
-    SupersessionEntry — pinning the v0.2 pivot: stale-ref hits do NOT
-    abstain (that would block downstream POAM/CCIS/SAR flow for a
-    citation-only issue). Instead the verdict is TRUSTED and accepted,
-    and ``rewrite_requested`` / ``rewrite_requested_refs`` carry the
-    legacy → current pair so the exporter can attach a "Cite refresh
-    requested" note. Boundary conflict (test 3) still abstains because
-    that contradiction questions the verdict itself.
-    """
-    fake_entry = supersession.SupersessionEntry(
-        legacy="HYPOTHETICAL Legacy Doc",
-        current="USD00099999 Current Doc",
-        sharepoint_folder="/sites/test/",
-        notes=None,
-    )
-    monkeypatch.setattr(
-        supersession,
-        "find_stale_references",
-        lambda text: [fake_entry] if text else [],
-    )
-
-    good = LlmProposal(
-        status=ComplianceStatus.COMPLIANT,
-        narrative=(
-            "Boundary controls are documented in USD00050010 Example System Account "
-            "Management Plan and verified via quarterly inspection."
-        ),
-        confidence=0.9,
-    )
-    stub = StubLlmClient([good])
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(_row(), tagged_evidence=_PLACEHOLDER_EVIDENCE)
-
-    # Verdict is TRUSTED — accepted, not abstained.
-    assert decision.accepted is True
-    assert decision.source in ("llm", "llm_after_retry")
-    assert decision.needs_review is False
-    assert decision.status is ComplianceStatus.COMPLIANT
-    # Rewrite-requested flag + legacy→current pair surface for the exporter.
-    assert decision.rewrite_requested is True
-    assert decision.rewrite_requested_refs is not None
-    assert ("HYPOTHETICAL Legacy Doc", "USD00099999 Current Doc") in (
-        decision.rewrite_requested_refs
-    )
-
-
-def test_na_reconsideration_flags_rewrite_requested(monkeypatch):
-    """NA-reconsideration warning post-rewrite → rewrite_requested (no abstain).
-
-    Sibling of the stale-reference safety-net test. In steady state
-    ``na_reconsideration_warning`` only fires on prior-results text that
-    the synthetic ``_row`` factory doesn't carry, so we monkeypatch it
-    to return a synthetic warning. Also monkeypatch
-    ``find_stale_references`` to an empty list to isolate this branch
-    (otherwise both branches could contribute and ``rewrite_requested_refs``
-    wouldn't be cleanly ``None``).
-
-    Pins the v0.2 pivot for NA-reconsideration: the warning flags
-    ``rewrite_requested=True`` on a TRUSTED Not Applicable verdict — refs
-    stay ``None`` because NA-reconsideration doesn't carry a legacy→current
-    pair (the exporter renders a generic "Cite refresh requested" note
-    instead). The verdict still flows through POAM/CCIS/SAR with the
-    callout attached; only boundary conflict abstains.
-    """
-    fake_warning = supersession.ReconsiderationWarning(
-        cci_id="CCI-000001",
-        severity="warning",
-        message="Prior results suggest this CCI may no longer be NA — re-verify.",
-    )
-    monkeypatch.setattr(
-        supersession,
-        "na_reconsideration_warning",
-        lambda cci_id, current_status, prior_results_text: fake_warning,
-    )
-    monkeypatch.setattr(
-        supersession,
-        "find_stale_references",
-        lambda text: [],
-    )
-
-    na_proposal = LlmProposal(
-        status=ComplianceStatus.NOT_APPLICABLE,
-        narrative=(
-            "Control is not applicable because the system does not have the "
-            "affected component; it is implemented by AWS GovCloud and "
-            "inherited under the platform ATO."
-        ),
-        confidence=0.9,
-    )
-    stub = StubLlmClient([na_proposal])
-    assessor = Assessor(llm=stub)
-
-    decision = assessor.assess(_row(), tagged_evidence=_PLACEHOLDER_EVIDENCE)
-
-    # Verdict is TRUSTED — accepted, not abstained.
-    assert decision.accepted is True
-    assert decision.source in ("llm", "llm_after_retry")
-    assert decision.needs_review is False
-    assert decision.status is ComplianceStatus.NOT_APPLICABLE
-    # Rewrite-requested flag fires; refs is None because NA-reconsideration
-    # has no legacy→current pair (exporter falls back to the generic note).
-    assert decision.rewrite_requested is True
-    assert decision.rewrite_requested_refs is None
 
 
 # ---------------------------------------------------------------------------
