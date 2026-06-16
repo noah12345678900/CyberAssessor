@@ -123,6 +123,29 @@ _BARE_INHERITED_FROM = re.compile(r"\binherited from\b", re.IGNORECASE)
 # names an external CSP (rare in practice).
 _COL_L_EXTERNAL_HINTS: tuple[str, ...] = ("aws", "azure", "gcp", "csp", "cloud service provider")
 
+# Column L has two real-world conventions and we must handle both:
+#   (a) a SOURCE NAME ("SDA Enterprise Service", "Local") — the convention the
+#       structural 8a rule was written for; and
+#   (b) a YES/NO flag answering "Is this control inherited?" — the common eMASS
+#       form. In convention (b), "No" means NOT inherited (the control DOES need
+#       testing/evidence) and MUST NOT be read as a source named "No". Adopting
+#       a bare "No" as an inheritance source silently short-circuited rows to
+#       Compliant — the bug this guards against.
+#
+# So before the structural-source rule fires, normalize these boolean tokens:
+#   - NOT-inherited tokens → no auto-rule (fall through to a normal assessment).
+#   - inherited-but-source-UNNAMED tokens ("Yes") → ambiguous: a plain "Yes"
+#     names no source, so we can't tell internal (8a→Compliant) from external
+#     CSP (8b→NA). Treat like a bare "inherited from" → UNCLEAR_8C (ask).
+# "Local" keeps its own meaning (we own it → fall through) and is handled
+# separately below, NOT in these sets.
+_COL_L_NOT_INHERITED: frozenset[str] = frozenset(
+    {"no", "n", "false", "not inherited", "none", "n/a", "na"}
+)
+_COL_L_INHERITED_UNNAMED: frozenset[str] = frozenset(
+    {"yes", "y", "true", "inherited"}
+)
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -242,7 +265,19 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
 
     # --- 4. Rule 8a structural — col L names an internal inheritance source
     col_l = (row.inherited or "").strip()
-    if col_l and col_l.lower() != "local":
+    col_l_lower = col_l.lower()
+    # "Local" → we own it locally; no auto-rule (normal assessment).
+    # A yes/no FLAG must be interpreted, not treated as a source name:
+    #   "No" → NOT inherited → needs testing → fall through (no auto-rule).
+    #   "Yes" → inherited but source unnamed → ambiguous → UNCLEAR_8C below.
+    # Only a real source name (not Local, not a bare boolean, not a CSP) fires
+    # the structural 8a Compliant rule.
+    if (
+        col_l
+        and col_l_lower != "local"
+        and col_l_lower not in _COL_L_NOT_INHERITED
+        and col_l_lower not in _COL_L_INHERITED_UNNAMED
+    ):
         if not _value_names_external_csp(col_l):
             return AutoStatusResult(
                 verdict=AutoStatusVerdict.COMPLIANT_8A,
@@ -255,6 +290,22 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
         # Col L names a CSP-ish source — that's an 8b structural signal, but
         # the plugin requires text triggers in K/J for 8b; if we got here
         # without one, fall through to 8c.
+    elif col_l_lower in _COL_L_INHERITED_UNNAMED:
+        # "Yes" with no named source — can't tell internal (8a→Compliant)
+        # from external CSP (8b→NA). Escalate, mirroring bare "inherited from".
+        return AutoStatusResult(
+            verdict=AutoStatusVerdict.UNCLEAR_8C,
+            status=None,
+            narrative=None,
+            rule="8c",
+            trigger_phrase=col_l,
+            trigger_column="L",
+            reason=(
+                'Col L is marked inherited ("Yes") but names no source. '
+                "Cannot distinguish internal (8a → Compliant) from external "
+                "CSP (8b → Not Applicable). Escalate to assessor."
+            ),
+        )
 
     # --- 5. Rule 8c — bare "inherited from" w/ no qualifier -------------
     for col_name, text in (("K", row.procedures), ("J", row.guidance)):
