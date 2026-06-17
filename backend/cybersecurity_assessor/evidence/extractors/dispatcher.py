@@ -24,7 +24,9 @@ from .base import ExtractedDoc, ExtractorError, extract as _extract_via_registry
 
 # Import sub-modules for their side effect (registering callables).
 # Order does not matter; the dict keys are unique by extension.
+from . import diagram as _diagram  # noqa: F401
 from . import docx as _docx  # noqa: F401
+from . import image as _image  # noqa: F401
 from . import nessus as _nessus  # noqa: F401
 from . import pdf as _pdf  # noqa: F401
 from . import pptx as _pptx  # noqa: F401
@@ -54,6 +56,17 @@ _KIND_BY_SUFFIX = {
     ".md": EvidenceKind.TEXT,
     ".log": EvidenceKind.TEXT,
     ".csv": EvidenceKind.TEXT,
+    # Raster images (no OCR — filename/metadata tagging only).
+    ".png": EvidenceKind.IMAGE,
+    ".jpg": EvidenceKind.IMAGE,
+    ".jpeg": EvidenceKind.IMAGE,
+    ".gif": EvidenceKind.IMAGE,
+    ".bmp": EvidenceKind.IMAGE,
+    ".tif": EvidenceKind.IMAGE,
+    ".tiff": EvidenceKind.IMAGE,
+    # Vector/structured diagrams (shape/label text extracted via stdlib).
+    ".vsdx": EvidenceKind.DIAGRAM,
+    ".svg": EvidenceKind.DIAGRAM,
 }
 
 

@@ -62,7 +62,9 @@ def session() -> Session:
     au2 = Control(framework_id=fw.id, control_id="au-2", title="Audit Events", family="AU")
     cm6 = Control(framework_id=fw.id, control_id="cm-6", title="Configuration Settings", family="CM")
     ra5 = Control(framework_id=fw.id, control_id="ra-5", title="Vulnerability Monitoring and Scanning", family="RA")
-    s.add_all([ac2, au2, cm6, ra5])
+    sc7 = Control(framework_id=fw.id, control_id="sc-7", title="Boundary Protection", family="SC")
+    ca3 = Control(framework_id=fw.id, control_id="ca-3", title="Information Exchange", family="CA")
+    s.add_all([ac2, au2, cm6, ra5, sc7, ca3])
     s.flush()
 
     s.add_all(
@@ -94,6 +96,16 @@ def session() -> Session:
                 control_id_fk=ra5.id,
                 objective_id="CCI-001054",
                 text="Scan for vulnerabilities in the information system.",
+            ),
+            Objective(
+                control_id_fk=sc7.id,
+                objective_id="CCI-001097",
+                text="Monitor and control communications at the external boundary.",
+            ),
+            Objective(
+                control_id_fk=ca3.id,
+                objective_id="CCI-000257",
+                text="Authorize connections to other systems.",
             ),
         ]
     )
@@ -222,6 +234,51 @@ def test_non_scan_kind_does_not_tag_ra5(session):
     ra5 = session.exec(select(Objective).where(Objective.objective_id == "CCI-001054")).one()
     tags = session.exec(select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)).all()
     assert ra5.id not in {t.objective_id for t in tags}
+
+
+# ---------------------------------------------------------------------------
+# Kind-implies-objective: a boundary/network DIAGRAM anchors to SC-7/CA-3/...
+# ---------------------------------------------------------------------------
+
+
+def test_boundary_diagram_tags_boundary_controls(session):
+    """A DIAGRAM whose name/text signals a boundary diagram tags SC-7 + CA-3.
+
+    Diagrams carry no CCI token; without the kind rule they'd produce zero
+    tags and never appear on boundary controls. Filename/text keyword gated.
+    """
+    e = _make_evidence(
+        session,
+        kind=EvidenceKind.DIAGRAM,
+        path="C:/fake/network_boundary_diagram.svg",
+        title="network_boundary_diagram",
+    )
+    tag_evidence(session, e, text="[diagram] network boundary\nDMZ firewall external boundary")
+    sc7 = session.exec(select(Objective).where(Objective.objective_id == "CCI-001097")).one()
+    ca3 = session.exec(select(Objective).where(Objective.objective_id == "CCI-000257")).one()
+    tagged = {t.objective_id for t in session.exec(
+        select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)
+    ).all()}
+    assert sc7.id in tagged
+    assert ca3.id in tagged
+
+
+def test_non_boundary_image_does_not_tag_boundary_controls(session):
+    """An IMAGE with no boundary keyword must NOT tag SC-7 — keeps the rule
+    precise. (It will instead surface in the ingest zero-tag warning.)
+    """
+    e = _make_evidence(
+        session,
+        kind=EvidenceKind.IMAGE,
+        path="C:/fake/login_page.png",
+        title="login_page",
+    )
+    tag_evidence(session, e, text="[image] login page")
+    sc7 = session.exec(select(Objective).where(Objective.objective_id == "CCI-001097")).one()
+    tagged = {t.objective_id for t in session.exec(
+        select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)
+    ).all()}
+    assert sc7.id not in tagged
 
 
 # ---------------------------------------------------------------------------

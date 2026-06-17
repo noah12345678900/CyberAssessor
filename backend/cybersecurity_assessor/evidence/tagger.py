@@ -171,6 +171,22 @@ EVIDENCE_TYPE_TO_CONTROLS: dict[str, list[str]] = {
     "training_record": ["at-2", "at-3", "at-4"],
 }
 
+# Diagram/image kind rule: a network/boundary/architecture diagram is, by
+# common sense, evidence for the boundary + data-flow control family — but a
+# diagram can't carry a CCI token, so Tiers 1-3 leave it untagged and it
+# vanishes from those control pages. When a DIAGRAM/IMAGE artifact's
+# filename/title (or extracted shape text) signals a boundary diagram, we
+# fan it out to these controls via _objectives_for_control_ids (no hardcoded
+# CCIs — mirrors Tier 4). Filename-gated + a modest 0.5 confidence: a diagram
+# is corroboration the boundary is documented, not proof a control is met.
+#   sc-7  boundary protection      ca-3  system interconnections
+#   ac-4  information flow          pl-8  security/architecture
+_DIAGRAM_BOUNDARY_KEYWORDS: tuple[str, ...] = (
+    "network", "boundary", "topology", "architecture", "dataflow",
+    "data flow", "data-flow", "diagram", "enclave", "dmz", "segmentation",
+)
+_DIAGRAM_BOUNDARY_CONTROLS: tuple[str, ...] = ("sc-7", "ca-3", "ac-4", "pl-8")
+
 _CCI_RE = re.compile(r"CCI-\d{6}", re.IGNORECASE)
 # Control IDs in the 800-53 catalog look like "AC-2" or "IA-5(1)" — two
 # uppercase letters, dash, 1-2 digits, optional parenthesised enhancement
@@ -1315,6 +1331,36 @@ def tag_evidence(
                     ),
                 )
                 evidence_type_hits += 1
+
+    # 4b. Diagram/image boundary rule. A DIAGRAM/IMAGE artifact that looks like
+    #     a network/boundary/architecture diagram (by filename, title, or
+    #     extracted shape text) is corroborating evidence for the boundary +
+    #     data-flow control family. Diagrams carry no CCI token, so without this
+    #     they'd tag nothing and disappear from those control pages. Fan out to
+    #     the boundary controls via the same helper Tier 4 uses (no hardcoded
+    #     CCIs). Keyword-gated for precision; 0.5 confidence (a diagram documents
+    #     the boundary, it doesn't prove the control is implemented). Anything
+    #     that matches no keyword still flows to Tier 5 / the zero-tag warning.
+    if evidence.kind in (EvidenceKind.DIAGRAM, EvidenceKind.IMAGE):
+        haystack = " ".join(
+            part for part in (evidence.title, evidence.path, text) if part
+        ).lower()
+        if any(kw in haystack for kw in _DIAGRAM_BOUNDARY_KEYWORDS):
+            for cid, obj in _objectives_for_control_ids(
+                session, _DIAGRAM_BOUNDARY_CONTROLS, framework_id=framework_id
+            ):
+                if obj.id is None:
+                    continue
+                _add(
+                    obj.id,
+                    relevance=0.6,
+                    confidence=0.5,
+                    rationale=(
+                        f"Network/boundary diagram ({evidence.kind.value}) — "
+                        f"corroborates {cid.upper()} boundary documentation."
+                    ),
+                )
+                control_id_hits += 1
 
     # 5. Semantic recall backstop (Tier 5, added 2026-06-10). Some real
     #    evidence names no doc number, no CCI, no control ID, and matches no

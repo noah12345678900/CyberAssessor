@@ -14,6 +14,8 @@ defense against `~$report.docx` Office turds polluting the index.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -349,3 +351,47 @@ def test_ingest_folder_processes_arf_and_renders_finding(session, tmp_path, work
     bundle = build_tagged_evidence(cm6_obj.id, session)
     assert bundle is not None
     assert "rule_arf_1" in bundle
+
+
+# ---------------------------------------------------------------------------
+# Image / diagram admission + zero-tag warning
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_admits_images_and_diagrams_and_flags_untagged(
+    session, tmp_path, workbook_id, monkeypatch
+):
+    """Images/diagrams are no longer dropped at the walk; an unmappable image
+    surfaces in ``IngestSummary.untagged`` instead of vanishing silently.
+    """
+    from PIL import Image as PILImage
+
+    # Keep the test offline + fast: no Tier-5 LLM judge (it would retry against
+    # a dead endpoint). Deterministic tiers are what this test exercises.
+    monkeypatch.setattr(ingest_mod, "_build_tagger_llm", lambda: (None, None))
+
+    root = tmp_path / "ev"
+    root.mkdir()
+    # A boundary diagram (svg) — should ingest AND tag boundary controls.
+    (root / "network_boundary.svg").write_bytes(
+        b'<svg xmlns="http://www.w3.org/2000/svg">'
+        b"<text>DMZ firewall external boundary</text></svg>"
+    )
+    # A generic screenshot — ingests but maps to nothing → untagged warning.
+    PILImage.new("RGB", (16, 8), "white").save(root / "login_page.png", "PNG")
+
+    summary = ingest_folder(session, root, workbook_id=workbook_id)
+
+    # Both admitted (previously both were skipped at the walk).
+    assert summary.ingested == 2
+    # The generic image is surfaced as unmapped, not silently dropped.
+    untagged_names = {Path(u["path"]).name for u in summary.untagged}
+    assert "login_page.png" in untagged_names
+    # The boundary diagram is NOT in untagged (it tagged boundary controls) —
+    # but this DB only seeds AC-2/CM-6, so sc-7/ca-3 objectives don't exist
+    # here; the diagram simply ingests. Assert it became an Evidence row.
+    from cybersecurity_assessor.models import Evidence as _Ev
+
+    paths = {Path(e.path).name for e in session.exec(select(_Ev)).all()}
+    assert "network_boundary.svg" in paths
+    assert "login_page.png" in paths

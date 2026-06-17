@@ -104,6 +104,15 @@ class IngestSummary:
     judge_invoked: int = 0
     judge_accepted: int = 0
     judge_errored: int = 0
+    # Artifacts that ingested successfully but mapped to ZERO controls (no
+    # tag from any tier). These are silently invisible on every control page
+    # unless we surface them — the failure mode behind the NESSUS / screenshot
+    # / scanned-PDF / CSV "evidence vanished" reports. The UI shows this as a
+    # warning ("3 files didn't map to any control — review or tag manually")
+    # so evidence never disappears without the assessor knowing. Each entry is
+    # ``{"path": uri, "reason": "..."}`` where reason hints WHY (no text
+    # extracted, no doc/CCI/control-id signal, etc.).
+    untagged: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -123,6 +132,7 @@ class IngestSummary:
             "judge_invoked": self.judge_invoked,
             "judge_accepted": self.judge_accepted,
             "judge_errored": self.judge_errored,
+            "untagged": self.untagged,
             "errors": self.errors,
         }
 
@@ -695,6 +705,22 @@ def ingest_source(
                 summary.judge_invoked += 1
             summary.judge_accepted += tag_result.judge_accepted
             summary.judge_errored += tag_result.judge_errored
+            # Surface artifacts that mapped to ZERO controls so they don't
+            # silently vanish from every control page. Distinguish the two
+            # root causes so the user knows whether to add a control-ID/
+            # doc-number to the file or tag it manually.
+            if tag_result.tags_created == 0:
+                if not (doc.text and doc.text.strip()):
+                    reason = (
+                        "No text could be extracted (image, diagram, scanned "
+                        "PDF, or binary) — nothing for the tagger to match."
+                    )
+                else:
+                    reason = (
+                        "No document number, CCI, or control ID found — "
+                        "tag manually or add a control reference."
+                    )
+                summary.untagged.append({"path": uri, "reason": reason})
         except Exception as exc:  # pragma: no cover - tagger should not raise
             log.exception("tagger failed on %s", uri)
             summary.errors.append({"path": uri, "error": f"tagger: {exc}"})

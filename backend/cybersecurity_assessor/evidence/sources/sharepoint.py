@@ -81,6 +81,16 @@ _INGESTIBLE_SUFFIXES = {
     ".md",
     ".log",
     ".csv",
+    # Images + vector diagrams (see local.py for rationale).
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".vsdx",
+    ".svg",
 }
 
 # Well-known "Microsoft Graph PowerShell" public client. Multi-tenant,

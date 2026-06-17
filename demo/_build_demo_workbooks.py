@@ -109,10 +109,11 @@ NIST_800_53 = FrameworkDemo(
             "Examine the IdAM config. Verify provisioning/deprovisioning is "
             "automated. Sample an onboarding ticket.",
             status="Compliant",
-            results="Examined IdAM provisioning workflow export (USD20240315) and "
-            "confirmed automated create/disable/remove actions are logged in the "
-            "AD audit channel. Sampled three onboarding tickets; all show "
-            "automated account creation.",
+            results="Examined Information System Account Management Policy "
+            "(USD20240315), which documents the automated AD create/disable/remove "
+            "workflow; confirmed account lifecycle actions are logged in the AD "
+            "audit channel. Sampled three onboarding tickets; all show automated "
+            "account creation.",
             cci="CCI-000015",
         ),
         Req(
@@ -131,18 +132,23 @@ NIST_800_53 = FrameworkDemo(
         ),
         Req(
             "AC-11", "Session Lock",
-            "AC", "",
+            "AC", "The Default Domain Policy enforces a session lock after 15 "
+            "minutes of inactivity, requiring re-authentication to resume.",
             "The information system initiates a session lock after an "
             "organization-defined period of inactivity.",
             "Provide the GPO setting that enforces inactivity lockout.",
             "Examine GPO or local policy. Verify the inactivity timeout.",
-            cci="CCI-000056",
+            status="Compliant",
+            results="Examined GPO_Password_Policy_Export.xlsx (USD20240218): "
+            "'Interactive logon: Machine inactivity limit' = '900 seconds' "
+            "(15 minutes), enforcing an automatic session lock.",
+            cci="CCI-000057",
         ),
         Req(
             "IA-5 (1) (a)", "Authenticator Management | Password-Based Authentication",
-            "IA", "The Default Domain Policy enforces a 15-character minimum and "
-            "complexity per I&A Procedures (USD20240212) Section 3.",
-            "The information system enforces minimum password complexity.",
+            "IA", "The Default Domain Policy enforces a 15-character minimum "
+            "password length per I&A Procedures (USD20240212) Section 3.",
+            "The information system enforces minimum password length.",
             "Provide the GPO export showing complexity = Enabled and minimum "
             "length.",
             "Examine the GPO export. Attempt a non-compliant password and verify "
@@ -151,7 +157,7 @@ NIST_800_53 = FrameworkDemo(
             results="Examined GPO_Password_Policy_Export.xlsx (USD20240218): "
             "'Minimum password length' = '15 characters'; 'Password must meet "
             "complexity requirements' = 'Enabled'.",
-            cci="CCI-000192",
+            cci="CCI-000205",
         ),
         Req(
             "CM-6 a", "Configuration Settings",
