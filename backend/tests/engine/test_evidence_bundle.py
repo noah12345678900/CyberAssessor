@@ -991,3 +991,98 @@ def test_backfill_link_excluded_renders_unspecified(session, objective, tmp_path
     text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
     assert f"boundary: {BOUNDARY_UNSPECIFIED}" in text
     assert "boundary: boundary" not in text
+
+
+def test_multi_segment_artifact_renders_sorted_joined_labels(session, objective, tmp_path):
+    """One artifact linked to TWO segments → both labels, comma-joined, sorted."""
+    wb = _add_workbook(session)
+    a = _add_segment(session, workbook_id=wb.id, name="Zone B", kind="internal")
+    b = _add_segment(session, workbook_id=wb.id, name="Zone A", kind="dmz")
+    # Need >=2 segments for multi-boundary; both link to the same evidence.
+    tp = tmp_path / "p.txt"; tp.write_text("spans two zones", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///span.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    _link_boundary(session, evidence_id=ev.id, segment_id=a.id, source=ScopeLinkSource.MANUAL)
+    _link_boundary(session, evidence_id=ev.id, segment_id=b.id, source=ScopeLinkSource.MANUAL)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    # Sorted: "Zone A (dmz)" before "Zone B (internal)".
+    assert "boundary: Zone A (dmz), Zone B (internal)" in text
+
+
+def test_cross_workbook_link_does_not_leak(session, objective, tmp_path):
+    """A link to ANOTHER workbook's segment must NOT render in this workbook's
+    bundle — the defensive workbook_id filter on the join. Guards the exact
+    cross-boundary misattribution the feature exists to prevent."""
+    wb = _add_workbook(session)
+    # This workbook is multi-boundary (2 segments) so rendering is active.
+    _add_segment(session, workbook_id=wb.id, name="AWS GovCloud", kind="tenant")
+    _add_segment(session, workbook_id=wb.id, name="Azure Government", kind="tenant")
+    # A DIFFERENT workbook with its own segment.
+    other_wb = Workbook(path="C:/wb/other.xlsx", filename="other.xlsx")
+    session.add(other_wb); session.commit(); session.refresh(other_wb)
+    foreign = _add_segment(session, workbook_id=other_wb.id, name="Foreign Tenant", kind="tenant")
+
+    tp = tmp_path / "p.txt"; tp.write_text("evidence", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///x.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    # Link the evidence to the FOREIGN workbook's segment.
+    _link_boundary(session, evidence_id=ev.id, segment_id=foreign.id, source=ScopeLinkSource.MANUAL)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    # Foreign label must NOT appear; artifact renders unspecified instead.
+    assert "Foreign Tenant" not in text
+    assert f"boundary: {BOUNDARY_UNSPECIFIED}" in text
+
+
+def test_mixed_auto_and_backfill_keeps_only_explicit(session, objective, tmp_path):
+    """Same evidence with an AUTO link AND a BACKFILL link → only the AUTO
+    segment renders; the BACKFILL one is dropped."""
+    wb = _add_workbook(session)
+    good = _add_segment(session, workbook_id=wb.id, name="AWS GovCloud", kind="tenant")
+    legacy = _add_segment(session, workbook_id=wb.id, name="boundary")
+    tp = tmp_path / "p.txt"; tp.write_text("evidence", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///x.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    _link_boundary(session, evidence_id=ev.id, segment_id=good.id, source=ScopeLinkSource.AUTO)
+    _link_boundary(session, evidence_id=ev.id, segment_id=legacy.id, source=ScopeLinkSource.BACKFILL)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    assert "boundary: AWS GovCloud (tenant)" in text
+    assert "boundary: boundary" not in text
+
+
+# ---------------------------------------------------------------------------
+# Corroboration gate: an un-OCR'd image must NOT count as a corroborator
+# ---------------------------------------------------------------------------
+
+from cybersecurity_assessor.engine.evidence_bundle import has_nonscan_evidence  # noqa: E402
+
+
+def test_unread_image_is_not_a_corroborator(session, objective, tmp_path):
+    """An [image — no OCR] screenshot is existence-only; it must NOT satisfy the
+    STIG-pass corroboration gate (has_nonscan_evidence False when it's the only
+    non-scan artifact)."""
+    tp = tmp_path / "img.txt"
+    tp.write_text("[image — no OCR] login screen", encoding="utf-8")
+    ev = _add_evidence(
+        session, path="file:///login.png", kind=EvidenceKind.IMAGE,
+        title="login", doc_number=None, extracted_text_path=str(tp),
+    )
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    assert has_nonscan_evidence(objective.id, session) is False
+
+
+def test_ocrd_image_is_a_corroborator(session, objective, tmp_path):
+    """An OCR'd image with real text DOES corroborate."""
+    tp = tmp_path / "img.txt"
+    tp.write_text("[image] gpo\nMinimum password length: 15 characters", encoding="utf-8")
+    ev = _add_evidence(
+        session, path="file:///gpo.png", kind=EvidenceKind.IMAGE,
+        title="gpo", doc_number=None, extracted_text_path=str(tp),
+    )
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    assert has_nonscan_evidence(objective.id, session) is True

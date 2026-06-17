@@ -223,6 +223,35 @@ def _first_sentence(text: str | None, max_chars: int) -> str:
     return t[: max_chars - 1].rstrip() + "\u2026"
 
 
+# Markers the image extractor writes when no pixel text was recovered (no OCR
+# binary, or OCR found nothing). An image carrying one of these is existence-
+# only — the prompt forbids it from substantiating a technical setting, so it
+# must ALSO not count as a corroborator for the STIG-pass gate. Kept in sync
+# with extractors/image.py.
+_IMAGE_NO_TEXT_MARKERS = ("[image — no OCR]", "[image — OCR found no text]")
+
+
+def _image_has_real_text(extracted_text_path: str | None) -> bool:
+    """True when an IMAGE artifact's extracted text is actual OCR'd content.
+
+    Reads only the small head of the file (the marker, if any, is on line 1).
+    Returns False for the unread-image markers or a missing/empty file — so an
+    un-OCR'd screenshot can't masquerade as a corroborating document.
+    """
+    if not extracted_text_path:
+        return False
+    p = Path(extracted_text_path)
+    if not p.exists():
+        return False
+    try:
+        head = p.read_text(encoding="utf-8", errors="replace")[:200].lstrip()
+    except OSError:
+        return False
+    if not head:
+        return False
+    return not any(head.startswith(m) for m in _IMAGE_NO_TEXT_MARKERS)
+
+
 def has_nonscan_evidence(objective_id: int, session: Session) -> bool:
     """True iff at least one non-superseded tagged artifact on ``objective_id``
     is a non-scan kind (policy/SSP/baseline doc/config/etc.).
@@ -236,16 +265,24 @@ def has_nonscan_evidence(objective_id: int, session: Session) -> bool:
     Mirrors ``build_tagged_evidence``'s supersession filter — superseded
     artifacts are not allowed to satisfy corroboration any more than they
     are allowed to be fed to the LLM as current evidence.
+
+    IMAGE artifacts only corroborate when their pixels were actually OCR'd —
+    an ``[image — no OCR]`` / ``[image — OCR found no text]`` screenshot is
+    existence-only (the prompt forbids it from substantiating a setting), so it
+    must not silently satisfy the corroboration gate either.
     """
     rows = session.exec(
-        select(Evidence.kind)
+        select(Evidence.kind, Evidence.extracted_text_path)
         .join(EvidenceTag, EvidenceTag.evidence_id == Evidence.id)
         .where(EvidenceTag.objective_id == objective_id)
         .where(Evidence.superseded_by_id.is_(None))
     ).all()
-    for kind in rows:
-        if kind not in _SCAN_EVIDENCE_KINDS:
-            return True
+    for kind, text_path in rows:
+        if kind in _SCAN_EVIDENCE_KINDS:
+            continue
+        if kind == EvidenceKind.IMAGE and not _image_has_real_text(text_path):
+            continue  # un-OCR'd image is not a corroborator
+        return True
     return False
 
 
@@ -301,7 +338,9 @@ def _workbook_is_multi_boundary(workbook_id: int | None, session: Session) -> bo
 
 
 def _explicit_boundary_labels_by_evidence(
-    evidence_ids: "Sequence[int]", session: Session
+    evidence_ids: "Sequence[int]",
+    session: Session,
+    workbook_id: int | None = None,
 ) -> dict[int, list[str]]:
     """Batched evidence_id -> [BoundarySegment label] for EXPLICIT links only.
 
@@ -309,11 +348,20 @@ def _explicit_boundary_labels_by_evidence(
     trustworthy (AUTO/MANUAL) attributions reach the header. Label is
     ``"<name>"`` or ``"<name> (<kind>)"`` when the segment carries a kind
     (dmz/internal/mgmt/tenant). Returns ``{}`` when no explicit links exist.
+
+    ``workbook_id`` scopes the segment join to the active workbook. Evidence
+    today is per-workbook (composite-unique on ``(workbook_id, sha256)``), so a
+    link can only reference its own workbook's segments in practice — but the
+    join itself is unconstrained, so we pin it defensively. Without this filter,
+    if an Evidence row were ever shared across workbooks, this could render
+    another workbook's tenant label and cause the exact cross-boundary
+    misattribution the feature exists to prevent. None preserves the legacy
+    (unscoped) behavior for callers that don't have a workbook in hand.
     """
     ids = [eid for eid in evidence_ids if eid is not None]
     if not ids:
         return {}
-    rows = session.exec(
+    query = (
         select(
             EvidenceBoundary.evidence_id,
             BoundarySegment.name,
@@ -325,7 +373,10 @@ def _explicit_boundary_labels_by_evidence(
         )
         .where(EvidenceBoundary.evidence_id.in_(ids))  # type: ignore[union-attr]
         .where(EvidenceBoundary.source.in_(_EXPLICIT_LINK_SOURCES))  # type: ignore[union-attr]
-    ).all()
+    )
+    if workbook_id is not None:
+        query = query.where(BoundarySegment.workbook_id == workbook_id)
+    rows = session.exec(query).all()
     out: dict[int, list[str]] = {}
     for ev_id, name, kind in rows:
         label = f"{name} ({kind})" if kind else str(name)
@@ -434,7 +485,9 @@ def build_tagged_evidence_with_payload(
     render_boundaries = _workbook_is_multi_boundary(workbook_id, session)
     boundary_map: dict[int, list[str]] = (
         _explicit_boundary_labels_by_evidence(
-            [ev.id for _tag, ev in rows if ev.id is not None], session
+            [ev.id for _tag, ev in rows if ev.id is not None],
+            session,
+            workbook_id=workbook_id,
         )
         if render_boundaries
         else {}
