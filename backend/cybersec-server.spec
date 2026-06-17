@@ -58,11 +58,14 @@ hiddenimports = [
     "sqlalchemy.dialects.sqlite",
     # Alembic env hook imports the package's metadata target
     "cybersecurity_assessor.migrations",
-    # OCR: pytesseract is lazy-imported inside extractors/_ocr.py, so the
-    # static analyzer can't trace it from the entry script. pypdfium2 (PDF
-    # render) is collected via the package chain, but the Tesseract wrapper
-    # must be named explicitly or image/scan-PDF OCR ImportErrors when frozen.
+    # OCR: pytesseract + pypdfium2 are lazy-imported inside extractors/_ocr.py,
+    # so the static analyzer can't trace them from the entry script. pypdfium2's
+    # native pdfium.dll is normally pulled by the pyinstaller-hooks-contrib hook
+    # (hook-pypdfium2_raw), but we name both modules explicitly so scan-PDF OCR
+    # doesn't silently break if that contrib hook is ever absent/downgraded.
     "pytesseract",
+    "pypdfium2",
+    "pypdfium2_raw",
 ]
 
 # Pull the whole package (modules + data files + any C extensions).
@@ -107,8 +110,16 @@ if _os.path.isdir(_TESS_DIR):
         for _f in _files:
             _abs = _os.path.join(_root, _f)
             _rel = _os.path.relpath(_root, _TESS_DIR)
-            # Destination under the bundle: tesseract/  or  tesseract/tessdata/
-            _dest = "tesseract" if _rel == "." else _os.path.join("tesseract", _rel)
+            # Destination under the bundle: tesseract/  or  tesseract/tessdata/.
+            # Force FORWARD slashes — PyInstaller's data dest is a POSIX-style
+            # relative path; a Windows backslash here is version-dependent and
+            # can flatten tessdata/eng.traineddata into a single file literally
+            # named "tessdata\eng.traineddata", which breaks TESSDATA_PREFIX
+            # lookup at runtime. Normalizing is harmless where it already worked.
+            if _rel == ".":
+                _dest = "tesseract"
+            else:
+                _dest = "tesseract/" + _rel.replace(_os.sep, "/")
             datas.append((_abs, _dest))
 else:  # pragma: no cover - build-time guard
     raise SystemExit(

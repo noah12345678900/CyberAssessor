@@ -69,10 +69,19 @@ def extract_image(stream: BinaryIO, name: str) -> ExtractedDoc:
             # OCR while the image is still open. ocr_image never raises and
             # returns "" when no binary is resolvable or nothing is found.
             if tesseract_available():
-                # Convert paletted/animated frames to RGB so Tesseract gets a
-                # clean raster; .convert is cheap and a no-op for RGB inputs.
-                ocr_target = img.convert("RGB") if img.mode not in ("RGB", "L") else img
-                ocr_text = ocr_image(ocr_target)
+                # Normalize to a clean raster Tesseract can read. Exotic modes
+                # (CMYK, I;16, F, multi-frame frame-0) can make .convert raise;
+                # OCR is an enrichment, so a conversion failure must degrade to
+                # the no-text caption, NOT drop the whole image. We isolate the
+                # convert+OCR in its own guard so a bad raster never escalates
+                # to ExtractorError. .convert is a no-op for RGB/L.
+                try:
+                    ocr_target = (
+                        img.convert("RGB") if img.mode not in ("RGB", "L") else img
+                    )
+                    ocr_text = ocr_image(ocr_target)
+                except Exception:  # noqa: BLE001 — OCR is best-effort
+                    ocr_text = ""
                 metadata["ocr"] = True
             else:
                 metadata["ocr"] = False

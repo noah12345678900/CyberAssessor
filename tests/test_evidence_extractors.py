@@ -514,3 +514,48 @@ def test_vsdx_extractor_rejects_non_zip(tmp_path):
     p.write_bytes(b"not a zip file")
     with pytest.raises(ExtractorError):
         extract_path(p)
+
+
+def test_image_extractor_degrades_when_convert_raises(tmp_path, monkeypatch):
+    """If RGB conversion of an exotic mode raises, OCR degrades to the no-text
+    caption — the whole image is NOT dropped (no ExtractorError)."""
+    from PIL import Image as PILImage
+
+    from cybersecurity_assessor.evidence.extractors import image as image_mod
+
+    monkeypatch.setattr(image_mod, "tesseract_available", lambda: True)
+
+    # Force .convert to blow up the way an unsupported mode would.
+    real_open = PILImage.open
+
+    class _BoomImg:
+        def __init__(self, inner):
+            self._inner = inner
+            self.size = inner.size
+            self.format = inner.format
+            self.mode = "I;16"  # not in (RGB, L) -> triggers convert path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def getexif(self):
+            return {}
+
+        def convert(self, _mode):
+            raise OSError("cannot convert I;16")
+
+    p = tmp_path / "exotic.png"
+    PILImage.new("RGB", (20, 10), "white").save(p, "PNG")
+    monkeypatch.setattr(
+        image_mod.__dict__["__builtins__"] if False else PILImage,
+        "open",
+        lambda *a, **k: _BoomImg(real_open(*a, **k)),
+    )
+
+    doc = extract_path(p)  # must NOT raise
+    assert doc.kind == EvidenceKind.IMAGE
+    # OCR ran (available) but produced nothing usable -> found-no-text marker.
+    assert "ocr found no text" in doc.text.lower()

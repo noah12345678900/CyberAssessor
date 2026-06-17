@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 # multiplier. 200 balances typed-text accuracy against CPU cost.
 OCR_DPI = 200
 
+# Per-image OCR wall-clock cap (seconds). The sidecar is single-process, so a
+# pathological raster (huge dimensions, dense noise) would otherwise pin a
+# worker for minutes. pytesseract raises RuntimeError/TimeoutError past this;
+# ocr_image swallows it and returns "" (the image degrades to existence-only).
+# 60s is generous for a real screenshot (~1-2s) but bounds the worst case.
+OCR_TIMEOUT_SECONDS = 60
+
 
 def _bundled_tesseract_dir() -> Path | None:
     """Return the vendored Tesseract dir, frozen-aware.
@@ -136,7 +143,11 @@ def ocr_image(image: "PILImage") -> str:
     try:
         import pytesseract  # type: ignore[import-not-found]
 
-        return (pytesseract.image_to_string(image) or "").strip()
+        # timeout bounds a pathological raster from pinning the single-process
+        # worker; on expiry pytesseract raises and we degrade to "".
+        return (
+            pytesseract.image_to_string(image, timeout=OCR_TIMEOUT_SECONDS) or ""
+        ).strip()
     except Exception as exc:  # pragma: no cover - exotic image/Tesseract faults
         logger.warning("OCR failed on image: %s", exc)
         return ""

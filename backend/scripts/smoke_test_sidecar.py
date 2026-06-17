@@ -116,6 +116,60 @@ def run_smoke(exe_path: Path) -> int:
         return 6
 
     print(f"smoke: PASS — handshake {elapsed:.2f}s, /healthz={payload}", file=sys.stderr)
+
+    # OCR packaging gate. /healthz can't catch a mispackaged Tesseract because
+    # the OCR path is lazy-imported and only runs on image evidence. A flattened
+    # tessdata dir or a missing tesseract.exe would ship green otherwise. Assert
+    # the bundled binary exists at the path _ocr.py resolves AND that it runs
+    # against its bundled language data (rc 0 with TESSDATA_PREFIX=.../tessdata).
+    ocr_rc = _check_bundled_ocr(exe_path.parent)
+    if ocr_rc != 0:
+        return ocr_rc
+
+    print("smoke: PASS — bundled Tesseract OCR reachable", file=sys.stderr)
+    return 0
+
+
+def _check_bundled_ocr(dist_dir: Path) -> int:
+    """Verify the bundled Tesseract is present and runs with its tessdata.
+
+    Mirrors extractors/_ocr.py: binary at ``_internal/tesseract/tesseract.exe``,
+    language data at ``_internal/tesseract/tessdata/``. Runs ``tesseract
+    --list-langs`` with ``TESSDATA_PREFIX`` set the way _ocr.py sets it; rc 0
+    proves the data file is readable at that prefix (the exact failure a
+    flattened/backslashed dest path would cause). Stdlib only.
+    """
+    tess_dir = dist_dir / "_internal" / "tesseract"
+    exe = tess_dir / "tesseract.exe"
+    eng = tess_dir / "tessdata" / "eng.traineddata"
+    if not exe.exists():
+        print(f"smoke: OCR FAIL — bundled tesseract.exe missing: {exe}", file=sys.stderr)
+        return 7
+    if not eng.exists():
+        print(
+            f"smoke: OCR FAIL — bundled eng.traineddata missing: {eng} "
+            "(tessdata likely flattened by a bad dest path)",
+            file=sys.stderr,
+        )
+        return 8
+    try:
+        result = subprocess.run(
+            [str(exe), "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "TESSDATA_PREFIX": str(tess_dir / "tessdata")},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"smoke: OCR FAIL — could not run tesseract: {exc}", file=sys.stderr)
+        return 9
+    if result.returncode != 0 or "eng" not in (result.stdout + result.stderr):
+        print(
+            f"smoke: OCR FAIL — tesseract --list-langs rc={result.returncode}; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            file=sys.stderr,
+        )
+        return 10
     return 0
 
 
