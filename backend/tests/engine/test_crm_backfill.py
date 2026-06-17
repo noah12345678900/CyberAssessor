@@ -786,7 +786,7 @@ def test_defensive_guard_skips_when_decision_not_accepted(
     )
     _install_fake_reader(monkeypatch, [_make_row()])
 
-    def fake_finalize(self, row, cci, entry, *, outcome):
+    def fake_finalize(self, row, cci, entry, *, outcome, workbook_id=None, slices=None):
         return Decision(
             cci_id=cci,
             excel_row=row.excel_row,

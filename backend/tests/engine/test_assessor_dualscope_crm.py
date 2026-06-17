@@ -32,6 +32,7 @@ from cybersecurity_assessor.engine.assessor import Assessor, LlmProposal  # noqa
 from cybersecurity_assessor.engine.crm_context import (  # noqa: E402
     CrmContext,
     CrmEntry,
+    ImplementationSlice,
 )
 from cybersecurity_assessor.excel.ccis_reader import CcisRow  # noqa: E402
 from cybersecurity_assessor.models import ComplianceStatus  # noqa: E402
@@ -68,6 +69,65 @@ def test_dualscope_both_inherited_short_circuits_no_llm():
     assert stub.calls == [], (
         "LLM must not be called when both scopes are inheritable; "
         f"got calls={stub.calls!r}"
+    )
+
+
+def test_multi_crm_inherited_short_circuit_carries_every_cloud_narrative():
+    """Two inherited CRMs (AWS + Azure) → parent Decision cites BOTH clouds.
+
+    Regression for the "only Microsoft" symptom: the short-circuit Decision
+    is built around the single latest-attach ``CrmEntry`` (Azure), so its
+    ``narrative`` / ``narrative_cloud`` mention only Azure. The per-scope
+    slices carry BOTH clouds' verbatim CRM text, and ``_finalize_crm_decision``
+    must fold them into ``narratives_by_scope`` so the parent Decision — and
+    every downstream consumer (``plan_implementations`` →
+    ``compose_rolled_narrative`` → parent ``narrative_q``) — surfaces AWS AND
+    Microsoft, not just the latest attach.
+    """
+    row = _row(control_id="PE-3")
+    crm = CrmContext(
+        by_control={
+            # latest-attach-wins single entry = Azure (Microsoft) only.
+            "pe-3": CrmEntry(
+                control_id="pe-3",
+                responsibility="inherited",
+                narrative="Microsoft Azure Government enforces datacenter physical access.",
+                source_baseline_id=2,
+            )
+        },
+        by_control_impls={
+            "pe-3": [
+                ImplementationSlice(
+                    scope_label="AWS GovCloud",
+                    responsibility="inherited",
+                    narrative="AWS GovCloud datacenters enforce physical access controls.",
+                    source_baseline_id=1,
+                ),
+                ImplementationSlice(
+                    scope_label="Azure Government",
+                    responsibility="inherited",
+                    narrative="Microsoft Azure Government enforces datacenter physical access.",
+                    source_baseline_id=2,
+                ),
+            ]
+        },
+    )
+    stub = StubLlmClient([])
+    decision = Assessor(llm=stub).assess(row, crm_context=crm)
+
+    assert decision.source == "crm_inherited"
+    assert decision.status is ComplianceStatus.COMPLIANT
+    assert stub.calls == []
+    # The parent Decision now carries a per-scope narrative for EACH cloud.
+    assert set(decision.narratives_by_scope) == {"AWS GovCloud", "Azure Government"}
+    assert "AWS GovCloud" in decision.narratives_by_scope
+    assert (
+        "AWS GovCloud datacenters"
+        in decision.narratives_by_scope["AWS GovCloud"]
+    )
+    assert (
+        "Microsoft Azure Government"
+        in decision.narratives_by_scope["Azure Government"]
     )
 
 
