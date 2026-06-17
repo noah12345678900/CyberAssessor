@@ -52,10 +52,12 @@ from cybersecurity_assessor.engine.assessor import Assessor, Decision  # noqa: E
 from cybersecurity_assessor.engine.crm_backfill import (  # noqa: E402
     BackfillResult,
     backfill_workbook_crm,
+    backfill_workbook_rules,
 )
 from cybersecurity_assessor.excel.ccis_reader import CcisIndex, CcisRow  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
     Assessment,
+    AssessmentImplementation,
     Baseline,
     BaselineControl,
     BaselineObjective,
@@ -320,13 +322,14 @@ def _install_fake_reader(monkeypatch: pytest.MonkeyPatch, rows: list[CcisRow]) -
 
 
 def test_backfill_result_as_dict_round_trip():
-    """All five counters round-trip through ``as_dict`` with their key names."""
+    """All counters round-trip through ``as_dict`` with their key names."""
     r = BackfillResult(
         applied=3,
         skipped_existing=2,
         skipped_no_crm_entry=4,
         skipped_non_deterministic=1,
         skipped_no_workbook_row=5,
+        healed_deleted=6,
     )
     assert r.as_dict() == {
         "applied": 3,
@@ -334,6 +337,7 @@ def test_backfill_result_as_dict_round_trip():
         "skipped_no_crm_entry": 4,
         "skipped_non_deterministic": 1,
         "skipped_no_workbook_row": 5,
+        "healed_deleted": 6,
     }
 
 
@@ -1251,4 +1255,206 @@ def test_multitenant_empty_slices_defers_not_backfill(
         f"got {result.as_dict()}"
     )
     assert result.skipped_non_deterministic == 1
+    assert session.exec(select(Assessment)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# Self-heal: attach-order independence (the AC-17 / PE-3 production bug)
+# ---------------------------------------------------------------------------
+
+
+def test_self_heal_deterministic_then_customer_deletes_stale_row(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """AC-17 bug: inherited CRM attached first, customer CRM attached second.
+
+    First attach (Azure inherited) writes a deterministic Compliant row. Second
+    attach (AWS customer) makes the control customer/hybrid — it must now defer
+    to the LLM. The self-heal deletes the stale system-written deterministic
+    row so no frozen single-scope Compliant survives.
+    """
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    _install_fake_reader(monkeypatch, [_make_row()])
+
+    # Attach #1 — Azure inherited (deterministic) → backfill writes a row.
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="inherited",
+        scope_label="Azure Government",
+        attached_at=datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Inherited via managed Azure plane.",
+    )
+    r1 = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+    session.commit()
+    assert r1.applied == 1
+    assert len(session.exec(select(Assessment)).all()) == 1
+
+    # Attach #2 — AWS customer → control is now customer/hybrid.
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="customer",
+        scope_label="AWS GovCloud",
+        attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Customer configures AWS Client VPN.",
+    )
+    r2 = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    # The stale deterministic row was healed (deleted); control now defers.
+    assert r2.healed_deleted == 1, f"expected self-heal delete; got {r2.as_dict()}"
+    assert session.exec(select(Assessment)).all() == [], (
+        "stale single-scope deterministic row must be deleted so the control "
+        "defers to the LLM"
+    )
+    impls = session.exec(select(AssessmentImplementation)).all()
+    assert impls == [], "impl rows of the deleted assessment must be removed too"
+
+
+def test_self_heal_never_stomps_user_edited_row(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """A human-edited assessment is NEVER deleted by the self-heal path.
+
+    Even when the control becomes customer/hybrid (which would normally delete a
+    system-written deterministic row), a row whose tester is a human / whose
+    verdict_source is not a backfill source must survive untouched.
+    """
+    from cybersecurity_assessor.models import VerdictSource
+
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    _install_fake_reader(monkeypatch, [_make_row()])
+
+    # Seed a human-edited assessment for this objective.
+    human = Assessment(
+        workbook_id=workbook.id,
+        objective_id=objective_ac2.id,
+        excel_row=1,
+        status=ComplianceStatus.COMPLIANT,
+        tester="Noah Jaskolski",
+        date_tested=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        narrative_q="Human-reviewed and confirmed.",
+        narrative_class=NarrativeClass.COMPLIANCE_AFFIRMING,
+        verdict_source=VerdictSource.LLM_ACCEPT,
+        needs_review=False,
+    )
+    session.add(human)
+    session.commit()
+
+    # Attach a customer CRM that would make the control non-deterministic.
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="customer",
+        scope_label="AWS GovCloud",
+        attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Customer-owned.",
+    )
+    result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    assert result.healed_deleted == 0, "must NOT delete a human-edited row"
+    survivors = session.exec(select(Assessment)).all()
+    assert len(survivors) == 1
+    assert survivors[0].tester == "Noah Jaskolski"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic-RULE backfill (AC-18 col-N Not Applicable)
+# ---------------------------------------------------------------------------
+
+
+def test_rule_backfill_writes_col_n_not_applicable(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """A workbook col-N 'Not Applicable' row surfaces via rule backfill.
+
+    The AC-18 bug: a control marked Not Applicable in the workbook had no
+    auto-writer (only CRM controls were backfilled), so it showed a blank chip.
+    backfill_workbook_rules classifies the row (rule_8b) and writes a parent
+    NOT_APPLICABLE assessment with no per-scope impl rows.
+    """
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    na_row = _make_row()
+    na_row.status = "Not Applicable"
+    na_row.results = "System has no wireless capability; control out of scope."
+    _install_fake_reader(monkeypatch, [na_row])
+
+    result = backfill_workbook_rules(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    assert result.applied == 1, f"expected one rule backfill; got {result.as_dict()}"
+    rows = session.exec(select(Assessment)).all()
+    assert len(rows) == 1
+    assert rows[0].status is ComplianceStatus.NOT_APPLICABLE
+    assert rows[0].inheritance_rule == "8b"
+    # No CRM slices → parent-only row.
+    assert session.exec(select(AssessmentImplementation)).all() == []
+
+    # Idempotent: re-run writes nothing.
+    again = backfill_workbook_rules(workbook_id=workbook.id, session=session)
+    assert again.applied == 0
+    assert again.skipped_existing == 1
+
+
+def test_rule_backfill_skips_no_auto_rule_rows(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """A plain gap row (no col-N status, no rule trigger) is left for the LLM."""
+    _install_fake_reader(monkeypatch, [_make_row()])
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    result = backfill_workbook_rules(workbook_id=workbook.id, session=session)
+    assert result.applied == 0
+    assert result.skipped_no_rule == 1
     assert session.exec(select(Assessment)).all() == []

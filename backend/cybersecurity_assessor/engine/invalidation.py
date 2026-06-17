@@ -38,15 +38,35 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import update
+from sqlalchemy import or_, update
 from sqlmodel import Session
 
-from ..models import Assessment
+from ..models import Assessment, VerdictSource
 
 # Free-form review_reason token. Kept short and grep-friendly so the
 # review-queue UI can chip-render it; matches the convention used by
 # other tokens (``rule-8c-unverified``, ``low-confidence``, etc.).
 EVIDENCE_CHANGED_REASON = "evidence-changed-since-assessment"
+
+# Verdict sources whose basis is EVIDENCE-INDEPENDENT — a CRM overlay
+# inheritance/provider/NA short-circuit or a workbook-intrinsic rule #8
+# verdict. Uploading or deleting a local artifact does NOT change the basis
+# for these (an inherited control is inherited regardless of local evidence;
+# a col-N Not Applicable is scoped out regardless). Flagging them
+# "evidence-changed" was the bug that flipped every CRM-inherited control to
+# needs-review the moment any evidence was uploaded. They are EXEMPT from
+# invalidation. Only evidence-derived verdicts (``llm*``, ``rule_no_evidence``,
+# ``cache_hit``, ``abstain``, ``imported``, or a NULL legacy source) get
+# flagged when their objective's evidence picture changes.
+_EVIDENCE_INDEPENDENT_SOURCES = (
+    VerdictSource.CRM_PROVIDER,
+    VerdictSource.CRM_INHERITED,
+    VerdictSource.CRM_NOT_APPLICABLE,
+    VerdictSource.CRM_HYBRID_MIXED,
+    VerdictSource.RULE_8A,
+    VerdictSource.RULE_8B,
+    VerdictSource.RULE_8C,
+)
 
 
 def invalidate_assessments_for_objectives(
@@ -75,6 +95,15 @@ def invalidate_assessments_for_objectives(
         .where(
             Assessment.objective_id.in_(ids),  # type: ignore[attr-defined]
             Assessment.needs_review == False,  # noqa: E712 — SQLAlchemy needs ==False, not `is False` or `not`
+            # Exempt evidence-independent verdicts (CRM inheritance / rule #8).
+            # NULL verdict_source (legacy rows) is treated as evidence-derived
+            # and DOES get flagged — safe default, matches pre-column behavior.
+            or_(
+                Assessment.verdict_source.is_(None),  # type: ignore[attr-defined]
+                Assessment.verdict_source.notin_(  # type: ignore[attr-defined]
+                    _EVIDENCE_INDEPENDENT_SOURCES
+                ),
+            ),
         )
         .values(needs_review=True, review_reason=reason)
     )

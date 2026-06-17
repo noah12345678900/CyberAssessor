@@ -18,7 +18,11 @@ from ..config import load_config
 from ..db import get_session
 from . import _batch_progress
 from ..engine import validator as v
-from ..engine.assessor import Assessor, stitch_scope_narrative
+from ..engine.assessor import (
+    Assessor,
+    decision_to_verdict_source,
+    stitch_scope_narrative,
+)
 from ..engine.crm_context import build_crm_context
 from ..engine.evidence_bundle import EvidenceBlock
 from ..engine.impl_persistence import persist_assessment_with_impls
@@ -131,63 +135,11 @@ def _coerce_abstain_persistence_fields(
     return status, narrative
 
 
-def _decision_to_verdict_source(decision) -> VerdictSource:
-    """Map a kernel ``Decision`` to the persisted ``VerdictSource`` enum.
-
-    Single source of truth for both Assessment-write sites in this module
-    (single-control endpoint + batch endpoint). Order matters:
-
-    1. ``cache_source == "cache_hit"`` wins first — a replayed Decision
-       keeps its original ``source`` string ("llm", "crm_provider", …)
-       for downstream telemetry, but the persisted row records the cache
-       provenance so cost / re-use queries don't double-count cache hits
-       as fresh LLM calls.
-    2. ``needs_review`` wins next — every abstain path (validator-exhausted,
-       LLM-parse-error, no-llm-client, dual-pass-mismatch, low-confidence,
-       unverified-cites, stale-reference, boundary-conflict) maps to
-       ``ABSTAIN`` regardless of the underlying source string.
-    3. Otherwise dispatch on ``Decision.source``. The CRM family is
-       matched by string prefix because hybrid scopes append an
-       ``+onprem_*`` suffix that we collapse to ``CRM_HYBRID_MIXED``.
-    4. Unknown source string returns ``ABSTAIN`` as a safety net so a
-       new kernel emission site without a matching enum value at least
-       routes the row to the reviewer queue rather than silently mis-tagging.
-    """
-    if getattr(decision, "cache_source", None) == "cache_hit":
-        return VerdictSource.CACHE_HIT
-    if getattr(decision, "needs_review", False):
-        return VerdictSource.ABSTAIN
-    src = decision.source or ""
-    if src == "rule_8a":
-        return VerdictSource.RULE_8A
-    if src == "rule_8b":
-        return VerdictSource.RULE_8B
-    if src == "rule-8c":
-        return VerdictSource.RULE_8C
-    if src == "rule_no_evidence":
-        return VerdictSource.RULE_NO_EVIDENCE
-    if src == "llm":
-        return VerdictSource.LLM_ACCEPT
-    if src == "llm_after_retry":
-        return VerdictSource.LLM_AFTER_RETRY
-    if src.startswith("crm_"):
-        # Hybrid: source carries a "+onprem_*" suffix when the two
-        # scopes have different verdicts; collapse to a single bucket.
-        if "+onprem_" in src:
-            return VerdictSource.CRM_HYBRID_MIXED
-        if src == "crm_provider":
-            return VerdictSource.CRM_PROVIDER
-        if src == "crm_inherited":
-            return VerdictSource.CRM_INHERITED
-        if src == "crm_not_applicable":
-            return VerdictSource.CRM_NOT_APPLICABLE
-        # Unknown crm_* variant — route to hybrid as the safe catch-all
-        # (matches the "mixed / not jointly inheritable" semantics).
-        return VerdictSource.CRM_HYBRID_MIXED
-    # Safety net: unknown source string. The persisted row still gets
-    # written but lands in the reviewer queue rather than silently
-    # being mis-tagged as one of the trusted-kernel buckets.
-    return VerdictSource.ABSTAIN
+# Verdict-source mapping moved to the engine layer (engine/assessor.py
+# decision_to_verdict_source) so the attach/open-time CRM/rule backfill can
+# stamp ``verdict_source`` too without a routes→engine import. Thin module
+# alias keeps the existing call sites in this file unchanged.
+_decision_to_verdict_source = decision_to_verdict_source
 
 
 def _persist_crm_short_circuits(

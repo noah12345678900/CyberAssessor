@@ -1097,6 +1097,15 @@ function ReviewCallout({
     confidence != null && Number.isFinite(confidence)
       ? `${Math.round(confidence * 100)}%`
       : null;
+  // The "evidence-changed" reason is an INVALIDATION flag, not a kernel
+  // abstain: the row still carries a real verdict (e.g. Compliant), it's just
+  // marked stale because the evidence set changed since it was assessed.
+  // Labeling it "assessor abstained" was misleading — relabel it neutrally and
+  // suppress the "LLM proposed" badge (no proposal was made).
+  const isEvidenceChanged = reason === "evidence-changed-since-assessment";
+  const headline = isEvidenceChanged
+    ? "Needs review — evidence changed since assessment"
+    : "Needs review — assessor abstained";
   // Split the "category: detail" form so the chip-style category badge gets
   // visual weight. Fall back to a single-line render when no colon is present.
   const colonAt = reason?.indexOf(":") ?? -1;
@@ -1107,8 +1116,8 @@ function ReviewCallout({
     <div className="rounded-md border border-amber-500/60 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-amber-800 dark:text-amber-300">
         <AlertTriangle className="h-4 w-4" />
-        <span className="text-sm font-medium">Needs review — assessor abstained</span>
-        {proposedStatus && (
+        <span className="text-sm font-medium">{headline}</span>
+        {proposedStatus && !isEvidenceChanged && (
           <Badge variant="outline" className="text-[10px]">
             LLM proposed: {proposedStatus}
           </Badge>
@@ -1125,13 +1134,17 @@ function ReviewCallout({
             <Badge
               variant="warning"
               className="text-[10px] font-mono"
-              title="Abstain category"
+              title={isEvidenceChanged ? "Review category" : "Abstain category"}
             >
               {category}
             </Badge>
           )}
           <p className="whitespace-pre-wrap leading-relaxed text-amber-900 dark:text-amber-200">
-            {detail}
+            {isEvidenceChanged
+              ? "The evidence set for this control changed after it was assessed. " +
+                "The verdict above is the prior result — re-assess to refresh it " +
+                "against the current evidence, or save to confirm it as-is."
+              : detail}
           </p>
         </div>
       ) : (
@@ -1140,9 +1153,12 @@ function ReviewCallout({
         </p>
       )}
       <p className="text-[11px] text-muted-foreground">
-        Save clears the abstain and (when cleared) writes the row to the workbook
-        working copy in the same step. Use Apply to workbook only if you want to
-        re-write an already-saved row.
+        {isEvidenceChanged
+          ? "Re-assess to refresh this verdict against the current evidence, or " +
+            "Save to confirm the existing verdict and clear the flag."
+          : "Save clears the abstain and (when cleared) writes the row to the " +
+            "workbook working copy in the same step. Use Apply to workbook only " +
+            "if you want to re-write an already-saved row."}
       </p>
     </div>
   );

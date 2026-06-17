@@ -20,26 +20,61 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from ..excel.ccis_reader import read_workbook_index
 from ..models import (
     Assessment,
+    AssessmentImplementation,
     Baseline,
     BaselineControl,
     BaselineObjective,
     Control,
     Objective,
+    VerdictSource,
     Workbook,
 )
-from .assessor import Assessor
-from .crm_context import build_crm_context
+from . import rules
+from .assessor import Assessor, decision_to_verdict_source
+from .crm_context import CrmContext, build_crm_context
 from .impl_persistence import persist_assessment_with_impls
 
 # Responsibilities the engine can decide without an LLM call. Hybrid +
 # customer still need the LLM (hybrid prepends a scoping block, customer
 # is a no-op short-circuit), so they're skipped at backfill.
 _DETERMINISTIC = {"provider", "inherited", "not_applicable"}
+
+# verdict_source values that mark a row as written by the SYSTEM (attach/open
+# backfill), i.e. safe for the self-healing backfill to overwrite or delete
+# when the CRM picture changes. A row whose verdict_source is LLM/abstain/
+# imported, or whose tester is a human, was produced or touched by a user or
+# the assess pipeline and must NEVER be stomped by backfill.
+_SYSTEM_VERDICT_SOURCES = {
+    VerdictSource.CRM_PROVIDER,
+    VerdictSource.CRM_INHERITED,
+    VerdictSource.CRM_NOT_APPLICABLE,
+    VerdictSource.CRM_HYBRID_MIXED,
+    VerdictSource.RULE_8A,
+    VerdictSource.RULE_8B,
+    VerdictSource.RULE_8C,
+}
+_SYSTEM_TESTER = "system"
+
+
+def _is_system_written(assessment: Assessment) -> bool:
+    """True when the row was written by attach/open backfill (safe to heal).
+
+    Guards the self-heal delete/rewrite: a row counts as system-written when
+    it carries a deterministic CRM/rule ``verdict_source`` AND its tester is
+    the backfill sentinel. User edits (human tester) or LLM/abstain rows are
+    excluded so the backfill never clobbers reviewer work.
+    """
+    vs = assessment.verdict_source
+    if vs is not None and vs not in _SYSTEM_VERDICT_SOURCES:
+        return False
+    if assessment.tester and assessment.tester != _SYSTEM_TESTER:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -49,6 +84,9 @@ class BackfillResult:
     skipped_no_crm_entry: int
     skipped_non_deterministic: int
     skipped_no_workbook_row: int
+    # Self-heal: stale system-written deterministic rows deleted because the
+    # control became customer/hybrid after a later CRM attach (defers to LLM).
+    healed_deleted: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -57,6 +95,7 @@ class BackfillResult:
             "skipped_no_crm_entry": self.skipped_no_crm_entry,
             "skipped_non_deterministic": self.skipped_non_deterministic,
             "skipped_no_workbook_row": self.skipped_no_workbook_row,
+            "healed_deleted": self.healed_deleted,
         }
 
 
@@ -123,14 +162,34 @@ def backfill_workbook_crm(
     if not pairs:
         return BackfillResult(0, 0, 0, 0, 0)
 
-    # Existing assessments in one query, not N — never stomp prior writes.
-    existing_obj_ids: set[int] = set(
+    # Existing assessments in one query, not N. Keyed by objective_id so the
+    # self-healing path can READ the prior row (to decide overwrite vs delete
+    # vs leave-alone), not just detect presence. One Assessment per
+    # (workbook, objective) is now enforced by uq_assessment_workbook_objective.
+    existing_assessments = list(
         session.exec(
-            select(Assessment.objective_id).where(
-                Assessment.workbook_id == workbook_id
-            )
+            select(Assessment).where(Assessment.workbook_id == workbook_id)
         ).all()
     )
+    existing_by_obj: dict[int, Assessment] = {
+        a.objective_id: a for a in existing_assessments
+    }
+    # Per-assessment persisted impl-row count, so the self-heal rewrite only
+    # fires when the CRM slice set GREW since the last backfill (e.g. PE-3 went
+    # from 1 cloud to 2). An unchanged re-run (slice count == persisted impl
+    # count) skips as ``skipped_existing`` — preserves idempotency, avoids
+    # rewriting identical rows on every attach.
+    existing_impl_count: dict[int, int] = {}
+    aids = [a.id for a in existing_assessments if a.id is not None]
+    if aids:
+        for im in session.exec(
+            select(AssessmentImplementation).where(
+                AssessmentImplementation.assessment_id.in_(aids)
+            )
+        ).all():
+            existing_impl_count[im.assessment_id] = (
+                existing_impl_count.get(im.assessment_id, 0) + 1
+            )
 
     crm_context = build_crm_context(workbook_id, session)
     if not crm_context.by_control:
@@ -160,6 +219,7 @@ def backfill_workbook_crm(
     skipped_no_entry = 0
     skipped_non_det = 0
     skipped_no_row = 0
+    healed_deleted = 0
     when = datetime.now(timezone.utc)
 
     for _, obj in pairs:
@@ -200,14 +260,45 @@ def backfill_workbook_crm(
             # single-entry short-circuit is safe — there is no second tenant to
             # mask. Preserves the original deterministic backfill behavior.
             deterministic = entry.responsibility in _DETERMINISTIC
+        existing = existing_by_obj.get(obj.id)
+
         if not deterministic:
-            # Hybrid / customer (on any scope) — leave for the LLM at
-            # assess time.
-            skipped_non_det += 1
+            # Hybrid / customer (on any scope) — this control needs the LLM at
+            # assess time. SELF-HEAL: if a PRIOR backfill (run when only one
+            # CRM was attached and the control looked all-inheritable) already
+            # wrote a deterministic row, it is now STALE — a later CRM made the
+            # control customer/hybrid. Delete that system-written row + its
+            # impl rows so the control defers cleanly to the LLM instead of
+            # showing a frozen single-scope COMPLIANT. Never touch a user- or
+            # LLM-authored row. This is the AC-17 fix (Azure attached first →
+            # deterministic row; AWS attached second → now customer/hybrid).
+            if existing is not None and _is_system_written(existing):
+                session.exec(
+                    delete(AssessmentImplementation).where(
+                        AssessmentImplementation.assessment_id == existing.id
+                    )
+                )
+                session.delete(existing)
+                existing_by_obj.pop(obj.id, None)
+                healed_deleted += 1
+            else:
+                skipped_non_det += 1
             continue
-        if obj.id in existing_obj_ids:
+
+        # Deterministic control. If a user/LLM row already owns it, leave it.
+        if existing is not None and not _is_system_written(existing):
             skipped_existing += 1
             continue
+
+        # Idempotency: a system-written deterministic row whose persisted impl
+        # set already covers the current slice count is up-to-date — skip the
+        # rewrite. Only re-derive when the slice set GREW (a later CRM added a
+        # scope), which is the PE-3 enrichment case. ``slices`` may be empty
+        # (single-CRM legacy path) → expected 0 impl rows → matches, skip.
+        if existing is not None and existing.id is not None:
+            if existing_impl_count.get(existing.id, 0) >= len(slices):
+                skipped_existing += 1
+                continue
 
         decision = assessor._finalize_crm_decision(
             row, row.cci_id or row.control_id, entry, outcome=None,
@@ -216,6 +307,35 @@ def backfill_workbook_crm(
         if not decision.accepted or decision.status is None or not decision.narrative:
             # _finalize_crm_decision always accepts, but guard the
             # invariant defensively rather than write a partial row.
+            continue
+
+        verdict_src = decision_to_verdict_source(decision)
+
+        if existing is not None:
+            # SELF-HEAL / re-derive: a prior system-written deterministic row
+            # exists, but the CRM slice set may have GROWN since (e.g. PE-3
+            # had only AWS when first backfilled, now has AWS + Azure). Rewrite
+            # it in place (is_new=False replaces the impl rows) so every cloud
+            # persists instead of freezing the first-attach snapshot.
+            existing.excel_row = decision.excel_row
+            existing.status = decision.status
+            existing.tester = tester
+            existing.narrative_q = decision.narrative
+            existing.narrative_on_prem = decision.narrative_on_prem
+            existing.narrative_cloud = decision.narrative_cloud
+            existing.narrative_class = decision.narrative_class
+            existing.inheritance_rule = decision.rule
+            existing.verdict_source = verdict_src
+            existing.date_tested = when
+            persist_assessment_with_impls(
+                session,
+                assessment=existing,
+                decision=decision,
+                crm_context=crm_context,
+                control_id=row.control_id,
+                is_new=False,
+            )
+            applied += 1
             continue
 
         new_row = Assessment(
@@ -229,6 +349,7 @@ def backfill_workbook_crm(
             narrative_cloud=decision.narrative_cloud,
             narrative_class=decision.narrative_class,
             inheritance_rule=decision.rule,
+            verdict_source=verdict_src,
             date_tested=when,
         )
         # v0.2 multi-impl: deterministic backfill goes through the same
@@ -246,15 +367,171 @@ def backfill_workbook_crm(
             is_new=True,
         )
         applied += 1
-        # Track in-memory so two attached CRMs in the same call don't
-        # double-write the same objective (latest-wins is already enforced
-        # by build_crm_context, but we keep the set consistent).
-        existing_obj_ids.add(obj.id)
+        # Track in-memory so two pairs for the same objective in this pass
+        # (join fan-out) don't double-write — the second sees the row.
+        existing_by_obj[obj.id] = new_row
 
     return BackfillResult(
         applied=applied,
         skipped_existing=skipped_existing,
         skipped_no_crm_entry=skipped_no_entry,
         skipped_non_deterministic=skipped_non_det,
+        skipped_no_workbook_row=skipped_no_row,
+        healed_deleted=healed_deleted,
+    )
+
+
+@dataclass(frozen=True)
+class RuleBackfillResult:
+    """Counts for the deterministic-RULE backfill (rules.classify_row)."""
+
+    applied: int
+    skipped_existing: int
+    skipped_no_rule: int
+    skipped_no_workbook_row: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "applied": self.applied,
+            "skipped_existing": self.skipped_existing,
+            "skipped_no_rule": self.skipped_no_rule,
+            "skipped_no_workbook_row": self.skipped_no_workbook_row,
+        }
+
+
+def backfill_workbook_rules(
+    workbook_id: int,
+    session: Session,
+    *,
+    tester: str = "system",
+) -> RuleBackfillResult:
+    """Write Assessment rows for in-scope CCIs that rule #8 decides deterministically.
+
+    Sibling of :func:`backfill_workbook_crm`. Where CRM backfill front-loads
+    the CRM-overlay short-circuit, this front-loads the *rule* short-circuit
+    (``engine.rules.classify_row``) so workbook-intrinsic deterministic
+    verdicts surface in the Controls grid the moment a workbook is opened or a
+    CRM is attached — without waiting for the user to click Assess. The
+    motivating case: a control marked **Not Applicable** in workbook col N (with
+    a scope-exclusion rationale) classifies as ``NOT_APPLICABLE_8B`` but had no
+    auto-writer, so AC-18 showed a blank "—" chip until manually assessed.
+
+    Only the unambiguous verdicts are written: ``COMPLIANT_8A`` and
+    ``NOT_APPLICABLE_8B``. ``UNCLEAR_8C`` and ``NO_AUTO_RULE`` need the LLM, so
+    they are deferred to assess time exactly as before. CRM-covered controls are
+    skipped here — CRM backfill owns them (and rule #8 wins over CRM only inside
+    the assess pipeline, which the user can still run). These rows carry no CRM
+    slices, so ``persist_assessment_with_impls`` writes a parent-only row (the
+    grid rollup reads ``Assessment.status`` directly).
+
+    Idempotent and non-stomping: skips any objective that already has an
+    Assessment (CRM-backfilled, rule-backfilled, user-edited, or LLM-assessed).
+    Caller owns the commit.
+    """
+    wb = session.get(Workbook, workbook_id)
+    if wb is None or wb.baseline_id is None:
+        return RuleBackfillResult(0, 0, 0, 0)
+    primary = session.get(Baseline, wb.baseline_id)
+    if primary is None:
+        return RuleBackfillResult(0, 0, 0, 0)
+    wb_path = Path(wb.path)
+    if not wb_path.exists():
+        return RuleBackfillResult(0, 0, 0, 0)
+    try:
+        index = read_workbook_index(wb_path)
+    except (ValueError, FileNotFoundError):
+        return RuleBackfillResult(0, 0, 0, 0)
+    cci_to_row = index.by_cci()
+
+    pairs: list[tuple[BaselineObjective, Objective]] = list(
+        session.exec(
+            select(BaselineObjective, Objective)
+            .join(Control, Control.id == Objective.control_id_fk)
+            .join(BaselineControl, BaselineControl.control_id == Control.id)
+            .where(
+                BaselineObjective.baseline_id == primary.id,
+                BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
+                BaselineObjective.objective_id == Objective.id,
+                BaselineControl.baseline_id == primary.id,
+                BaselineControl.in_scope.is_(True),  # type: ignore[union-attr]
+            )
+        ).all()
+    )
+    if not pairs:
+        return RuleBackfillResult(0, 0, 0, 0)
+
+    existing_obj_ids: set[int] = set(
+        session.exec(
+            select(Assessment.objective_id).where(
+                Assessment.workbook_id == workbook_id
+            )
+        ).all()
+    )
+
+    # Empty CRM context: this path writes parent-only rows (no per-scope slices).
+    empty_crm = CrmContext.empty()
+    assessor = Assessor(llm=None)
+
+    applied = 0
+    skipped_existing = 0
+    skipped_no_rule = 0
+    skipped_no_row = 0
+    when = datetime.now(timezone.utc)
+
+    _DETERMINISTIC_RULE_VERDICTS = {
+        rules.AutoStatusVerdict.COMPLIANT_8A,
+        rules.AutoStatusVerdict.NOT_APPLICABLE_8B,
+    }
+
+    for _, obj in pairs:
+        row = cci_to_row.get(obj.objective_id)
+        if row is None:
+            skipped_no_row += 1
+            continue
+        if obj.id in existing_obj_ids:
+            skipped_existing += 1
+            continue
+        auto = rules.classify_row(row)
+        if auto.verdict not in _DETERMINISTIC_RULE_VERDICTS:
+            skipped_no_rule += 1
+            continue
+
+        source = "rule_8a" if auto.verdict == rules.AutoStatusVerdict.COMPLIANT_8A else "rule_8b"
+        decision = assessor._finalize_rule_decision(
+            row, row.cci_id or row.control_id, auto, source=source, outcome=None,
+        )
+        if not decision.accepted or decision.status is None or not decision.narrative:
+            skipped_no_rule += 1
+            continue
+
+        new_row = Assessment(
+            workbook_id=workbook_id,
+            objective_id=obj.id,
+            excel_row=decision.excel_row,
+            status=decision.status,
+            tester=tester,
+            narrative_q=decision.narrative,
+            narrative_on_prem=decision.narrative_on_prem,
+            narrative_cloud=decision.narrative_cloud,
+            narrative_class=decision.narrative_class,
+            inheritance_rule=decision.rule,
+            verdict_source=decision_to_verdict_source(decision),
+            date_tested=when,
+        )
+        persist_assessment_with_impls(
+            session,
+            assessment=new_row,
+            decision=decision,
+            crm_context=empty_crm,
+            control_id=row.control_id,
+            is_new=True,
+        )
+        applied += 1
+        existing_obj_ids.add(obj.id)
+
+    return RuleBackfillResult(
+        applied=applied,
+        skipped_existing=skipped_existing,
+        skipped_no_rule=skipped_no_rule,
         skipped_no_workbook_row=skipped_no_row,
     )

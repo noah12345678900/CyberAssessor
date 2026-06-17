@@ -118,8 +118,15 @@ def client(tmp_path: Path):
         wb = Workbook(path=str(wb_path), filename=wb_path.name, framework_id=fw.id)
         s.add(wb)
 
+        # Each control rolls up across its OWN objectives (CCIs), one
+        # Assessment per objective — the real shape now that
+        # uq_assessment_workbook_objective forbids two assessments on one
+        # objective. AC-2 gets 3 objectives, AC-3 gets 3, AC-4 gets 1; the
+        # rollup math under test is identical to the prior (incorrectly
+        # one-objective-stacked) fixture.
         controls: dict[str, Control] = {}
-        objectives: dict[str, Objective] = {}
+        objectives: dict[str, list[Objective]] = {}
+        obj_counts = {"AC-2": 3, "AC-3": 3, "AC-4": 1}
         for cid in ("AC-2", "AC-3", "AC-4"):
             c = Control(framework_id=fw.id, control_id=cid, title=cid, family="AC")
             s.add(c)
@@ -127,28 +134,32 @@ def client(tmp_path: Path):
         s.commit()
         for cid, c in controls.items():
             s.refresh(c)
-            o = Objective(
-                control_id_fk=c.id,
-                objective_id=f"{cid}.1",
-                source="CCI",
-                text=f"{cid} objective",
-            )
-            s.add(o)
-            objectives[cid] = o
+            objs: list[Objective] = []
+            for n in range(1, obj_counts[cid] + 1):
+                o = Objective(
+                    control_id_fk=c.id,
+                    objective_id=f"{cid}.{n}",
+                    source="CCI",
+                    text=f"{cid} objective {n}",
+                )
+                s.add(o)
+                objs.append(o)
+            objectives[cid] = objs
         s.commit()
-        for o in objectives.values():
-            s.refresh(o)
+        for objs in objectives.values():
+            for o in objs:
+                s.refresh(o)
         s.refresh(wb)
         wb_id = wb.id
 
-        # AC-2: mixed trusted-Compliant + coerced-NC needs_review.
+        # AC-2: two trusted-Compliant objectives + one coerced-NC needs_review.
         # Rollup must see Compliant=2, NC=0, needs_review=1 → "Needs Review".
         # If the gate regresses, NC would be 1 and the rollup would flip to
         # "Non-Compliant".
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-2"].id,
+                objective_id=objectives["AC-2"][0].id,
                 status=ComplianceStatus.COMPLIANT,
                 needs_review=False,
             )
@@ -156,7 +167,7 @@ def client(tmp_path: Path):
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-2"].id,
+                objective_id=objectives["AC-2"][1].id,
                 status=ComplianceStatus.COMPLIANT,
                 needs_review=False,
             )
@@ -164,7 +175,7 @@ def client(tmp_path: Path):
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-2"].id,
+                objective_id=objectives["AC-2"][2].id,
                 status=ComplianceStatus.NON_COMPLIANT,
                 needs_review=True,
             )
@@ -175,7 +186,7 @@ def client(tmp_path: Path):
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-3"].id,
+                objective_id=objectives["AC-3"][0].id,
                 status=ComplianceStatus.NON_COMPLIANT,
                 needs_review=False,
             )
@@ -183,7 +194,7 @@ def client(tmp_path: Path):
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-3"].id,
+                objective_id=objectives["AC-3"][1].id,
                 status=ComplianceStatus.COMPLIANT,
                 needs_review=True,
             )
@@ -191,17 +202,17 @@ def client(tmp_path: Path):
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-3"].id,
+                objective_id=objectives["AC-3"][2].id,
                 status=ComplianceStatus.NON_COMPLIANT,
                 needs_review=True,
             )
         )
 
-        # AC-4: all trusted Compliant, no needs_review. Clean Compliant.
+        # AC-4: single trusted Compliant objective, no needs_review.
         s.add(
             _assessment(
                 workbook_id=wb_id,
-                objective_id=objectives["AC-4"].id,
+                objective_id=objectives["AC-4"][0].id,
                 status=ComplianceStatus.COMPLIANT,
                 needs_review=False,
             )
