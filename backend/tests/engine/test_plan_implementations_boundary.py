@@ -39,6 +39,7 @@ if str(_BACKEND) not in sys.path:
 from cybersecurity_assessor.engine.assessor import (  # noqa: E402
     Decision,
     ImplementationPlan,
+    compute_rollup_status,
     plan_implementations,
 )
 from cybersecurity_assessor.engine.crm_context import (  # noqa: E402
@@ -221,16 +222,15 @@ def test_pe3_dual_provider_preserves_per_cloud_narrative_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cp7_hybrid_slices_today_share_one_decision_narrative_v02_gap() -> None:
-    """v0.2 gap pin: ALL customer-owned slices receive the SAME Decision
-    narrative. The platform-specific text from the CRM is DROPPED — the
-    CP-7 cloud rows look identical except for their scope_label.
+def test_cp7_real_cloud_slices_share_decision_synth_onprem_abstains() -> None:
+    """Real CRM cloud slices mirror the Decision; synthesized on-prem ABSTAINS.
 
-    Why pin it: when the deferred per-cloud LLM slice work lands, the
-    expected behavior flips (each customer-owned slice should carry its
-    own platform-aware narrative). This test going red at that point is
-    the SIGNAL that the gap is closed, not a regression — flip the
-    asserts when you flip the implementation.
+    The two real cloud hybrid slices (source_baseline_id set) still receive the
+    single Decision narrative — per-cloud LLM differentiation remains a future
+    slice. But the SYNTHESIZED On-Premises slice (source_baseline_id=None, no
+    per-scope narrative) must NOT inherit the COMPLIANT verdict: it carries no
+    CRM and no evidence, so the phantom-scope guard emits it as an abstain
+    (status=None) flagged for reviewer follow-up rather than a false pass.
     """
     decision_text = "Reviewed multi-region failover runbook RB-DR-007."
     slices = [
@@ -263,13 +263,17 @@ def test_cp7_hybrid_slices_today_share_one_decision_narrative_v02_gap() -> None:
         )
     )
 
-    # All three customer-owned rows receive the SAME Decision narrative.
-    # The CRM's per-cloud text is dropped (today). When per-cloud LLM
-    # differentiation lands, this collapses to per-slice text and the
-    # asserts should flip to inequality + per-platform-token presence.
+    # The two REAL cloud slices still mirror the single Decision narrative.
     assert plans[_AWS_LABEL].narrative == decision_text
     assert plans[_AZURE_LABEL].narrative == decision_text
-    assert plans[_ONPREM_LABEL].narrative == decision_text
+    assert plans[_AWS_LABEL].status is ComplianceStatus.COMPLIANT
+    assert plans[_AZURE_LABEL].status is ComplianceStatus.COMPLIANT
+
+    # The SYNTHESIZED on-prem slice abstains — no false COMPLIANT, no shared
+    # decision narrative; it carries the reviewer-follow-up stub instead.
+    assert plans[_ONPREM_LABEL].status is None
+    assert plans[_ONPREM_LABEL].narrative != decision_text
+    assert "on-prem" in plans[_ONPREM_LABEL].narrative.lower()
 
     # The CRM-supplied per-cloud text should NOT have leaked into the plan
     # (the impl plan replaces it). Pin the negation so a future refactor
@@ -395,3 +399,65 @@ def test_inheritance_blank_narrative_falls_back_to_generic_stub() -> None:
     # an inheritance row as a customer-side affirmation.
     assert plans[_AWS_LABEL].narrative != _decision().narrative
     assert plans[_AZURE_LABEL].narrative != _decision().narrative
+
+
+def test_evidenced_cloud_scope_plus_synth_onprem_does_not_clean_compliant() -> None:
+    """Make-or-break: one EVIDENCED customer scope + un-evidenced synth on-prem.
+
+    AC-17-style: AWS GovCloud customer scope was genuinely assessed (has a
+    per-scope narrative), Azure is inherited, and the synthesized On-Premises
+    scope has no evidence. The on-prem slice must abstain so the package does
+    NOT present a clean, fully-Compliant control resting on one evidenced scope.
+    The evidenced cloud scope keeps its real verdict.
+    """
+    slices = [
+        ImplementationSlice(
+            scope_label=_AWS_LABEL, responsibility="customer",
+            narrative=None, source_baseline_id=1,
+        ),
+        ImplementationSlice(
+            scope_label=_AZURE_LABEL, responsibility="inherited",
+            narrative="Inherited via managed Azure Bastion.", source_baseline_id=2,
+        ),
+        ImplementationSlice(
+            scope_label=_ONPREM_LABEL, responsibility="customer",
+            narrative=None, source_baseline_id=None,
+        ),
+    ]
+    decision = _decision(narrative="AWS Client VPN + conditional access verified.")
+    # The LLM produced a per-scope narrative ONLY for the evidenced AWS scope.
+    decision.narratives_by_scope = {
+        _AWS_LABEL: "AWS Client VPN with conditional access verified per USD20240622."
+    }
+    plans = _by_label(plan_implementations(decision, slices))
+
+    assert plans[_AWS_LABEL].status is ComplianceStatus.COMPLIANT
+    assert plans[_AZURE_LABEL].status is ComplianceStatus.COMPLIANT  # inherited
+    assert plans[_ONPREM_LABEL].status is None  # phantom abstains
+    # Worst-of rollup over the real evidenced scopes is COMPLIANT, but the
+    # on-prem impl row is an honest abstain (needs-review), not a fabricated pass.
+    rollup = compute_rollup_status([p.status for p in plans.values()])
+    assert rollup is ComplianceStatus.COMPLIANT
+    assert any(p.status is None for p in plans.values()), (
+        "the synthesized on-prem scope must surface as an abstain row"
+    )
+
+
+def test_single_customer_scope_still_compliant_not_over_abstained() -> None:
+    """Make-or-break (no regression): the normal single-customer-scope control.
+
+    One CRM, customer responsibility, NO narratives_by_scope map (the common
+    case). The fix must NOT over-abstain this — the slice has a real CRM
+    baseline (source_baseline_id set), so the phantom-scope guard does not
+    apply and it keeps the Decision's COMPLIANT verdict via the canonical
+    narrative fallback.
+    """
+    slices = [
+        ImplementationSlice(
+            scope_label=_AWS_LABEL, responsibility="customer",
+            narrative=None, source_baseline_id=1,
+        ),
+    ]
+    plans = _by_label(plan_implementations(_decision(narrative="verified"), slices))
+    assert plans[_AWS_LABEL].status is ComplianceStatus.COMPLIANT
+    assert plans[_AWS_LABEL].narrative == "verified"
