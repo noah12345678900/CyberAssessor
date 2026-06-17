@@ -87,6 +87,21 @@ _R8B_NA_SCOPE_PHRASES: tuple[str, ...] = (
     "per ssaa scope",
     "not required for goco",
     "n/a in cloud environment",
+    # Backstop scope-exclusion phrasings (2026-06-17). High-precision: each
+    # asserts the control is outside the assessed boundary, not merely
+    # unimplemented. COMPLIANCE_GUARD still suppresses these if the same
+    # rationale claims compliance. The col-N tier (2.5) is the primary NA
+    # recovery; these catch the case where col N is blank but the assessor
+    # documented the exclusion in col Q/U (the AC-18 wireless pattern).
+    "control does not apply",
+    "this control does not apply",
+    "does not apply to this system",
+    "out of the assessed boundary",
+    "outside the assessment boundary",
+    "outside the authorization boundary",
+    "no wireless capability",
+    "system has no wireless",
+    "not applicable because",
 )
 
 # Rule 8a (CSP/external-inheritance lane) — these phrases in col Q/U mean the
@@ -226,6 +241,34 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
                 trigger_phrase=hit,
                 trigger_column=col_name,
             )
+
+    # --- 2.5 Pre-filled human Not Applicable in col N (authoritative) ----
+    # The ONLY reliable signal that a control is Not Applicable is the
+    # workbook's own context — an assessor who scoped it out and recorded
+    # that decision. When col N (Compliance Status, current cycle) already
+    # carries a human "Not Applicable", respect it verbatim rather than
+    # re-deriving and risking a false Non-Compliant (the failure mode that
+    # marked AC-18 — a documented no-wireless scope exclusion — as NC because
+    # the col-Q phrasing didn't match the 8b table).
+    #
+    # Scoped to Not Applicable ONLY (owner decision: "N/A takes precedence;
+    # if N/A isn't applicable the next tier is NC"). We do NOT respect a
+    # pre-filled "Compliant" — that would rubber-stamp last cycle's verdict
+    # against this cycle's evidence; a pre-filled "Non-Compliant" reaches NC
+    # via the normal path anyway. Placed AFTER rule 8a so a col-K
+    # "automatically compliant at the DoD level" still wins over a stale NA
+    # (feedback_colk_authoritative), and BEFORE the col-Q/U recognizer so a
+    # clean human NA short-circuits without needing a phrase-table match.
+    status_n = (row.status or "").strip().lower()
+    if status_n in ("not applicable", "n/a", "na"):
+        return AutoStatusResult(
+            verdict=AutoStatusVerdict.NOT_APPLICABLE_8B,
+            status=ComplianceStatus.NOT_APPLICABLE,
+            narrative=_format_prefilled_na_narrative(row),
+            rule="8b",
+            trigger_phrase=str(row.status),
+            trigger_column="N",
+        )
 
     # --- 3. Col Q / U documented-rationale recognizer -------------------
     # The assessor's scope-exclusion and CSP-attribution rationale lives here,
@@ -384,6 +427,28 @@ def _format_na_scope_narrative(
     return (
         f"Not applicable — {col_label} documents an explicit scope exclusion: "
         f'"{quoted}".'
+    )
+
+
+def _format_prefilled_na_narrative(row: "CcisRow") -> str:
+    """NA narrative for a control whose col N already carries a human 'Not
+    Applicable'. Leads with the validator's NA-class phrase ("Not applicable
+    —") and cites the assessor's documented rationale from col Q (current) or
+    col U (previous) when present, so the verdict is defensible to a reviewer.
+    """
+    rationale = (row.results or row.previous_results or "").strip()
+    if rationale:
+        # Trim to a sentence-ish excerpt so the narrative stays tight.
+        excerpt = rationale.split("\n", 1)[0][:240]
+        return (
+            "Not applicable — the assessor recorded a Not Applicable verdict "
+            "for this control in the workbook (Compliance Status, col N); "
+            f'documented rationale: "{excerpt}".'
+        )
+    return (
+        "Not applicable — the assessor recorded a Not Applicable verdict for "
+        "this control in the workbook (Compliance Status, col N). The control "
+        "does not apply within the system's authorization boundary."
     )
 
 
