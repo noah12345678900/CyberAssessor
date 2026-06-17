@@ -123,55 +123,54 @@ def session():
 
 
 # ---------------------------------------------------------------------------
-# 1b. No-evidence short-circuit — empty bundle abstains (needs_review)
+# 1b. No-evidence short-circuit — empty bundle → Non-Compliant (no LLM call)
 # ---------------------------------------------------------------------------
 
 
-def test_no_evidence_short_circuits_to_abstain():
-    """Empty / missing tagged_evidence → abstain (needs_review), no LLM call.
+def test_no_evidence_short_circuits_to_non_compliant():
+    """Empty / missing tagged_evidence → deterministic NC, no LLM call.
 
-    Step D (2026-06-11): zero evidence is *Unknown*, not a finding. When
-    the evidence pipeline returned nothing for a CCI (no artifacts, no CRM
-    hybrid prepend, no SDA verified mapping, no rule-8 trigger), the
-    assessor must NOT spend tokens asking the LLM to invent a verdict —
-    AND must not assert a confident Non-Compliant, which measured 88%
-    wrong against the gold workbook (a missed retrieval is not an
-    implementation gap). The row short-circuits to an ABSTAIN instead:
-    ``source='abstain'``, ``status=None``, ``proposed_status=None``,
-    ``confidence=None``, ``needs_review=True``, ``stub.calls == []``.
+    Verdict policy (2026-06-17, owner decision): zero evidence is a
+    finding, not Unknown. When the evidence pipeline returned nothing for
+    a CCI (no artifacts, no CRM hybrid prepend, no SDA verified mapping, no
+    rule-8 trigger), the assessor must NOT spend tokens asking the LLM to
+    invent a verdict — it short-circuits to a deterministic Non-Compliant:
+    ``source='rule_no_evidence'``, ``status=NON_COMPLIANT``,
+    ``needs_review=False``, ``stub.calls == []``. The ``no-evidence:``
+    review_reason lets the UI badge it and reviewers filter the NC rows at
+    the end of the assessment (add artifact + reassess flips to Compliant).
     """
     stub = StubLlmClient([])  # any LLM call → AssertionError
     assessor = Assessor(llm=stub)
 
     decision = assessor.assess(_row())
 
-    assert decision.source == "abstain"
+    assert decision.source == "rule_no_evidence"
     assert decision.accepted is True
-    assert decision.status is None
-    assert decision.proposed_status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
+    assert decision.narrative.startswith("No evidence found")
     assert decision.retries == 0
     assert stub.calls == []
 
 
-def test_whitespace_only_evidence_also_short_circuits_to_abstain():
-    """``tagged_evidence='   \\n  '`` is the same as None — abstain, no LLM call.
+def test_whitespace_only_evidence_also_short_circuits_to_non_compliant():
+    """``tagged_evidence='   \\n  '`` is the same as None — NC, no LLM call.
 
     Defensive: the assess() caller may pass an empty string from a
     builder that produces ``"".join(...)`` over zero items. The guard
     uses ``.strip()`` so any whitespace-only string is treated as
-    "no evidence" and routed through the same Step D abstain path.
+    "no evidence" and routed through the same Non-Compliant path.
     """
     stub = StubLlmClient([])
     assessor = Assessor(llm=stub)
 
     decision = assessor.assess(_row(), tagged_evidence="   \n  ")
 
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.needs_review is True
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
     assert stub.calls == []
 

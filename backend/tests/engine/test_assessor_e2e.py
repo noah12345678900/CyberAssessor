@@ -163,6 +163,7 @@ def _row(
     control_id: str = "AC-2",
     results: str | None = None,
     previous_results: str | None = None,
+    status: str | None = None,
 ) -> CcisRow:
     """Minimal CcisRow with sensible defaults for orchestrator tests."""
     return CcisRow(
@@ -179,7 +180,7 @@ def _row(
         procedures=procedures,
         inherited=inherited,
         remote_inheritance=None,
-        status=None,
+        status=status,
         date_tested=None,
         tester=None,
         results=results,
@@ -242,6 +243,58 @@ def test_rule_8b_short_circuits_llm_not_called():
     assert decision.rule == "8b"
     assert decision.accepted is True
     assert decision.status is ComplianceStatus.NOT_APPLICABLE
+    assert stub.calls == []
+
+
+def test_prefilled_col_n_na_short_circuits_to_not_applicable():
+    """Pre-filled human 'Not Applicable' in col N → rule_8b NA, no LLM call.
+
+    The AC-18 end-to-end pin: a control the assessor scoped out and recorded
+    as Not Applicable in col N must surface as NOT_APPLICABLE through the
+    deterministic layer, never reaching the LLM. This is the col-N tier 2.5
+    (test_rules_golden.py::test_prefilled_col_n_na_*) carried through the
+    orchestrator to a Decision.
+    """
+    row = _row(
+        control_id="AC-18",
+        status="Not Applicable",
+        results="System has no wireless capability; AC-18 out of scope.",
+    )
+    stub = StubLlmClient([])
+    assessor = Assessor(llm=stub)
+
+    decision = assessor.assess(row)
+
+    assert decision.source == "rule_8b"
+    assert decision.rule == "8b"
+    assert decision.accepted is True
+    assert decision.status is ComplianceStatus.NOT_APPLICABLE
+    assert decision.narrative.startswith("Not applicable —")
+    assert stub.calls == []
+
+
+def test_prefilled_col_n_na_beats_no_evidence_non_compliant():
+    """N/A precedence: a col-N 'Not Applicable' wins even with an empty bundle.
+
+    Owner decision (2026-06-17): "N/A takes precedence over NC with no
+    evidence; if N/A isn't applicable the next tier is NC." Here the row has
+    NO tagged evidence — the no-evidence short-circuit would mint a
+    deterministic Non-Compliant — but the pre-filled col-N NA fires FIRST
+    (rule #8 runs before Step 1.65), so the verdict is Not Applicable.
+    """
+    row = _row(
+        control_id="AC-18",
+        status="Not Applicable",
+        results="No wireless interfaces present; control does not apply.",
+    )
+    stub = StubLlmClient([])  # empty bundle + empty queue
+    assessor = Assessor(llm=stub)
+
+    decision = assessor.assess(row)  # no tagged_evidence at all
+
+    assert decision.source == "rule_8b"
+    assert decision.status is ComplianceStatus.NOT_APPLICABLE
+    assert decision.source != "rule_no_evidence"
     assert stub.calls == []
 
 

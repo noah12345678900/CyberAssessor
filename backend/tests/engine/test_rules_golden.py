@@ -36,6 +36,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 # Ensure the backend package is importable when pytest is launched from any cwd.
 _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
@@ -63,6 +65,7 @@ def _row(
     narrative: str | None = None,
     results: str | None = None,
     previous_results: str | None = None,
+    status: str | None = None,
     cci_id: str | None = "CCI-000001",
     control_id: str = "AC-1",
 ) -> CcisRow:
@@ -87,7 +90,7 @@ def _row(
         procedures=procedures,
         inherited=inherited,
         remote_inheritance=None,
-        status=None,
+        status=status,
         date_tested=None,
         tester=None,
         results=results,
@@ -122,6 +125,45 @@ def test_8b_scope_exclusion_in_col_q():
     # Narrative is NA-class for the validator and names the source column.
     assert "Not applicable —" in result.narrative
     assert "Assessment Results (col Q)" in result.narrative
+
+
+@pytest.mark.parametrize(
+    "rationale",
+    [
+        "This control does not apply to this system.",
+        "AC-18 is outside the authorization boundary.",
+        "System has no wireless capability.",
+        "Not applicable because there are no removable media devices.",
+    ],
+)
+def test_8b_broadened_scope_exclusion_phrases_fire(rationale):
+    """Backstop scope-exclusion phrasings in col Q → NA (col-N blank).
+
+    These catch the AC-18-style case where the assessor documented the
+    exclusion in col Q/U but left col N blank, so tier 2.5 cannot fire. The
+    phrases are high-precision (each asserts the control is out of boundary,
+    not merely unimplemented) and remain subject to the compliance guard.
+    """
+    row = _row(results=rationale)
+    result = classify_row(row)
+    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.status is ComplianceStatus.NOT_APPLICABLE
+    assert result.rule == "8b"
+    assert result.trigger_column == "Q"
+
+
+def test_8b_broadened_phrase_still_suppressed_by_compliance_guard():
+    """A broadened NA phrase + a compliance claim in the same rationale → not NA.
+
+    Precision guard: if the assessor wrote 'control does not apply' AND
+    'is compliant' in the same cell, the compliance guard wins and the NA
+    lane stays inert (the row is not auto-NA'd).
+    """
+    row = _row(
+        results="This control does not apply at the host layer; the enclave is compliant.",
+    )
+    result = classify_row(row)
+    assert result.verdict is not AutoStatusVerdict.NOT_APPLICABLE_8B
 
 
 def test_8b_scope_exclusion_in_col_u_falls_through_from_q():
@@ -310,6 +352,96 @@ def test_check_order_col_k_8a_beats_col_q_na():
     assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
     assert result.rule == "8a"
     assert result.trigger_column == "K"
+
+
+# ---------------------------------------------------------------------------
+# Tier 2.5 — pre-filled human "Not Applicable" in col N (authoritative)
+# ---------------------------------------------------------------------------
+
+
+def test_prefilled_col_n_na_short_circuits_to_not_applicable():
+    """Col N already carries a human 'Not Applicable' → NOT_APPLICABLE_8B.
+
+    The ONLY reliable NA signal is the workbook's own context. When the
+    assessor scoped a control out and recorded "Not Applicable" in col N
+    (Compliance Status, current cycle), the deterministic layer must respect
+    it verbatim rather than re-deriving and risking a false NC — the AC-18
+    failure mode (documented no-wireless scope exclusion the col-Q phrase
+    table missed). trigger_column='N' marks where the signal came from.
+    """
+    row = _row(
+        status="Not Applicable",
+        results="System has no wireless capability; AC-18 is out of scope.",
+        procedures="Examine wireless access controls.",
+    )
+
+    result = classify_row(row)
+
+    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.status is ComplianceStatus.NOT_APPLICABLE
+    assert result.rule == "8b"
+    assert result.trigger_column == "N"
+    # Narrative leads with the validator's NA-class phrase and cites the col-Q
+    # rationale so the verdict is defensible.
+    assert result.narrative.startswith("Not applicable —")
+    assert "no wireless capability" in result.narrative
+
+
+@pytest.mark.parametrize("raw", ["Not Applicable", "n/a", "NA", "  not applicable  "])
+def test_prefilled_col_n_na_accepts_common_spellings(raw):
+    """'N/A', 'NA', 'Not Applicable' (any case / surrounding space) all fire."""
+    row = _row(status=raw)
+    result = classify_row(row)
+    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.trigger_column == "N"
+
+
+def test_prefilled_col_n_na_falls_back_when_no_rationale():
+    """Col N = NA but no col Q/U rationale → generic boundary-exclusion narrative."""
+    row = _row(status="Not Applicable")
+    result = classify_row(row)
+    assert result.status is ComplianceStatus.NOT_APPLICABLE
+    assert result.narrative.startswith("Not applicable —")
+    assert "authorization boundary" in result.narrative
+
+
+def test_col_k_8a_beats_prefilled_col_n_na():
+    """Col K DoD-auto Compliant outranks a stale col-N 'Not Applicable'.
+
+    Tier 2.5 is placed AFTER rule 8a so an "automatically compliant at the
+    DoD level" in col K still wins over a pre-filled NA — a stale NA must not
+    suppress the authoritative col-K verdict (feedback_colk_authoritative).
+    """
+    row = _row(
+        status="Not Applicable",
+        procedures="This CCI is automatically compliant; covered at the DoD level.",
+    )
+
+    result = classify_row(row)
+
+    assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
+    assert result.rule == "8a"
+    assert result.trigger_column == "K"
+
+
+def test_prefilled_col_n_compliant_is_not_rubber_stamped():
+    """Col N = 'Compliant' does NOT short-circuit — only NA is respected.
+
+    Owner decision: respecting a pre-filled Compliant would rubber-stamp last
+    cycle's verdict against this cycle's evidence. A clean Compliant row with
+    no other triggers must fall through to the normal assessment path.
+    """
+    row = _row(
+        status="Compliant",
+        guidance="Implement the control per NIST guidance.",
+        procedures="Examine documented procedures and interview personnel.",
+        inherited="Local",
+    )
+
+    result = classify_row(row)
+
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
 def test_no_auto_rule_for_gap_row():

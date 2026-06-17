@@ -1610,10 +1610,32 @@ class Assessor:
                 # up means we can't trust the verdict.
                 if pass0.abstain or pass1.abstain:
                     bad = pass0 if pass0.abstain else pass1
+                    is_parse_error = bad.narrative.startswith("[parse_error]")
+                    # A PARSE ERROR is not a clinical "I can't decide" — it's
+                    # the model returning malformed JSON, which on a row that
+                    # had no real evidence to begin with would otherwise leave
+                    # the raw "[parse_error]" string overwriting what should
+                    # have been a clean no-evidence verdict (and "fix itself"
+                    # only on a lucky re-run). When the evidence bundle carried
+                    # no decision-quality artifact, fall back to the
+                    # deterministic no-evidence Non-Compliant verdict instead of
+                    # surfacing the parse error — the row never should have
+                    # reached the LLM. (has_artifacts/has_findings/has_hosts
+                    # are the producer's structural signal; absent an
+                    # EvidenceBlock we conservatively treat a parse error as a
+                    # transient model fault and still abstain so we don't assert
+                    # NC on a row that genuinely had evidence the model choked
+                    # on.)
+                    if is_parse_error and evidence_block is not None and (
+                        evidence_block.text is None
+                        or evidence_block.is_only_context
+                    ):
+                        return self._finalize_no_evidence_decision(
+                            row, cci, outcome=outcome,
+                            context_only=evidence_block.is_only_context,
+                        )
                     reason_prefix = (
-                        "llm-parse-error"
-                        if bad.narrative.startswith("[parse_error]")
-                        else "llm-abstain"
+                        "llm-parse-error" if is_parse_error else "llm-abstain"
                     )
                     return self._abstain(
                         row, cci,
@@ -2216,112 +2238,126 @@ class Assessor:
         outcome,
         context_only: bool = False,
     ) -> Decision:
-        """Abstain (needs_review) when no artifacts exist to examine.
+        """Deterministic NON-COMPLIANT when no artifacts exist to examine.
 
         Fires when the tagged-evidence bundle is empty AFTER rule #8a/8b,
         CRM short-circuit, CRM hybrid enrichment, and SDA 8c have all
         declined — i.e. retrieval surfaced nothing decision-quality for
         this objective.
 
-        Step D (2026-06-11) — zero evidence is *Unknown*, not a finding.
-        The prior behavior minted a confident Non-Compliant (status
-        NON_COMPLIANT, confidence 1.0, ``source="rule_no_evidence"``,
-        ``needs_review=False``) on the theory that absence of evidence is
-        itself a finding. Measured against the human-reviewed gold
-        workbook that theory was wrong on 88% of the rows it touched (104
-        of 118 ``rule_no_evidence`` rows disagreed with the reviewer —
-        the single largest error source). The failure mode: the assessor
-        simply *failed to retrieve* evidence that existed (stale doc
-        identity, missing tag, out-of-scope CCI the workbook never
-        enumerated), and a missed retrieval is not the same as a real
-        implementation gap. Emitting NON_COMPLIANT at confidence 1.0 is a
-        false assertion of failure a 3PAO/JAB can rebut by pointing at the
-        artifact sitting in the evidence folder.
+        Verdict policy (2026-06-17): "no evidence" → Non-Compliant with a
+        ``no-evidence`` marker, NOT an abstain. Rationale (owner decision):
+        in RMF practice a control with no implementation evidence is a
+        finding the assessor must run down — and the natural workflow is to
+        review the Non-Compliant rows at the end of the assessment. A real
+        gap stays NC and gets a POA&M; a forgot-to-upload / missed-tag case
+        shows as NC, the assessor adds the artifact and reassesses, and it
+        flips to Compliant. That is the normal review loop and is far less
+        work than clicking through every row individually.
 
-        Per ``feedback_precision_over_recall.md`` (uncertainty writes a
-        needs_review row, never a guess) and ``feedback_fpr-first`` (a
-        false Non-Compliant is the worst error), we now *abstain*: the row
-        is flagged for manual review, kept out of the workbook / POAM
-        export by the ``needs_review`` gates, and carries no proposed
-        status — we do NOT bias the reviewer toward NC with a guess they
-        have to actively un-pick. A real evidence gap is still reachable;
-        it is just decided by a human (or by retrieval improvements that
-        surface the artifact) rather than asserted by construction.
+        This SUPERSEDES the prior abstain behavior (Step D, 2026-06-11),
+        which was anchored to an eval ("88% of rule_no_evidence rows
+        disagreed with the gold reviewer") that turned out to be a
+        TAGGER/RETRIEVAL artifact of one workbook, not a durable truth —
+        the engine failed to retrieve evidence that existed. The retrieval
+        tiers have since improved, and a second eval on a genuinely
+        evidence-empty workbook showed ~80% agreement with NC. So the
+        false-NC concern is mitigated by (a) better retrieval and (b) the
+        end-of-assessment NC review the user performs regardless.
 
-        Short-circuiting here still avoids burning an LLM call on a row
-        with nothing to reason about, and still routes through
-        :meth:`_abstain` so the persistence + export-gate plumbing is
-        identical to every other abstain path (validator exhaustion,
-        overflow-escalate, boundary conflict).
+        ``source="rule_no_evidence"`` so the UI can render a distinct
+        "No evidence" marker, and the ``review_reason`` carries the
+        ``no-evidence`` prefix so these rows are filterable/auditable even
+        though they now carry a real status. ``context_only`` keeps the
+        narrative honest about what retrieval produced (zero candidates vs
+        workbook-context-only). No LLM call is made.
 
-        The two structurally-distinct inputs that land here keep their
-        narrative/notes split so the audit trail is honest about *what*
-        retrieval produced:
-
-          * ``context_only=False`` (the ``EvidenceBlock.text is None`` path
-            and the legacy string-empty path) — a genuine zero-candidate
-            sweep: retrieval surfaced nothing at all for this objective.
-          * ``context_only=True`` (``EvidenceBlock.is_only_context``) —
-            workbook-wide context (asset_coverage_report / CRM
-            responsibility_split) WAS retrieved, but it carries no
-            per-objective artifact, finding, or host that substantiates
-            THIS control objective.
-
-        Step F can isolate these rows from other abstains via
-        ``needs_review=1 AND status IS NULL`` plus the ``no-evidence``
-        prefix on ``review_reason``.
+        The narrative includes accepted gap phrases ("no evidence found",
+        "POA&M") so the validator's gap-narrative gate classifies it as a
+        legitimate Non-Compliant finding rather than ambiguous text.
         """
         if context_only:
             reason = (
                 "no-evidence: workbook-wide context was retrieved for this "
                 "CCI but no per-objective artifact substantiating the "
-                "control objective — flagged for manual review (unable to "
-                "determine compliance without evidence to examine)."
+                "control objective — Non-Compliant (no evidence to examine)."
             )
             narrative = (
-                "Workbook-wide context was available for this CCI, but no "
-                "artifact substantiating the control objective was "
-                "retrieved. With no evidence of implementation available "
-                "to examine, the assessor is unable to determine "
-                "compliance; this row is flagged for manual review."
+                "No evidence found substantiating this control objective: "
+                "workbook-wide context was available, but no implementing "
+                "artifact was located for this CCI. Non-Compliant pending "
+                "submission of implementation evidence; POA&M required."
             )
             note = (
-                "No-evidence abstain (context-only bundle): only "
+                "No-evidence Non-Compliant (context-only bundle): only "
                 "workbook-wide context wrappers (asset coverage report / "
                 "CRM responsibility split) were present after rule #8a/8b, "
                 "CRM short-circuit, CRM hybrid enrichment, and SDA 8c "
                 "declined — no per-objective artifact, finding, or host to "
-                "examine. No LLM call made; verdict withheld for review."
+                "examine. No LLM call made."
             )
         else:
             reason = (
                 "no-evidence: zero artifacts retrieved for this CCI — "
-                "flagged for manual review (unable to determine compliance "
-                "without evidence to examine)."
+                "Non-Compliant (no evidence to examine)."
             )
             narrative = (
-                "No artifacts were retrieved for this CCI. With no evidence "
-                "of implementation available to examine, the assessor is "
-                "unable to determine compliance; this row is flagged for "
-                "manual review."
+                "No evidence found for this control objective: no artifacts "
+                "were located for this CCI. With no evidence of "
+                "implementation to examine, the control is assessed "
+                "Non-Compliant pending submission of evidence; POA&M required."
             )
             note = (
-                "No-evidence abstain (zero-candidate sweep): tagged-evidence "
-                "bundle was empty after rule #8a/8b, CRM short-circuit, CRM "
-                "hybrid enrichment, and SDA 8c declined. No LLM call made; "
-                "verdict withheld for review."
+                "No-evidence Non-Compliant (zero-candidate sweep): tagged-"
+                "evidence bundle was empty after rule #8a/8b, CRM short-"
+                "circuit, CRM hybrid enrichment, and SDA 8c declined. No LLM "
+                "call made."
             )
-        # Route through the abstain helper: status coerced to None,
-        # proposed_status left None (no guess — don't anchor the reviewer to
-        # NC), confidence None (stays out of the calibration set), and
-        # needs_review=True so the export gates suppress the untrusted row.
-        return self._abstain(
-            row,
-            cci,
-            reason,
-            outcome=outcome,
-            narrative=narrative,
-            notes=[note],
+
+        # Validate the templated NC narrative through the same gate as every
+        # other verdict so a formatter drift surfaces as a rejection rather
+        # than persisting bad text. row=None skips the Jaccard restatement
+        # check (the template is deterministic, not a parroted requirement).
+        result = validator.validate(
+            proposed_status=ComplianceStatus.NON_COMPLIANT,
+            proposed_narrative=narrative,
+            row=None,
+        )
+        rejection_log: list[ValidatorRejection] = []
+        for rej_reason, msg in result.rejections:
+            rej = ValidatorRejection(
+                cci=cci,
+                rejection_class=rej_reason.value,  # type: ignore[arg-type]
+                original_output=f"rule=no_evidence narrative={narrative!r}",
+                corrective_context=(
+                    f"no-evidence formatter produced invalid text: {msg}"
+                ),
+            )
+            rejection_log.append(rej)
+            if outcome is not None:
+                outcome.rejections.append(rej)
+        accepted = result.ok
+        if outcome is not None:
+            outcome.accepted = accepted
+            outcome.retries_before_accept = 0
+
+        accepted_narrative = narrative if accepted else None
+        return Decision(
+            cci_id=cci,
+            excel_row=row.excel_row,
+            accepted=accepted,
+            status=ComplianceStatus.NON_COMPLIANT if accepted else None,
+            narrative=accepted_narrative,
+            narrative_class=result.classified_as,
+            source="rule_no_evidence",
+            rule=None,
+            retries=0,
+            rejection_log=rejection_log,
+            supersession_log=[],
+            notes=(result.notes or []) + [note],
+            narrative_on_prem=accepted_narrative,
+            confidence=1.0,
+            review_reason=reason,
         )
 
     # ------------------------------------------------------------------

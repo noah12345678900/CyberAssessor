@@ -1,6 +1,6 @@
 {
   "name": "nc_no_evidence",
-  "description": "Step 1.65 deterministic short-circuit (no-evidence gate) — tagged_evidence is None, so the orchestrator ABSTAINS without consulting the LLM. Step D (2026-06-11) redesign: zero evidence is *Unknown*, not a finding. Measured against the human-reviewed gold workbook, the prior confident-Non-Compliant theory was wrong on 88% of the rows it touched (104/118 rule_no_evidence rows disagreed with the reviewer — the largest single error source). Per feedback_precision_over_recall.md (uncertainty writes a needs_review row, never a guess) and feedback_fpr-first (a false Non-Compliant is the worst error), the gate now routes through _abstain: status coerced to None, proposed_status left None (no guess to anchor the reviewer), source='abstain', needs_review=True, review_reason prefixed 'no-evidence:'. The empty stub queue confirms the LLM is not called; any call would raise AssertionError from the stub.",
+  "description": "Step 1.65 deterministic short-circuit (no-evidence gate) — tagged_evidence is None, so the orchestrator returns a deterministic Non-Compliant WITHOUT consulting the LLM. Verdict policy (2026-06-17, owner decision): a control with no implementation evidence is a finding the assessor runs down at end-of-assessment, not Unknown. This SUPERSEDES the prior abstain behavior (Step D, 2026-06-11), which was anchored to an eval ('88% of rule_no_evidence rows disagreed with gold') that turned out to be a tagger/retrieval artifact of one workbook — the engine failed to retrieve evidence that existed — not a durable truth. The gate routes through _finalize_no_evidence_decision: status=NON_COMPLIANT, source='rule_no_evidence', needs_review=False, confidence=1.0, review_reason prefixed 'no-evidence:'. The narrative carries accepted gap phrases ('No evidence found', 'POA&M') so the validator classifies it as a legitimate finding. The empty stub queue confirms the LLM is not called; any call would raise AssertionError from the stub.",
   "ccis_row": {
     "control_id": "AC-2",
     "ap_acronym": "AC-2.1",
@@ -14,12 +14,11 @@
   "tagged_evidence": null,
   "llm_stub_proposals": [],
   "expected": {
-    "status": null,
-    "proposed_status": null,
-    "source_in": ["abstain"],
-    "needs_review": true,
+    "status": "Non-Compliant",
+    "source_in": ["rule_no_evidence"],
+    "needs_review": false,
     "llm_calls": 0,
-    "narrative_contains_regex": "No artifacts were retrieved",
+    "narrative_contains_regex": "No evidence found",
     "review_reason_contains_regex": "no-evidence"
   }
 }

@@ -21,13 +21,12 @@
   },
   "llm_stub_proposals": [],
   "expected": {
-    "status": null,
-    "proposed_status": null,
-    "source_in": ["abstain"],
-    "needs_review": true,
+    "status": "Non-Compliant",
+    "source_in": ["rule_no_evidence"],
+    "needs_review": false,
     "accepted": true,
     "llm_calls": 0,
-    "narrative_contains_regex": "No artifacts were retrieved",
+    "narrative_contains_regex": "No evidence found",
     "review_reason_contains_regex": "no-evidence"
   }
 }

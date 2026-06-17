@@ -1,16 +1,21 @@
 """Tests for ``Assessor.assess`` Step 1.65 no-evidence short-circuit.
 
-Step D (2026-06-11) — this short-circuit used to mint a confident
-Non-Compliant (``source="rule_no_evidence"``, ``status=NON_COMPLIANT``,
-``confidence=1.0``, ``needs_review=False``). Measured against the
-human-reviewed gold workbook that was wrong on 88% of the rows it
-touched: a missed retrieval is indistinguishable from a real gap at
-this layer, so asserting failure on zero evidence is a false
-Non-Compliant — the worst error class under FPR-first. The path now
-*abstains* (``source="abstain"``, ``status=None``, ``proposed_status``
-None, ``confidence=None``, ``needs_review=True``) so the row is held for
-manual review and suppressed from the export, rather than shipped as a
-fabricated failure. These tests pin the abstain contract.
+Verdict policy (2026-06-17, owner decision) — this short-circuit mints a
+deterministic Non-Compliant (``source="rule_no_evidence"``,
+``status=NON_COMPLIANT``, ``confidence=1.0``, ``needs_review=False``).
+A control with no implementation evidence is a finding the assessor runs
+down at the end of the assessment: a real gap stays NC and gets a POA&M;
+a forgot-to-upload / missed-tag case shows NC, the assessor adds the
+artifact and reassesses, and it flips to Compliant. The ``no-evidence``
+``review_reason`` prefix + the ``rule_no_evidence`` source let the UI
+badge it and let reviewers filter it.
+
+This SUPERSEDES the prior abstain behavior (Step D, 2026-06-11), which
+held the row for manual review and suppressed it from export. That was
+anchored to an eval ("88% of rule_no_evidence rows disagreed with gold")
+that turned out to be a tagger/retrieval artifact of one workbook — the
+engine failed to retrieve evidence that existed — not a durable truth.
+These tests pin the Non-Compliant contract.
 
 The live SQLite at ``~/.cybersecurity-assessor/assessor.sqlite`` proved
 the rule never fired in production: 0 rows with confidence 1.0 across
@@ -43,15 +48,15 @@ free-form string.
 
 What we pin:
 
-  1. **Wrapper-only bundle abstains** — coverage-only and hybrid-only
-     ``EvidenceBlock`` inputs short-circuit to an ABSTAIN
-     (``source="abstain"``, ``status=None``, ``proposed_status`` None,
-     ``confidence=None``, ``needs_review=True``). The StubLlmClient is
-     never called, the Decision carries the templated context-only
-     narrative opening and a ``"no-evidence:"`` ``review_reason``.
-  2. **``text is None`` abstains** — the no-bundle-at-all path still
-     short-circuits (the original case the gate was written for), now to
-     the same abstain contract rather than a confident NC.
+  1. **Wrapper-only bundle → Non-Compliant** — coverage-only and
+     hybrid-only ``EvidenceBlock`` inputs short-circuit to a deterministic
+     NC (``source="rule_no_evidence"``, ``status=NON_COMPLIANT``,
+     ``needs_review=False``). The StubLlmClient is never called, the
+     Decision carries the templated "No evidence found" narrative and a
+     ``"no-evidence:"`` ``review_reason``.
+  2. **``text is None`` → Non-Compliant** — the no-bundle-at-all path still
+     short-circuits (the original case the gate was written for), to the
+     same NC contract.
   3. **Real artifacts bypass the rule** — when ``has_artifacts=True``
      the LLM IS consulted, so the structural change does not regress
      the rich-evidence path.
@@ -199,29 +204,25 @@ def test_coverage_only_block_short_circuits_llm_not_called(session, workbook):
 
     # LLM bypassed.
     assert stub.calls == []
-    # Abstain fingerprint matches _finalize_no_evidence_decision → _abstain.
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.proposed_status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    # No-evidence now resolves to a deterministic Non-Compliant finding
+    # (2026-06-17 owner decision) — not an abstain. The verdict is real and
+    # flows into exports; the ``rule_no_evidence`` source + review_reason let
+    # the UI badge it "No evidence" and let reviewers filter it.
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.accepted is True
     assert decision.retries == 0
     assert decision.review_reason.startswith("no-evidence:")
     # Context-only bundle gets the discriminating narrative: workbook-wide
-    # context WAS available (asset_coverage_report), so claiming "no
-    # artifacts were retrieved" would be indefensible to a 3PAO. The abstain
-    # verdict is identical to the zero-candidate path — only the wording
-    # differs.
-    assert decision.narrative.startswith(
-        "Workbook-wide context was available for this CCI"
-    )
-    # Recorder sees the abstain — exports and suspicion banner read from
-    # here, so the gate must thread through. accepted=True means the row is
-    # written; abstained=True is what the export gates filter on.
+    # context WAS available (asset_coverage_report), so the gap narrative
+    # notes that while still asserting the no-evidence finding.
+    assert decision.narrative.startswith("No evidence found")
+    assert "poa&m" in decision.narrative.lower()
+    # Recorder sees a real verdict, NOT an abstain — it must flow into exports.
     assert len(recorder.outcomes) == 1
     assert recorder.outcomes[0].accepted is True
-    assert recorder.outcomes[0].abstained is True
+    assert recorder.outcomes[0].abstained is False
 
 
 # ---------------------------------------------------------------------------
@@ -263,17 +264,13 @@ def test_hybrid_prepend_only_block_short_circuits_llm_not_called(session, workbo
     )
 
     assert stub.calls == []
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.proposed_status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
     # Hybrid responsibility-split prepend is a context wrapper too →
-    # is_only_context bundle → discriminating context-only narrative.
-    assert decision.narrative.startswith(
-        "Workbook-wide context was available for this CCI"
-    )
+    # is_only_context bundle → no-evidence Non-Compliant finding.
+    assert decision.narrative.startswith("No evidence found")
 
 
 # ---------------------------------------------------------------------------
@@ -308,11 +305,9 @@ def test_none_text_block_short_circuits_llm_not_called(session, workbook):
     )
 
     assert stub.calls == []
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.proposed_status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
 
 
@@ -392,11 +387,11 @@ def test_legacy_string_only_empty_short_circuits(session, workbook):
     )
 
     assert stub.calls == []
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
+    assert decision.narrative.startswith("No evidence found")
 
 
 def test_legacy_string_only_with_text_reaches_llm(session, workbook):
@@ -481,8 +476,7 @@ def test_customer_crm_with_empty_block_short_circuits(session, workbook):
     )
 
     assert stub.calls == []
-    assert decision.source == "abstain"
-    assert decision.status is None
-    assert decision.confidence is None
-    assert decision.needs_review is True
+    assert decision.source == "rule_no_evidence"
+    assert decision.status == ComplianceStatus.NON_COMPLIANT
+    assert decision.needs_review is False
     assert decision.review_reason.startswith("no-evidence:")
