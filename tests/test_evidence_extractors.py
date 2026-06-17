@@ -108,6 +108,11 @@ def test_infer_kind_by_extension():
     assert infer_kind(Path("a.xml")) == EvidenceKind.STIG_XCCDF
     assert infer_kind(Path("a.xlsx")) == EvidenceKind.XLSX
     assert infer_kind(Path("a.txt")) == EvidenceKind.TEXT
+    assert infer_kind(Path("a.png")) == EvidenceKind.IMAGE
+    assert infer_kind(Path("a.JPG")) == EvidenceKind.IMAGE
+    assert infer_kind(Path("a.tiff")) == EvidenceKind.IMAGE
+    assert infer_kind(Path("a.vsdx")) == EvidenceKind.DIAGRAM
+    assert infer_kind(Path("a.svg")) == EvidenceKind.DIAGRAM
     assert infer_kind(Path("a.zip")) == EvidenceKind.OTHER
 
 
@@ -375,5 +380,66 @@ def test_nessus_extractor_maps_severity_and_status(tmp_path):
 def test_extract_path_errors_on_unknown_suffix(tmp_path):
     p = tmp_path / "blob.bin"
     p.write_bytes(b"\x00\x01")
+    with pytest.raises(ExtractorError):
+        extract_path(p)
+
+
+# ---------------------------------------------------------------------------
+# Image extractor (Pillow, no OCR)
+# ---------------------------------------------------------------------------
+
+
+def test_image_extractor_reads_dimensions_no_ocr(tmp_path):
+    from PIL import Image as PILImage
+
+    p = tmp_path / "mfa_settings_screenshot.png"
+    PILImage.new("RGB", (24, 12), "white").save(p, "PNG")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.IMAGE
+    assert doc.metadata["width"] == 24
+    assert doc.metadata["height"] == 12
+    assert doc.metadata["image_format"] == "PNG"
+    # No OCR: text is a filename-derived caption, not pixel content.
+    assert "mfa settings screenshot" in doc.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Diagram extractor (Visio .vsdx / .svg — stdlib text extraction, no OCR)
+# ---------------------------------------------------------------------------
+
+
+def test_svg_extractor_pulls_label_text(tmp_path):
+    p = tmp_path / "network_diagram.svg"
+    p.write_bytes(
+        b'<svg xmlns="http://www.w3.org/2000/svg">'
+        b"<title>Boundary</title><text>DMZ firewall</text>"
+        b"<text>external boundary</text></svg>"
+    )
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.DIAGRAM
+    assert "DMZ firewall" in doc.text
+    assert "external boundary" in doc.text
+
+
+def test_vsdx_extractor_pulls_shape_text(tmp_path):
+    import zipfile
+
+    p = tmp_path / "topology.vsdx"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr(
+            "visio/pages/page1.xml",
+            '<PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main">'
+            "<Shape><Text>Core Switch</Text></Shape>"
+            "<Shape><Text>Boundary Router</Text></Shape></PageContents>",
+        )
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.DIAGRAM
+    assert "Core Switch" in doc.text
+    assert "Boundary Router" in doc.text
+
+
+def test_vsdx_extractor_rejects_non_zip(tmp_path):
+    p = tmp_path / "broken.vsdx"
+    p.write_bytes(b"not a zip file")
     with pytest.raises(ExtractorError):
         extract_path(p)

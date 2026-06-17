@@ -1466,6 +1466,12 @@ export interface IngestSummary {
   skipped_unsupported: number;
   tags_created: number;
   findings_created: number;
+  /**
+   * Artifacts that ingested OK but mapped to ZERO controls (no tag from any
+   * tier). Surfaced so evidence never silently vanishes from control pages —
+   * the user can tag these manually or add a control reference.
+   */
+  untagged?: { path: string; reason: string }[];
   errors: { path: string; error: string }[];
 }
 

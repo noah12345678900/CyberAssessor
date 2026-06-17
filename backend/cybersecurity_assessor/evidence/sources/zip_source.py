@@ -53,6 +53,16 @@ _INGESTIBLE_SUFFIXES = {
     ".md",
     ".log",
     ".csv",
+    # Images + vector diagrams (see local.py for rationale).
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".vsdx",
+    ".svg",
 }
 
 

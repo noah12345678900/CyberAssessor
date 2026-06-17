@@ -75,6 +75,14 @@ class EvidenceKind(str, Enum):
     STIG_XCCDF = "stig_xccdf"
     NESSUS = "nessus"
     TEXT = "text"
+    # Raster images (PNG/JPG/etc.) — ingested for completeness + filename/kind
+    # tagging; no OCR (Tesseract needs an admin install; easyocr pulls ~3GB of
+    # torch). Pixel content isn't read — these map by filename signal + metadata.
+    IMAGE = "image"
+    # Vector/structured diagrams (Visio .vsdx, .svg) — shape/label text IS
+    # extracted (stdlib zip+XML), so network/boundary diagrams reach the tagger
+    # and the boundary-control kind rule.
+    DIAGRAM = "diagram"
     OTHER = "other"
 
 

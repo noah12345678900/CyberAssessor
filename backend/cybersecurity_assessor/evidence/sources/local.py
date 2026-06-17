@@ -38,6 +38,19 @@ _INGESTIBLE_SUFFIXES = {
     ".md",
     ".log",
     ".csv",
+    # Images (no OCR — filename/metadata tagging) + vector diagrams
+    # (.vsdx/.svg shape text extracted). Admitted so screenshots and
+    # network/boundary diagrams become visible evidence instead of being
+    # silently dropped at the file walk.
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".vsdx",
+    ".svg",
 }
 
 

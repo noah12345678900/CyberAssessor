@@ -624,8 +624,38 @@ export function Evidence() {
                 <Stat label="Scanned" value={summary.scanned} />
                 <Stat label="Ingested" value={summary.ingested} />
                 <Stat label="Skipped" value={summary.skipped_existing} />
+                <Stat label="Unmapped" value={summary.untagged?.length ?? 0} />
                 <Stat label="Errors" value={summary.errors.length} />
               </div>
+              {summary.untagged && summary.untagged.length > 0 && (
+                // Files that ingested fine but mapped to ZERO controls. Without
+                // this they'd be invisible on every control page — the silent-
+                // drop failure mode. Amber (warning), not red (error): the file
+                // IS stored, it just needs a control reference or manual tag.
+                <details className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+                  <summary className="cursor-pointer text-sm font-medium text-amber-600">
+                    {summary.untagged.length} file{summary.untagged.length === 1 ? "" : "s"} didn't map to any control — review
+                  </summary>
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {summary.untagged.map((u, i) => (
+                      <li
+                        key={`${u.path}-${i}`}
+                        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-amber-500/20 pt-1 first:border-t-0 first:pt-0"
+                      >
+                        <span
+                          className="font-mono truncate text-muted-foreground"
+                          title={u.path}
+                        >
+                          {u.path}
+                        </span>
+                        <span className="text-amber-600" title={u.reason}>
+                          {u.reason}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {summary.errors.length > 0 && (
                 // <details> over a custom expander: the per-file failure list
                 // can run to dozens of rows on a noisy share, so collapsing
