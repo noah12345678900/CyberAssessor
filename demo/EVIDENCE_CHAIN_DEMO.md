@@ -29,10 +29,10 @@ stamps the new audit fields:
 
 1. Load both files via Evidence → Add files (any order; the tracker
    handles both A-then-B and B-then-A).
-2. In the demo CCIS workbook
-   (`demo/ccis/CCIS_Example System_Demo_System_2026May.xlsx`), open the **AC-2.4**
-   row (currently blank, marked "assessor's turn" in `demo/README.md`)
-   and paste this snippet into column U:
+2. In the demo workbook
+   (`demo/workbooks/DEMO_NIST_800-53r5_Example System.xlsx`), open any
+   account-management row (e.g. **AC-2 (1)**) and paste this snippet into
+   column U (Previous Test Results):
 
        Account inventory maintained per Example System Demo Account Mgmt Procedure
        Manual Rev A section 4.2; quarterly attestations on file in the

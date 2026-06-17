@@ -33,6 +33,21 @@ OUT = Path(__file__).parent / "crm" / "Azure_Government_FedRAMP_High_CRM.xlsx"
 # (control_id, control_name, responsibility, azure_impl, customer_resp, impl_status)
 ROWS = [
     # === INHERITED (fully Microsoft-owned datacenter controls) ==============
+    # AC-17 DIVERGES from the AWS CRM (which marks it "Customer"): on Azure
+    # Government, all administrative remote access is brokered through managed
+    # Azure Bastion, so the customer inherits the remote-access plane rather
+    # than building one. Same control, opposite responsibility from AWS — the
+    # multi-tenant demo's headline split.
+    ("AC-17", "Remote Access",
+     "Inherited",
+     "Microsoft operates Azure Bastion as a fully-managed, hardened remote-access "
+     "plane: browser-based RDP/SSH over TLS with no public IPs on customer VMs, "
+     "patched and monitored by Microsoft.",
+     "Customer fully inherits the managed Azure Bastion remote-access control for "
+     "administrative access to customer VMs. No customer-built VPN or jump-host is "
+     "required; the customer SSP references the Azure Government FedRAMP High SSP "
+     "as the authoritative source for the inherited remote-access plane.",
+     "Implemented"),
     ("PE-1",  "Physical and Environmental Protection Policy and Procedures",
      "Inherited",
      "Microsoft develops, documents, and annually reviews physical and "

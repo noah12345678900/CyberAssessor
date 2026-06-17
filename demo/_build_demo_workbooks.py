@@ -195,10 +195,37 @@ NIST_800_53 = FrameworkDemo(
             "If inheriting, cite the provider system; otherwise provide the "
             "firewall config and ACL.",
             "Examine the inheritance memorandum or the firewall config.",
-            status="Not Applicable",
-            results="Inheritance from SDA Enterprise Service documented in SDA "
-            "Controls overlay row 412. No local boundary device implemented.",
+            status="Compliant",
+            results="Boundary protection is fully inherited from the SDA "
+            "Enterprise Service per SDA Controls overlay row 412. An inherited "
+            "control whose provider satisfies the requirement is Compliant "
+            "(applicable but met by the provider) — not Not Applicable.",
             cci="CCI-001097", inherited="Yes", remote="SDA Enterprise Service",
+        ),
+        # 8th control — the multi-tenant divergence showcase. Left UNASSESSED
+        # (blank status) so it flows to the assessor, and deliberately
+        # responsibility-split across the two demo CRMs: AWS GovCloud marks
+        # AC-17 "Customer" (the customer configures Client VPN + conditional
+        # access), while Azure Government marks it "Inherited" (Azure Bastion is
+        # a fully-managed remote-access plane). With BOTH CRMs attached, the
+        # assessor must write a different per-scope narrative for each tenant —
+        # the exact thing the boundary/CRM work exists to demonstrate.
+        Req(
+            "AC-17", "Remote Access",
+            "AC", "Remote access to the Example System Demo workloads differs by "
+            "cloud: the AWS GovCloud enclave uses customer-configured Client VPN "
+            "with conditional access, while the Azure Government enclave brokers "
+            "all administrative remote access through managed Azure Bastion.",
+            "The organization authorizes remote access to the information system "
+            "prior to connection and enforces approved remote-access methods.",
+            "Provide the remote-access configuration for each cloud enclave; cite "
+            "the provider-managed plane where access is inherited.",
+            "Examine the remote-access method per scope. For the customer-owned "
+            "scope verify VPN/conditional-access enforcement; for the inherited "
+            "scope confirm the managed plane covers the requirement.",
+            status="",
+            results="",
+            cci="CCI-000063", inherited="No",
         ),
     ],
 )

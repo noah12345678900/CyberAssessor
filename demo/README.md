@@ -25,13 +25,13 @@ document, scan, and log is fabricated for the fictional "Example System Demo" sy
    CSP/cloud-provided (8a), documented scope-exclusion NA (8b), and bare
    "inherited from" with no source → escalate (8c) — while the remaining
    `Local` rows fall through to the LLM. See *Deterministic lane coverage*
-   below; `_verify_ccis_coverage.py` asserts it end-to-end.
+   below.
 
 ## Folder layout
 
 | Folder | What's in it |
 |---|---|
-| `ccis/` | The CCIS workbook the assessor opens — 17 sample CCIs across AC/AT/AU/CM/CP/IA/PE/RA/SC/SI, exercising every Rule #8 lane plus the LLM hand-off |
+| `workbooks/` | One importable demo workbook per framework (NIST 800-53, 800-171, CSF 2.0, ISO 27001, CIS v8, PCI DSS, SOC 2). `DEMO_NIST_800-53r5_Example System.xlsx` is the primary 8-control demo — including AC-17, whose responsibility diverges across the two CRMs (AWS=Customer, Azure=Inherited) to showcase per-scope narratives |
 | `policies/` | Implementing policies/procedures referenced by `Col F` and `Col U` |
 | `configs/` | GPO export referenced by AC-7, AC-11, IA-5 rows |
 | `text/` | Operator-generated weekly review records (AU-6, SI-4 evidence) |
@@ -68,7 +68,7 @@ structural resolves it to **Compliant** without an LLM call (inherited ≠ NA).
 Six additional rows exist solely to drive each deterministic auto-status lane,
 so the demo showcases every feature path — not just the happy "Local → LLM"
 one. The classifier reaches its verdict from the workbook columns alone, with
-**no billable LLM call**; `_verify_ccis_coverage.py` asserts each lane fires:
+**no billable LLM call**. Each lane fires as follows:
 
 | CCI (row) | Lane (`classify_row`) | Verdict | Why it lands there |
 |---|---|---|---|
@@ -102,11 +102,12 @@ Both generator scripts are idempotent — re-run anytime to refresh:
 ```sh
 cd cybersecurity-assessor
 backend/.venv/Scripts/python.exe demo/_build_demo_artifacts.py
-backend/.venv/Scripts/python.exe demo/_build_demo_ccis.py
+backend/.venv/Scripts/python.exe demo/_build_demo_workbooks.py   # one workbook per framework -> demo/workbooks/
+backend/.venv/Scripts/python.exe demo/_build_demo_crm.py         # AWS GovCloud CRM
+backend/.venv/Scripts/python.exe demo/_build_demo_crm_azure.py   # Azure Government CRM
 backend/.venv/Scripts/python.exe demo/_build_demo_psc.py
 
 # Repeatable coverage checks (no LLM / no tokens):
-backend/.venv/Scripts/python.exe demo/_verify_ccis_coverage.py   # every Rule #8 lane fires
 backend/.venv/Scripts/python.exe demo/_verify_psc_resolution.py  # Rev 5 PSC resolves 16/16
 backend/.venv/Scripts/python.exe demo/_verify_boundary_attribution.py  # multi-tenant boundary: lines
 ```
@@ -127,9 +128,9 @@ no tokens.
 ## Smoke test against the app
 
 1. Start the app (`pnpm dev` from repo root).
-2. **Workbooks** → Open `demo/ccis/CCIS_Example System_Demo_System_2026May.xlsx`, select
-   framework "NIST SP 800-53 Rev. 5". Baseline summary should report 17
-   in-scope objectives.
+2. **Workbooks** → Open `demo/workbooks/DEMO_NIST_800-53r5_Example System.xlsx`, select
+   framework "NIST SP 800-53 Rev. 5". Baseline summary should report 8
+   in-scope controls (AC-2(1), AC-7a, AC-11, IA-5(1)(a), CM-6a, RA-5a, SC-7, AC-17).
 3. **Evidence** → Ingest folder `demo/`. Expect: 9 ingested, 0 errors, tags
    linking USD20240315 → AC-2 rows, USD20240218 → AC-7 / AC-11 / IA-5,
    USD20240518 → AT-2.
