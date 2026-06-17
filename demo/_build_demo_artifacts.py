@@ -1,6 +1,6 @@
 """Generate demo evidence artifacts for the Example System Demo system.
 
-Run once to populate demo/policies/, demo/configs/. Idempotent.
+Run once to populate demo/policies/, demo/configs/, demo/diagrams/. Idempotent.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from pathlib import Path
 DEMO = Path(__file__).parent
 POLICIES = DEMO / "policies"
 CONFIGS = DEMO / "configs"
+DIAGRAMS = DEMO / "diagrams"
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +455,118 @@ def build_gpo_export_xlsx() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# VSDX -- Authorization Boundary Diagram (Visio)
+# ---------------------------------------------------------------------------
+#
+# Built directly as an OOXML/vsdx zip (no Visio install needed). The diagram
+# extractor (evidence/extractors/diagram.py) reads visio/pages/page*.xml and
+# collects <Text> runs, so the shape labels below are exactly what reaches the
+# LLM. The filename + boundary keywords ("boundary", "firewall", "DMZ") drive
+# the tagger's diagram→boundary-control rule (SC-7 / CA-3 / AC-4 / PL-8), and
+# the labels give the assessor real content to reason about (tiers, subnets,
+# the security stack) instead of treating the diagram as an opaque image.
+
+
+def build_boundary_diagram_vsdx() -> Path:
+    import zipfile
+
+    # Shape labels for the authorization-boundary topology. Kept verbatim in
+    # the order a reader scans top→bottom so the extracted text reads sensibly.
+    shapes = [
+        "Internet / External Network",
+        "Perimeter Firewall (Palo Alto PA-5220)",
+        "DMZ - Public Web Tier 10.10.1.0/24",
+        "Reverse Proxy / WAF",
+        "Internal Firewall",
+        "Application Tier 10.10.5.0/24",
+        "Database Tier 10.10.9.0/24",
+        "Management VLAN 10.10.99.0/24",
+        "SIEM / Splunk Universal Forwarder",
+        "ACAS / Nessus Scanner",
+        "Authorization Boundary - Example System Demo (IATT)",
+    ]
+    shape_xml = "\n".join(
+        f'  <Shape ID="{i}" Type="Shape"><Text>{label}</Text></Shape>'
+        for i, label in enumerate(shapes, start=1)
+    )
+    page_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main"'
+        ' xml:space="preserve">\n'
+        " <Shapes>\n"
+        f"{shape_xml}\n"
+        " </Shapes>\n"
+        "</PageContents>"
+    )
+    pages_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Pages xmlns="http://schemas.microsoft.com/office/visio/2012/main">'
+        '<Page ID="0" Name="Authorization Boundary"/></Pages>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.microsoft.com/visio/2010/relationships/document" '
+        'Target="visio/document.xml"/></Relationships>'
+    )
+
+    DIAGRAMS.mkdir(parents=True, exist_ok=True)
+    out = DIAGRAMS / "Example_System_Authorization_Boundary_Diagram_USD20240620.vsdx"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("visio/pages/pages.xml", pages_xml)
+        z.writestr("visio/pages/page1.xml", page_xml)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# SVG -- Network Boundary Diagram (vector, second diagram format)
+# ---------------------------------------------------------------------------
+#
+# The diagram extractor also handles .svg by collecting <text>/<tspan>/<title>/
+# <desc>. A real network diagram exported to SVG carries its labels as text
+# nodes, so this exercises the same boundary-control tagging path on a
+# different on-disk format.
+
+
+def build_boundary_diagram_svg() -> Path:
+    labels = [
+        "Internet / External Network",
+        "Perimeter Firewall (Palo Alto PA-5220)",
+        "DMZ - Public Web Tier 10.10.1.0/24",
+        "Internal Firewall",
+        "Application Tier 10.10.5.0/24",
+        "Database Tier 10.10.9.0/24",
+        "SIEM / Splunk Universal Forwarder",
+    ]
+    text_nodes = "\n".join(
+        f'  <text x="40" y="{60 + i * 50}">{label}</text>'
+        for i, label in enumerate(labels)
+    )
+    svg = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="460">\n'
+        "  <title>Example System Demo Network Boundary</title>\n"
+        "  <desc>Authorization boundary data-flow and segmentation diagram</desc>\n"
+        f"{text_nodes}\n"
+        "</svg>"
+    )
+    DIAGRAMS.mkdir(parents=True, exist_ok=True)
+    out = DIAGRAMS / "Example_System_Network_Boundary_Dataflow.svg"
+    out.write_text(svg, encoding="utf-8")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -464,6 +577,8 @@ if __name__ == "__main__":
         build_ia_procedures_pdf,
         build_training_pptx,
         build_gpo_export_xlsx,
+        build_boundary_diagram_vsdx,
+        build_boundary_diagram_svg,
     ):
         path = fn()
         print(f"WROTE  {path.relative_to(DEMO)}")
