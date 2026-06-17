@@ -227,6 +227,30 @@ NIST_800_53 = FrameworkDemo(
             results="",
             cci="CCI-000063", inherited="No",
         ),
+        # 9th control — a genuine NOT APPLICABLE. AC-18 (Wireless Access) is
+        # documented as out of scope: the Example System Demo boundary has no
+        # wireless networking, so the control is Not Applicable (distinct from
+        # inherited-Compliant on SC-7). Exercises the deterministic 8b
+        # scope-exclusion -> NOT_APPLICABLE lane.
+        Req(
+            "AC-18", "Wireless Access",
+            "AC", "The Example System Demo authorization boundary contains no "
+            "wireless networking. All connectivity is wired within the data "
+            "center enclave; wireless is not deployed and is prohibited by the "
+            "system configuration baseline.",
+            "The organization establishes configuration requirements and "
+            "authorizes wireless access to the information system.",
+            "If wireless is present, provide the wireless configuration; "
+            "otherwise document the scope exclusion.",
+            "Confirm the boundary has no wireless components. Verify the "
+            "scope-exclusion statement in the SSP.",
+            status="Not Applicable",
+            results="Not Applicable — the Example System Demo boundary deploys no "
+            "wireless networking; all access is wired within the data-center "
+            "enclave. Wireless is prohibited by the configuration baseline, so "
+            "AC-18 does not apply to this system.",
+            cci="CCI-001438", inherited="No",
+        ),
     ],
 )
 
