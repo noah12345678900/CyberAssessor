@@ -241,9 +241,9 @@ eng = [
     ("A model that learns your judgment",
      "Online behavioral learning",
      "Every time an assessor includes or rejects a swept file, an online machine-learning model updates the scoring weights toward that behavior. The engine literally learns what THIS team treats as relevant evidence, and gets sharper with every assessment — no retraining cycle, no data leaving the workstation."),
-    ("Adversarial CRM guardrails",
-     "Anomaly detection on vendor claims",
-     "Cloud vendors' Customer Responsibility Matrices can wrongly claim everything is 'inherited' — a wall of false-compliant verdicts. A three-tier defense (hand-tuned heuristics, TF-IDF + embedding narrative-quality scoring, and an Isolation Forest anomaly model trained across every CRM seen) flags a suspicious matrix before the assessor ever trusts it."),
+    ("A lie detector for vendor spreadsheets",
+     "Adversarial CRM anomaly detection",
+     "When a cloud vendor says 'we handle this control,' the system can auto-pass it — a huge time-saver, IF the spreadsheet is honest. This engine vets every vendor responsibility matrix for 'too good to be true' claims: almost-everything-inherited, copy-pasted boilerplate, or claims that contradict your own scans. It compares each matrix to every one seen before and flags the outliers — so the system never rubber-stamps a control on a bad spreadsheet."),
 ]
 ey = Inches(2.0)
 ew = Inches(3.84)
@@ -252,11 +252,11 @@ for i, (title, tag, body) in enumerate(eng):
     x = Inches(0.8) + (ew + egap) * i
     _round(s, x, ey, ew, Inches(4.6), NAVY)
     _rect(s, x, ey, ew, Inches(0.08), CYAN)
-    _text(s, x + Inches(0.3), ey + Inches(0.3), ew - Inches(0.6), Inches(0.9),
-          [[(title, 17, WHITE, True, False)]], line_spacing=1.05)
-    _chip(s, x + Inches(0.3), ey + Inches(1.35), ew - Inches(0.6), Inches(0.45), tag, CYAN_DK, WHITE, 11)
-    _text(s, x + Inches(0.3), ey + Inches(2.0), ew - Inches(0.6), Inches(2.4),
-          [[(body, 12, LIGHT, False, False)]], line_spacing=1.16)
+    _text(s, x + Inches(0.3), ey + Inches(0.28), ew - Inches(0.6), Inches(0.95),
+          [[(title, 16, WHITE, True, False)]], line_spacing=1.02)
+    _chip(s, x + Inches(0.3), ey + Inches(1.32), ew - Inches(0.6), Inches(0.42), tag, CYAN_DK, WHITE, 10.5)
+    _text(s, x + Inches(0.3), ey + Inches(1.92), ew - Inches(0.6), Inches(2.55),
+          [[(body, 11, LIGHT, False, False)]], line_spacing=1.12)
 _text(s, Inches(0.8), Inches(6.75), Inches(11.7), Inches(0.4),
       [[("All learning happens locally — your evidence and your team's judgment never leave the workstation.",
          12.5, CYAN_DK, False, True)]])
@@ -333,6 +333,51 @@ for i, (h, b) in enumerate(diffs):
           [[(h, 19, WHITE, True, False)]])
     _text(s, x + Inches(0.4), y + Inches(0.85), dw - Inches(0.7), Inches(1.0),
           [[(b, 13, LIGHT, False, False)]], line_spacing=1.15)
+
+
+# ===========================================================================
+# Slide 5b — ROI / estimated savings per assessment
+# ===========================================================================
+s = prs.slides.add_slide(BLANK)
+_bg(s, WHITE)
+_accentbar(s)
+_text(s, Inches(0.8), Inches(0.45), Inches(11.7), Inches(0.8),
+      [[("What one assessment is worth", 32, NAVY, True, False)]])
+_text(s, Inches(0.8), Inches(1.3), Inches(11.7), Inches(0.5),
+      [[("Estimated savings on a single full-system ATO package.*", 16, SLATE, False, False)]])
+
+roi = [
+    ("~240 hrs", "saved per assessment", "≈ 6 assessor work-weeks returned to the team"),
+    ("~$42,000", "saved per assessment", "fully-burdened assessor labor, one package"),
+    ("~80%", "less assessment time", "clear cases auto-resolve; experts handle the rest"),
+    ("Days", "not months", "compress the authorization timeline to ATO"),
+]
+rx = Inches(0.8)
+rw = Inches(2.85)
+rgap = Inches(0.13)
+for i, (big, mid, small) in enumerate(roi):
+    x = rx + (rw + rgap) * i
+    _round(s, x, Inches(2.05), rw, Inches(2.5), NAVY)
+    _rect(s, x, Inches(2.05), rw, Inches(0.1), CYAN)
+    _text(s, x, Inches(2.35), rw, Inches(0.85),
+          [[(big, 38, CYAN, True, False)]], align=PP_ALIGN.CENTER)
+    _text(s, x + Inches(0.2), Inches(3.2), rw - Inches(0.4), Inches(0.5),
+          [[(mid, 14, WHITE, True, False)]], align=PP_ALIGN.CENTER)
+    _text(s, x + Inches(0.25), Inches(3.7), rw - Inches(0.5), Inches(0.8),
+          [[(small, 11.5, LIGHT, False, False)]], align=PP_ALIGN.CENTER, line_spacing=1.1)
+
+# methodology / asterisk box
+_round(s, Inches(0.8), Inches(4.85), Inches(11.73), Inches(1.75), LIGHT)
+_rect(s, Inches(0.8), Inches(4.85), Inches(0.12), Inches(1.75), AMBER)
+_text(s, Inches(1.1), Inches(5.0), Inches(11.2), Inches(1.6),
+      [[("* Illustrative estimate, not a guarantee.", 12.5, NAVY, True, False)],
+       [("Basis: a full-system ATO of ~300 controls (~700+ CCIs). Manual baseline ~1 assessor-hour per control "
+         "(≈300 hrs); with the tool, deterministic auto-resolution + AI-assisted assessment cut hands-on effort "
+         "by ~80% (≈60 hrs). Dollar figure uses a ~$175/hr fully-burdened cleared-assessor rate "
+         "(blend of GS-equivalent contractor and senior 3PAO).",
+         11.5, INK, False, False)],
+       [("Actual savings vary by system size, baseline, evidence quality, and team. Your numbers will differ — these are planning estimates only.",
+         11.5, SLATE, False, True)]], line_spacing=1.12)
 
 
 # ===========================================================================
