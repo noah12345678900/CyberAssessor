@@ -1031,3 +1031,71 @@ def test_masked_provider_only_multiscope_still_backfills(
     assert len(rows) == 1
     # Latest-wins by_control entry (Azure 'inherited') drives the verdict.
     assert rows[0].status == ComplianceStatus.COMPLIANT
+
+
+def test_multitenant_empty_slices_defers_not_backfill(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """A multi-tenant workbook control with EMPTY per-scope slices must DEFER.
+
+    Reproduces the real bug: two scope-labeled CRMs (AWS GovCloud + Azure
+    Government) are attached and reveal two tenant labels via OTHER controls —
+    but the assessed control AC-2 has only an UNLABELED inherited CRM entry, so
+    ``build_crm_context`` produces NO per-scope slices for it. Because the
+    workbook is genuinely multi-tenant (distinct_scope_label_count >= 2), the
+    single latest-attach-wins "inherited" entry must NOT backfill COMPLIANT —
+    that would mask the other tenant's customer obligation with no LLM call. It
+    must skip as non-deterministic and defer to assess time.
+    """
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    # Two SCOPE-LABELED CRMs establish the multi-tenant context. They cover a
+    # different control (ac-9) so AC-2 itself has no per-scope slices.
+    other = Control(
+        framework_id=framework.id, control_id="ac-9", title="Other", family="AC"
+    )
+    session.add(other)
+    session.commit()
+    session.refresh(other)
+    _attach_crm_scoped(
+        session, framework_id=framework.id, workbook_id=workbook.id,
+        control_id_int=other.id, responsibility="customer",
+        scope_label="AWS GovCloud",
+        attached_at=datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc),
+    )
+    _attach_crm_scoped(
+        session, framework_id=framework.id, workbook_id=workbook.id,
+        control_id_int=other.id, responsibility="inherited",
+        scope_label="Azure Government",
+        attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
+    )
+    # AC-2 (the assessed control) gets an UNLABELED inherited CRM entry -> no
+    # slices for it, but the legacy by_control entry says "inherited".
+    _attach_crm(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="inherited",
+        narrative="Inherited (unlabeled).",
+    )
+    _install_fake_reader(monkeypatch, [_make_row()])
+
+    result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+
+    assert result.applied == 0, (
+        "multi-tenant empty-slices control must NOT auto-backfill; "
+        f"got {result.as_dict()}"
+    )
+    assert result.skipped_non_deterministic == 1
+    assert session.exec(select(Assessment)).all() == []

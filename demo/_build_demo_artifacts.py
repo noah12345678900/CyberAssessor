@@ -583,6 +583,83 @@ def build_azure_boundary_diagram_svg() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# DOCX -- AWS GovCloud Remote Access configuration (AC-17 customer-side)
+# ---------------------------------------------------------------------------
+#
+# Evidence for the AWS GovCloud CUSTOMER scope of AC-17. The Azure scope is
+# inherited (managed Azure Bastion) and needs no customer artifact, but the AWS
+# scope is customer-owned, so the assessor needs a real artifact to assess that
+# half — without it the control correctly abstains. This doc cites "AC-17" and
+# "CCI-000063" in body text so the tagger's Tier-3 (control-ID) and CCI passes
+# map it to the right objective.
+
+
+def build_remote_access_config_docx() -> Path:
+    from docx import Document
+
+    doc = Document()
+    doc.core_properties.title = "AWS GovCloud Remote Access Configuration"
+    doc.core_properties.author = "Example System Demo - Cloud Engineering"
+    doc.core_properties.subject = "USD20240622"
+
+    doc.add_heading("AWS GovCloud Remote Access Configuration", level=0)
+    p = doc.add_paragraph()
+    p.add_run("Document Number: USD20240622").bold = True
+    doc.add_paragraph("Version: 1.0")
+    doc.add_paragraph("Effective Date: 2026-05-01")
+    doc.add_paragraph("Scope: AWS GovCloud (US) enclave of the Example System Demo")
+
+    doc.add_heading("1. Purpose", level=1)
+    doc.add_paragraph(
+        "This document records the customer-configured remote-access controls "
+        "for the AWS GovCloud enclave, satisfying the customer responsibility "
+        "for NIST SP 800-53 Rev. 5 control AC-17 (Remote Access), CCI-000063, "
+        "as assigned to the customer in the AWS GovCloud Customer Responsibility "
+        "Matrix. (On the Azure Government enclave AC-17 is inherited via managed "
+        "Azure Bastion and requires no customer configuration.)"
+    )
+
+    doc.add_heading("2. Remote Access Method", level=1)
+    doc.add_paragraph(
+        "All administrative remote access to AWS GovCloud workloads is brokered "
+        "through AWS Client VPN with mutual-certificate authentication federated "
+        "to the enterprise IdP. No customer EC2 instance exposes a public RDP or "
+        "SSH port; security groups deny inbound administrative traffic from the "
+        "internet."
+    )
+
+    doc.add_heading("3. Authorization and Enforcement", level=1)
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Light Grid Accent 1"
+    hdr = table.rows[0].cells
+    hdr[0].text = "Setting"
+    hdr[1].text = "Configured Value"
+    for setting, value in [
+        ("Remote-access method", "AWS Client VPN (mutual TLS + IdP)"),
+        ("Authorization prior to connection", "Required — conditional access policy"),
+        ("Multi-factor authentication", "Enforced for all VPN sessions"),
+        ("Split tunneling", "Disabled"),
+        ("Session logging", "VPC Flow Logs + CloudWatch, 1-year retention"),
+        ("Entitlement review", "Quarterly"),
+    ]:
+        row = table.add_row().cells
+        row[0].text = setting
+        row[1].text = value
+
+    doc.add_heading("4. Assessment Notes", level=1)
+    doc.add_paragraph(
+        "Remote access is authorized prior to connection and enforces approved "
+        "methods per AC-17. Evidence: AWS Client VPN endpoint configuration "
+        "export and conditional-access policy, retained in the Example System "
+        "Demo cloud-engineering record set under document USD20240622."
+    )
+
+    out = POLICIES / "AWS_GovCloud_Remote_Access_Configuration_USD20240622.docx"
+    doc.save(str(out))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -593,6 +670,7 @@ if __name__ == "__main__":
         build_ia_procedures_pdf,
         build_training_pptx,
         build_gpo_export_xlsx,
+        build_remote_access_config_docx,
         build_aws_boundary_diagram_vsdx,
         build_azure_boundary_diagram_svg,
     ):

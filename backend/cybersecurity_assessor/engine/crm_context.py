@@ -112,6 +112,37 @@ class CrmContext:
         default_factory=dict
     )
 
+    @property
+    def distinct_scope_label_count(self) -> int:
+        """Number of distinct tenant scope_labels across all per-scope slices.
+
+        This is the genuine multi-tenant signal. A scope_label is what
+        distinguishes one cloud tenant's CRM from another (e.g. "AWS GovCloud"
+        vs "Azure Government"); the synthesized ``On-Premises`` slice is
+        excluded so it can't, by itself, make a single-cloud workbook look
+        multi-tenant.
+
+        ``>= 2`` means two or more real tenants are in play. Crucially this is
+        derived from slices that DID populate — so a control whose own slices
+        are empty can still be recognized as living in a multi-tenant workbook
+        (other controls' slices reveal the tenant labels) and therefore must
+        NOT short-circuit on the single latest-attach-wins entry, which would
+        mask one tenant's customer-side work.
+
+        Note we count *labels*, not baselines: splitting one logical CRM across
+        several unlabeled baselines (a test/import convenience) does NOT look
+        multi-tenant, because unlabeled baselines contribute no scope_label and
+        no slices. Only deliberately scope-labeled CRMs count.
+        """
+        from ..baselines.scope_labels import ON_PREM_LABEL
+
+        labels: set[str] = set()
+        for slices in self.by_control_impls.values():
+            for sl in slices:
+                if sl.scope_label and sl.scope_label != ON_PREM_LABEL:
+                    labels.add(sl.scope_label.casefold())
+        return len(labels)
+
     @classmethod
     def empty(cls) -> CrmContext:
         return cls(by_control={}, by_control_impls={})

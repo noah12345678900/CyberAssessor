@@ -254,3 +254,88 @@ def test_masked_provider_only_multiscope_still_short_circuits():
         "LLM must not be consulted when no slice is customer-owned; "
         f"got calls={stub.calls!r}"
     )
+
+
+def test_multitenant_empty_slices_does_not_short_circuit():
+    """Multi-tenant workbook, a control with NO per-scope slices → no short-circuit.
+
+    The empty-slices masking hole: scope attribution is missing for AC-17 (its
+    by_control_impls entry is empty — e.g. a CRM lacked a scope_label for it),
+    but the workbook is genuinely multi-tenant: OTHER controls' slices reveal
+    two distinct tenant labels (AWS GovCloud + Azure Government). The single
+    latest-attach-wins ``lookup()`` entry ("inherited") must NOT short-circuit
+    to COMPLIANT — that would mask the other tenant's customer obligation with
+    no LLM call. distinct_scope_label_count >= 2 forces the LLM path.
+    """
+    crm = CrmContext(
+        by_control={
+            "ac-17": CrmEntry(
+                control_id="ac-17", responsibility="inherited",
+                narrative="inherited (latest attach)", source_baseline_id=2,
+                responsibility_onprem=None,
+            ),
+        },
+        # AC-17 has NO slices, but another control reveals two tenant labels so
+        # the workbook is recognized as multi-tenant.
+        by_control_impls={
+            "ac-2": [
+                ImplementationSlice(
+                    scope_label="AWS GovCloud", responsibility="customer",
+                    narrative="c", source_baseline_id=1,
+                ),
+                ImplementationSlice(
+                    scope_label="Azure Government", responsibility="inherited",
+                    narrative="i", source_baseline_id=2,
+                ),
+            ],
+        },
+    )
+    assert crm.distinct_scope_label_count == 2
+    assert crm.lookup("ac-17").responsibility == "inherited"  # would short-circuit alone
+
+    row = _row(control_id="AC-17")
+    stub = StubLlmClient(
+        [
+            LlmProposal(
+                status=ComplianceStatus.NON_COMPLIANT,
+                narrative="Remote-access configuration not evidenced; POA&M required.",
+                confidence=0.8,
+            )
+        ]
+    )
+    decision = Assessor(llm=stub).assess(row, crm_context=crm)
+    assert decision.source == "llm", (
+        "multi-tenant control with empty slices must route to the LLM, not "
+        f"short-circuit to crm_inherited; got source={decision.source!r}"
+    )
+    assert len(stub.calls) == 1
+
+
+def test_single_tenant_empty_slices_still_short_circuits():
+    """Single-tenant (no 2nd scope label) + empty slices → short-circuit preserved.
+
+    With fewer than two distinct tenant labels there is no second tenant to
+    mask, so the deterministic inherited short-circuit remains correct and must
+    NOT regress to an unnecessary LLM call.
+    """
+    crm = CrmContext(
+        by_control={
+            "ac-17": CrmEntry(
+                control_id="ac-17", responsibility="inherited",
+                narrative="inherited via enterprise service", source_baseline_id=1,
+                responsibility_onprem=None,
+            ),
+        },
+        by_control_impls={},  # no labels anywhere -> single-tenant signal
+    )
+    assert crm.distinct_scope_label_count == 0
+
+    row = _row(control_id="AC-17")
+    stub = StubLlmClient([])  # no proposals — must NOT be called
+    decision = Assessor(llm=stub).assess(row, crm_context=crm)
+    assert decision.source != "llm", (
+        "single-tenant inherited control must short-circuit, not call the LLM; "
+        f"got source={decision.source!r}"
+    )
+    assert decision.status == ComplianceStatus.COMPLIANT
+    assert len(stub.calls) == 0
