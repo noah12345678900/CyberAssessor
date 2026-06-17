@@ -1227,6 +1227,22 @@ class Assessor:
                 sl.responsibility in _CUSTOMER_OWNED_RESPONSIBILITIES
                 for sl in crm_slices
             )
+            # Empty-slices masking guard. In a multi-tenant workbook (2+ CRM
+            # baselines) a control with NO per-scope slices means scope
+            # attribution is missing/unreliable for it (e.g. a CRM lacked a
+            # scope_label, or only one tenant's row parsed). The single
+            # ``crm_entry`` is latest-attach-wins, so trusting its "inherited"
+            # value here would mark the control COMPLIANT-by-inheritance with no
+            # LLM, masking the other tenant's customer obligation — the exact
+            # bug the slice guard exists to prevent. When slices are empty but
+            # the workbook is multi-tenant, force the LLM path. A single-CRM
+            # workbook (count < 2) keeps the legacy short-circuit: no second
+            # tenant to mask.
+            multi_tenant_unattributed = (
+                crm_context is not None
+                and not crm_slices
+                and crm_context.distinct_scope_label_count >= 2
+            )
             # Q2 "Both paths" / N/A guard: an evidenced control must never
             # auto-NA. _finalize_crm_decision resolves the combined status to
             # COMPLIANT only when "inherited" is among the specified scopes,
@@ -1269,6 +1285,7 @@ class Assessor:
                 suppress_na_short_circuit
                 or suppress_onprem_implicit
                 or slice_has_customer_work
+                or multi_tenant_unattributed
             )
             if not force_llm and all_inheritable and not suppress_short_circuit:
                 return self._finalize_crm_decision(

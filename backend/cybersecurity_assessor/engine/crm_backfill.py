@@ -138,6 +138,19 @@ def backfill_workbook_crm(
         # has no responsibility-tagged controls). Nothing to backfill.
         return BackfillResult(0, 0, 0, 0, 0)
 
+    # Genuine multi-tenant signal: how many DISTINCT tenant scope_labels are in
+    # play (e.g. "AWS GovCloud" + "Azure Government"), excluding the synthesized
+    # On-Premises slice. With 2+ real tenants, a control whose per-scope slices
+    # come back EMPTY means scope attribution is missing/unreliable for that
+    # control — so the single latest-attach-wins ``entry.responsibility`` must
+    # NOT be trusted to short-circuit (it would silently mark the control
+    # COMPLIANT-by-inheritance with no LLM, masking the other tenant's
+    # customer-side work). Counting LABELS, not baselines, avoids a false
+    # positive when one logical CRM is split across several unlabeled baselines
+    # (a test/import convenience that is not multi-tenant). See empty-slices
+    # branch below.
+    multi_tenant = crm_context.distinct_scope_label_count >= 2
+
     # Reuse the same Decision-builder the assess pipeline uses. llm=None
     # is fine: _finalize_crm_decision never touches the client.
     assessor = Assessor(llm=None)
@@ -173,7 +186,19 @@ def backfill_workbook_crm(
             deterministic = bool(slice_resps) and all(
                 r in _DETERMINISTIC for r in slice_resps
             )
+        elif multi_tenant:
+            # Multi-tenant workbook but NO per-scope slices for this control —
+            # scope attribution is missing/unreliable here (e.g. a CRM lacked a
+            # scope_label, or only one tenant's row parsed). Trusting the single
+            # latest-attach-wins ``entry`` would re-open the masking hole the
+            # slice guard above closes: an "inherited" latest attach would mark
+            # the control COMPLIANT with no LLM, hiding the other tenant's
+            # customer-side obligation. Defer to the LLM at assess time instead.
+            deterministic = False
         else:
+            # Single-CRM (or zero scope-labeled) workbook: the legacy
+            # single-entry short-circuit is safe — there is no second tenant to
+            # mask. Preserves the original deterministic backfill behavior.
             deterministic = entry.responsibility in _DETERMINISTIC
         if not deterministic:
             # Hybrid / customer (on any scope) — leave for the LLM at
