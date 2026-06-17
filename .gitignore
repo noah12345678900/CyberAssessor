@@ -71,6 +71,7 @@ extracted_text/
 !demo/ccis/**
 !demo/configs/**
 !demo/crm/**
+!demo/diagrams/**
 !demo/policies/**
 !demo/psc/**
 !demo/scans/**
