@@ -455,36 +455,65 @@ def build_gpo_export_xlsx() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# VSDX -- Authorization Boundary Diagram (Visio)
+# Boundary diagrams — TWO tenant-distinct authorization boundaries
 # ---------------------------------------------------------------------------
 #
-# Built directly as an OOXML/vsdx zip (no Visio install needed). The diagram
-# extractor (evidence/extractors/diagram.py) reads visio/pages/page*.xml and
-# collects <Text> runs, so the shape labels below are exactly what reaches the
-# LLM. The filename + boundary keywords ("boundary", "firewall", "DMZ") drive
-# the tagger's diagram→boundary-control rule (SC-7 / CA-3 / AC-4 / PL-8), and
-# the labels give the assessor real content to reason about (tiers, subnets,
-# the security stack) instead of treating the diagram as an opaque image.
+# Example System Demo is a multi-boundary program: customer workloads run in
+# BOTH AWS GovCloud and Azure Government (mirroring the two CRMs under crm/).
+# Each cloud has its OWN authorization-boundary diagram with cloud-native
+# terminology and DISTINCT topology — exactly how a real SSP package ships one
+# boundary diagram per enclave. The two diagrams are deliberately NOT
+# interchangeable: the AWS one speaks VPC / Security Group / GovCloud, the Azure
+# one speaks VNet / NSG / Azure Government. That difference is what makes the
+# multi-tenant boundary-attribution story real — each artifact belongs to one
+# tenant, and a per-scope (narratives_by_scope) verdict must cite the right one.
+#
+# The diagram extractor (evidence/extractors/diagram.py) reads the shape/label
+# text verbatim, so the labels below are exactly what reaches the LLM. The
+# filename + boundary keywords ("boundary", "firewall"/"NSG", subnets) drive the
+# tagger's diagram→boundary-control rule (SC-7 / CA-3 / AC-4 / PL-8).
+#
+# Provided in TWO on-disk formats so both extractor paths are exercised end to
+# end: the AWS boundary ships as Visio (.vsdx), the Azure boundary as SVG.
+
+# AWS GovCloud authorization boundary — Visio (.vsdx).
+_AWS_BOUNDARY_SHAPES = [
+    "Internet / External Users",
+    "AWS GovCloud (US-East) Region",
+    "Internet Gateway + AWS WAF",
+    "Application Load Balancer (public subnet)",
+    "Perimeter Security Group - default deny inbound",
+    "Production VPC 10.20.0.0/16",
+    "Public Subnet (DMZ) 10.20.1.0/24",
+    "App Tier - EC2 Auto Scaling Group 10.20.5.0/24",
+    "Data Tier - RDS PostgreSQL (Multi-AZ) 10.20.9.0/24",
+    "Management Subnet - bastion / SSM 10.20.99.0/24",
+    "VPC Flow Logs -> CloudWatch -> Splunk forwarder",
+    "Amazon GuardDuty + AWS Config",
+    "Authorization Boundary - Example System Demo (AWS GovCloud, IATT)",
+]
+
+# Azure Government authorization boundary — SVG. DISTINCT topology + addressing.
+_AZURE_BOUNDARY_LABELS = [
+    "Internet / External Users",
+    "Azure Government (USGov Virginia)",
+    "Azure Front Door + Web Application Firewall",
+    "Hub VNet 172.16.0.0/16",
+    "Perimeter NSG - default deny inbound",
+    "DMZ Subnet 172.16.1.0/24",
+    "Spoke VNet - App Subnet 172.16.5.0/24",
+    "Spoke VNet - Data Subnet (Azure SQL MI) 172.16.9.0/24",
+    "Azure Bastion - Management Subnet 172.16.99.0/24",
+    "NSG Flow Logs -> Log Analytics -> Microsoft Sentinel",
+    "Microsoft Defender for Cloud",
+    "Authorization Boundary - Example System Demo (Azure Government, IATT)",
+]
 
 
-def build_boundary_diagram_vsdx() -> Path:
+def _write_vsdx(out: Path, page_name: str, shapes: list[str]) -> Path:
+    """Write a minimal but valid OOXML/vsdx zip whose page carries shape text."""
     import zipfile
 
-    # Shape labels for the authorization-boundary topology. Kept verbatim in
-    # the order a reader scans top→bottom so the extracted text reads sensibly.
-    shapes = [
-        "Internet / External Network",
-        "Perimeter Firewall (Palo Alto PA-5220)",
-        "DMZ - Public Web Tier 10.10.1.0/24",
-        "Reverse Proxy / WAF",
-        "Internal Firewall",
-        "Application Tier 10.10.5.0/24",
-        "Database Tier 10.10.9.0/24",
-        "Management VLAN 10.10.99.0/24",
-        "SIEM / Splunk Universal Forwarder",
-        "ACAS / Nessus Scanner",
-        "Authorization Boundary - Example System Demo (IATT)",
-    ]
     shape_xml = "\n".join(
         f'  <Shape ID="{i}" Type="Shape"><Text>{label}</Text></Shape>'
         for i, label in enumerate(shapes, start=1)
@@ -501,7 +530,7 @@ def build_boundary_diagram_vsdx() -> Path:
     pages_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         '<Pages xmlns="http://schemas.microsoft.com/office/visio/2012/main">'
-        '<Page ID="0" Name="Authorization Boundary"/></Pages>'
+        f'<Page ID="0" Name="{page_name}"/></Pages>'
     )
     content_types = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -517,9 +546,7 @@ def build_boundary_diagram_vsdx() -> Path:
         'Type="http://schemas.microsoft.com/visio/2010/relationships/document" '
         'Target="visio/document.xml"/></Relationships>'
     )
-
     DIAGRAMS.mkdir(parents=True, exist_ok=True)
-    out = DIAGRAMS / "Example_System_Authorization_Boundary_Diagram_USD20240620.vsdx"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", content_types)
         z.writestr("_rels/.rels", rels)
@@ -528,40 +555,29 @@ def build_boundary_diagram_vsdx() -> Path:
     return out
 
 
-# ---------------------------------------------------------------------------
-# SVG -- Network Boundary Diagram (vector, second diagram format)
-# ---------------------------------------------------------------------------
-#
-# The diagram extractor also handles .svg by collecting <text>/<tspan>/<title>/
-# <desc>. A real network diagram exported to SVG carries its labels as text
-# nodes, so this exercises the same boundary-control tagging path on a
-# different on-disk format.
+def build_aws_boundary_diagram_vsdx() -> Path:
+    """AWS GovCloud authorization boundary — Visio (.vsdx)."""
+    out = DIAGRAMS / "Example_System_AWS_GovCloud_Boundary_Diagram_USD20240620.vsdx"
+    return _write_vsdx(out, "AWS GovCloud Authorization Boundary", _AWS_BOUNDARY_SHAPES)
 
 
-def build_boundary_diagram_svg() -> Path:
-    labels = [
-        "Internet / External Network",
-        "Perimeter Firewall (Palo Alto PA-5220)",
-        "DMZ - Public Web Tier 10.10.1.0/24",
-        "Internal Firewall",
-        "Application Tier 10.10.5.0/24",
-        "Database Tier 10.10.9.0/24",
-        "SIEM / Splunk Universal Forwarder",
-    ]
+def build_azure_boundary_diagram_svg() -> Path:
+    """Azure Government authorization boundary — SVG."""
     text_nodes = "\n".join(
-        f'  <text x="40" y="{60 + i * 50}">{label}</text>'
-        for i, label in enumerate(labels)
+        f'  <text x="40" y="{50 + i * 42}">{label}</text>'
+        for i, label in enumerate(_AZURE_BOUNDARY_LABELS)
     )
     svg = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="460">\n'
-        "  <title>Example System Demo Network Boundary</title>\n"
-        "  <desc>Authorization boundary data-flow and segmentation diagram</desc>\n"
+        '<svg xmlns="http://www.w3.org/2000/svg" width="680" height="600">\n'
+        "  <title>Example System Demo - Azure Government Authorization Boundary</title>\n"
+        "  <desc>Azure Government (USGov Virginia) network boundary and "
+        "segmentation diagram</desc>\n"
         f"{text_nodes}\n"
         "</svg>"
     )
     DIAGRAMS.mkdir(parents=True, exist_ok=True)
-    out = DIAGRAMS / "Example_System_Network_Boundary_Dataflow.svg"
+    out = DIAGRAMS / "Example_System_Azure_Government_Boundary_Diagram_USD20240621.svg"
     out.write_text(svg, encoding="utf-8")
     return out
 
@@ -577,8 +593,8 @@ if __name__ == "__main__":
         build_ia_procedures_pdf,
         build_training_pptx,
         build_gpo_export_xlsx,
-        build_boundary_diagram_vsdx,
-        build_boundary_diagram_svg,
+        build_aws_boundary_diagram_vsdx,
+        build_azure_boundary_diagram_svg,
     ):
         path = fn()
         print(f"WROTE  {path.relative_to(DEMO)}")

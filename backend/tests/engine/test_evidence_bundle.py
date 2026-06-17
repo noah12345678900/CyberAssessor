@@ -878,3 +878,116 @@ def test_tagged_but_no_findings_and_no_hosts_skips_both_sections(
     assert result.startswith("## tagged_evidence\n")
     assert "## corroborating_findings" not in result
     assert "## affected_hosts" not in result
+
+
+# ---------------------------------------------------------------------------
+# Boundary attribution (multi-tenant narrative integrity)
+# ---------------------------------------------------------------------------
+#
+# The `boundary:` header line is rendered ONLY when the workbook is
+# multi-boundary (>=2 BoundarySegments) AND the link is explicit (AUTO/MANUAL,
+# never BACKFILL). These four tests pin the guards: single-boundary stays
+# byte-identical, backfilled links are excluded, explicit links render, and a
+# multi-boundary artifact with no explicit link renders `unspecified`.
+
+from cybersecurity_assessor.engine.evidence_bundle import (  # noqa: E402
+    BOUNDARY_UNSPECIFIED,
+)
+from cybersecurity_assessor.models import (  # noqa: E402
+    BoundarySegment,
+    EvidenceBoundary,
+    ScopeLinkSource,
+    Workbook,
+)
+
+
+def _add_workbook(session: Session) -> Workbook:
+    wb = Workbook(path="C:/wb/boundary-test.xlsx", filename="boundary-test.xlsx")
+    session.add(wb)
+    session.commit()
+    session.refresh(wb)
+    return wb
+
+
+def _add_segment(session: Session, *, workbook_id: int, name: str, kind: str | None = None) -> BoundarySegment:
+    seg = BoundarySegment(workbook_id=workbook_id, name=name, kind=kind)
+    session.add(seg)
+    session.commit()
+    session.refresh(seg)
+    return seg
+
+
+def _link_boundary(
+    session: Session, *, evidence_id: int, segment_id: int,
+    source: ScopeLinkSource = ScopeLinkSource.MANUAL,
+) -> None:
+    session.add(
+        EvidenceBoundary(
+            evidence_id=evidence_id, boundary_segment_id=segment_id, source=source
+        )
+    )
+    session.commit()
+
+
+def test_single_boundary_workbook_renders_no_boundary_line(session, objective, tmp_path):
+    """One BoundarySegment → not multi-boundary → header byte-identical (no
+    `boundary:` line). Protects prompt-cache stability for the common case."""
+    wb = _add_workbook(session)
+    _add_segment(session, workbook_id=wb.id, name="On-Prem Enclave")
+    tp = tmp_path / "p.txt"; tp.write_text("policy text", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///p.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    assert text is not None
+    assert "boundary:" not in text
+
+
+def test_multi_boundary_explicit_link_renders_segment_label(session, objective, tmp_path):
+    """Two segments (multi-boundary) + an explicit MANUAL link → the artifact's
+    `boundary:` line names the linked segment."""
+    wb = _add_workbook(session)
+    aws = _add_segment(session, workbook_id=wb.id, name="AWS GovCloud", kind="tenant")
+    _add_segment(session, workbook_id=wb.id, name="Azure Government", kind="tenant")
+    tp = tmp_path / "p.txt"; tp.write_text("nsg config", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///nsg.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    _link_boundary(session, evidence_id=ev.id, segment_id=aws.id, source=ScopeLinkSource.MANUAL)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    assert "boundary: AWS GovCloud (tenant)" in text
+
+
+def test_multi_boundary_no_link_renders_unspecified(session, objective, tmp_path):
+    """Multi-boundary workbook, artifact with NO explicit link → `unspecified`
+    so the model falls back to text reasoning instead of assuming a tenant."""
+    wb = _add_workbook(session)
+    _add_segment(session, workbook_id=wb.id, name="AWS GovCloud", kind="tenant")
+    _add_segment(session, workbook_id=wb.id, name="Azure Government", kind="tenant")
+    tp = tmp_path / "p.txt"; tp.write_text("global iam policy", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///iam.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    assert f"boundary: {BOUNDARY_UNSPECIFIED}" in text
+
+
+def test_backfill_link_excluded_renders_unspecified(session, objective, tmp_path):
+    """A BACKFILL link is NOT trustworthy → excluded; the artifact renders
+    `unspecified`, not the backfilled segment. Guards against laundering legacy
+    is_boundary_doc guesses into authoritative-looking headers."""
+    wb = _add_workbook(session)
+    legacy = _add_segment(session, workbook_id=wb.id, name="boundary", kind=None)
+    _add_segment(session, workbook_id=wb.id, name="Azure Government", kind="tenant")
+    tp = tmp_path / "p.txt"; tp.write_text("diagram text", encoding="utf-8")
+    ev = _add_evidence(session, path="file:///diag.pdf", extracted_text_path=str(tp))
+    _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
+    _link_boundary(session, evidence_id=ev.id, segment_id=legacy.id, source=ScopeLinkSource.BACKFILL)
+
+    from cybersecurity_assessor.engine.evidence_bundle import build_tagged_evidence_with_payload
+    text, _p, _o = build_tagged_evidence_with_payload(objective.id, session, workbook_id=wb.id)
+    assert f"boundary: {BOUNDARY_UNSPECIFIED}" in text
+    assert "boundary: boundary" not in text

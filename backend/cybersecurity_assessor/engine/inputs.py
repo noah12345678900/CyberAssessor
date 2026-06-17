@@ -102,7 +102,7 @@ def build_evidence_block(
     overflow: OverflowDecision | None = None
     try:
         tagged, evidence_payload, overflow = build_tagged_evidence_with_payload(
-            objective_pk, s
+            objective_pk, s, workbook_id=workbook_id
         )
     except Exception as exc:  # noqa: BLE001 — per-source degrade
         _log.warning(
