@@ -58,6 +58,11 @@ hiddenimports = [
     "sqlalchemy.dialects.sqlite",
     # Alembic env hook imports the package's metadata target
     "cybersecurity_assessor.migrations",
+    # OCR: pytesseract is lazy-imported inside extractors/_ocr.py, so the
+    # static analyzer can't trace it from the entry script. pypdfium2 (PDF
+    # render) is collected via the package chain, but the Tesseract wrapper
+    # must be named explicitly or image/scan-PDF OCR ImportErrors when frozen.
+    "pytesseract",
 ]
 
 # Pull the whole package (modules + data files + any C extensions).
@@ -67,9 +72,49 @@ binaries += pkg_binaries
 hiddenimports += pkg_hiddenimports
 hiddenimports += collect_submodules("cybersecurity_assessor")
 
+# Pillow (image extractor) and defusedxml (diagram .vsdx/.svg extractor) are
+# imported LAZILY inside their extractor functions, so PyInstaller's static
+# analysis can't see them from the entry script. collect_all pulls PIL's C
+# extensions + plugin modules (image format codecs resolved by string at
+# runtime); defusedxml is pure-Python but also lazy-imported. Without these
+# the frozen sidecar would raise ImportError the first time an image or
+# diagram is ingested.
+for _pkg in ("PIL", "defusedxml"):
+    _d, _b, _h = collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
+
 # Windows credential backend data + truststore platform tables.
 datas += collect_data_files("keyring")
 datas += collect_data_files("truststore")
+
+# Bundled Tesseract OCR (vendor/tesseract/) — tesseract.exe + its runtime DLLs
+# + tessdata/eng.traineddata. Shipped so image-of-text evidence (MFA / GPO /
+# lockout screenshots) and scan-only PDFs OCR OFFLINE on a fresh install with
+# zero user setup — no admin MSI, no PATH edits. extractors/_ocr.py resolves
+# this to ``<exe>/_internal/tesseract/`` via sys._MEIPASS at runtime. We add
+# the whole tree as data (NOT collect_dynamic_libs) because tesseract.exe
+# shells out as a subprocess — PyInstaller must not try to treat its DLLs as
+# Python C-extensions; they just need to sit next to the exe. ~164MB (the
+# libtesseract-5 + ICU core is irreducible; DLLs are transitively coupled and
+# trimming breaks recognition — verified empirically).
+import os as _os
+
+_TESS_DIR = _os.path.join(SPECPATH, "vendor", "tesseract")
+if _os.path.isdir(_TESS_DIR):
+    for _root, _dirs, _files in _os.walk(_TESS_DIR):
+        for _f in _files:
+            _abs = _os.path.join(_root, _f)
+            _rel = _os.path.relpath(_root, _TESS_DIR)
+            # Destination under the bundle: tesseract/  or  tesseract/tessdata/
+            _dest = "tesseract" if _rel == "." else _os.path.join("tesseract", _rel)
+            datas.append((_abs, _dest))
+else:  # pragma: no cover - build-time guard
+    raise SystemExit(
+        f"Bundled Tesseract not found at {_TESS_DIR} — OCR would be unavailable "
+        f"in the frozen build. Vendor it before packaging (see _ocr.py)."
+    )
 
 
 a = Analysis(

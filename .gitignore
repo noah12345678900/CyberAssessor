@@ -99,3 +99,11 @@ evidence_cache/
 tmp/
 .leverA_backup/
 _eval_current_vs_gold.json
+
+# Vendored Tesseract OCR binary (~164MB) — bundled into the installer at build
+# time but NOT committed: it's a large third-party binary, re-acquirable from
+# the UB-Mannheim release. backend/vendor/README.md documents how to re-vendor
+# it before packaging. Keep the README tracked; ignore the binary tree.
+backend/vendor/tesseract/
+backend/vendor/_tess_dl/
+!backend/vendor/README.md

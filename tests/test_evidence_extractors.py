@@ -385,12 +385,20 @@ def test_extract_path_errors_on_unknown_suffix(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Image extractor (Pillow, no OCR)
+# Image extractor (Pillow + Tesseract OCR)
 # ---------------------------------------------------------------------------
 
 
-def test_image_extractor_reads_dimensions_no_ocr(tmp_path):
+def test_image_extractor_reads_dimensions_and_caption(tmp_path, monkeypatch):
+    """Dimensions/format always read; caption always present. OCR forced off so
+    this asserts the deterministic metadata path regardless of whether a
+    Tesseract binary is installed in the test environment."""
     from PIL import Image as PILImage
+
+    from cybersecurity_assessor.evidence.extractors import image as image_mod
+
+    # Force the no-OCR branch so the assertion is stable on any box.
+    monkeypatch.setattr(image_mod, "tesseract_available", lambda: False)
 
     p = tmp_path / "mfa_settings_screenshot.png"
     PILImage.new("RGB", (24, 12), "white").save(p, "PNG")
@@ -399,8 +407,71 @@ def test_image_extractor_reads_dimensions_no_ocr(tmp_path):
     assert doc.metadata["width"] == 24
     assert doc.metadata["height"] == 12
     assert doc.metadata["image_format"] == "PNG"
-    # No OCR: text is a filename-derived caption, not pixel content.
+    assert doc.metadata["ocr"] is False
+    # Filename caption present; honesty marker says pixels were NOT read.
     assert "mfa settings screenshot" in doc.text.lower()
+    assert "no ocr" in doc.text.lower()
+
+
+def test_image_extractor_ocr_recovers_text(tmp_path, monkeypatch):
+    """When OCR is available, rendered text in the image reaches doc.text.
+
+    We don't depend on a real Tesseract binary — we monkeypatch the shared
+    ocr_image helper the extractor calls, so this asserts the WIRING
+    (OCR output is spliced into text after the caption, metadata.ocr=True)
+    deterministically.
+    """
+    from PIL import Image as PILImage
+
+    from cybersecurity_assessor.evidence.extractors import image as image_mod
+
+    monkeypatch.setattr(image_mod, "tesseract_available", lambda: True)
+    monkeypatch.setattr(
+        image_mod, "ocr_image", lambda img: "Minimum password length: 15 characters"
+    )
+
+    p = tmp_path / "password_policy.png"
+    PILImage.new("RGB", (200, 60), "white").save(p, "PNG")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.IMAGE
+    assert doc.metadata["ocr"] is True
+    # Caption first (filename signals), then the OCR body.
+    assert doc.text.startswith("[image] password policy")
+    assert "Minimum password length: 15 characters" in doc.text
+
+
+def test_image_extractor_ocr_available_but_blank(tmp_path, monkeypatch):
+    """OCR ran but found nothing → explicit 'found no text' marker, not silence."""
+    from PIL import Image as PILImage
+
+    from cybersecurity_assessor.evidence.extractors import image as image_mod
+
+    monkeypatch.setattr(image_mod, "tesseract_available", lambda: True)
+    monkeypatch.setattr(image_mod, "ocr_image", lambda img: "")
+
+    p = tmp_path / "blank_logo.png"
+    PILImage.new("RGB", (24, 12), "white").save(p, "PNG")
+    doc = extract_path(p)
+    assert doc.metadata["ocr"] is True
+    assert "ocr found no text" in doc.text.lower()
+
+
+def test_image_extractor_ocr_recovers_doc_number(tmp_path, monkeypatch):
+    """A USD number OCR'd out of the image is adopted as the doc's identity via
+    resolve_doc_number's body arg (labeled-line rule still applies)."""
+    from PIL import Image as PILImage
+
+    from cybersecurity_assessor.evidence.extractors import image as image_mod
+
+    monkeypatch.setattr(image_mod, "tesseract_available", lambda: True)
+    monkeypatch.setattr(
+        image_mod, "ocr_image", lambda img: "Document Number: USD00050010\nGPO export."
+    )
+
+    p = tmp_path / "gpo_capture.png"
+    PILImage.new("RGB", (200, 60), "white").save(p, "PNG")
+    doc = extract_path(p)
+    assert doc.doc_number == "USD00050010"
 
 
 # ---------------------------------------------------------------------------

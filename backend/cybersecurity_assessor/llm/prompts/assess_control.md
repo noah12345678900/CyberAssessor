@@ -156,6 +156,7 @@ Optional fields when present:
 - `tagged_evidence`: evidence files the ingester tagged for this CCI. May be absent when nothing has been ingested or auto-tagged for this objective yet — in that case fall back to cols F/U.
   - Sub-section `## corroborating_findings` lists OPEN STIG/scan rule failures tied to this CCI — they are signal that the control is failing in practice, but absence does NOT imply compliance (scans may simply not be tagged).
   - Sub-section `## affected_hosts` enumerates the assets the tagged evidence covers — use to scope your verdict if some hosts appear out of boundary, or to ground a narrative that names how many systems were examined.
+  - **Image evidence (`kind: image`)** is OCR'd — the text after the `[image] <caption>` line is the literal text read out of a screenshot (e.g. a GPO/MFA/lockout config screen). Treat that OCR'd text as real, citable evidence of the displayed setting; cite it as the screenshot. Two honesty markers override that: `[image — no OCR]` means the pixels were NOT read (OCR was unavailable) and the image is filename-only — do NOT treat it as substantiating any setting; `[image — OCR found no text]` means the image carried no readable text. In both marker cases the image is existence-only and cannot, by itself, support a `Compliant` technical-enforcement verdict.
 
 ---
 
