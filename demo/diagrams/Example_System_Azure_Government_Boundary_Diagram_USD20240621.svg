@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="600">
+  <title>Example System Demo - Azure Government Authorization Boundary</title>
+  <desc>Azure Government (USGov Virginia) network boundary and segmentation diagram</desc>
+  <text x="40" y="50">Internet / External Users</text>
+  <text x="40" y="92">Azure Government (USGov Virginia)</text>
+  <text x="40" y="134">Azure Front Door + Web Application Firewall</text>
+  <text x="40" y="176">Hub VNet 172.16.0.0/16</text>
+  <text x="40" y="218">Perimeter NSG - default deny inbound</text>
+  <text x="40" y="260">DMZ Subnet 172.16.1.0/24</text>
+  <text x="40" y="302">Spoke VNet - App Subnet 172.16.5.0/24</text>
+  <text x="40" y="344">Spoke VNet - Data Subnet (Azure SQL MI) 172.16.9.0/24</text>
+  <text x="40" y="386">Azure Bastion - Management Subnet 172.16.99.0/24</text>
+  <text x="40" y="428">NSG Flow Logs -> Log Analytics -> Microsoft Sentinel</text>
+  <text x="40" y="470">Microsoft Defender for Cloud</text>
+  <text x="40" y="512">Authorization Boundary - Example System Demo (Azure Government, IATT)</text>
+</svg>

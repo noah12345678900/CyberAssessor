@@ -40,6 +40,7 @@ document, scan, and log is fabricated for the fictional "Example System Demo" sy
 | `psc/` | Program-Specific Control overlay (T1TL-style, control-grain), 800-53 **Rev 5**; resolves to DISA CCIs at load time |
 | `cci_list/` | DISA STIG→800-53 CCI mapping source the PSC resolves against |
 | `crm/` | AWS + Azure FedRAMP-High Customer Responsibility Matrices (CSP/provider tags) |
+| `diagrams/` | TWO tenant-distinct authorization-boundary diagrams — AWS GovCloud (`.vsdx`, VPC/Security Group/GuardDuty, 10.20.x.x) and Azure Government (`.svg`, VNet/NSG/Sentinel, 172.16.x.x). Drive diagram→boundary-control tagging and the multi-tenant `boundary:` attribution showcase |
 
 ## CCIS rows → expected evidence
 
@@ -107,7 +108,21 @@ backend/.venv/Scripts/python.exe demo/_build_demo_psc.py
 # Repeatable coverage checks (no LLM / no tokens):
 backend/.venv/Scripts/python.exe demo/_verify_ccis_coverage.py   # every Rule #8 lane fires
 backend/.venv/Scripts/python.exe demo/_verify_psc_resolution.py  # Rev 5 PSC resolves 16/16
+backend/.venv/Scripts/python.exe demo/_verify_boundary_attribution.py  # multi-tenant boundary: lines
 ```
+
+### Showcasing multi-tenant boundary attribution
+
+`_verify_boundary_attribution.py` is a self-contained demo of how the evidence
+bundle keeps per-scope narratives honest in a multi-boundary program. It
+ingests the two `diagrams/` artifacts into an in-memory workbook with **AWS
+GovCloud** and **Azure Government** tenant segments, links each diagram to its
+tenant, and prints the rendered `## tagged_evidence` block — where every
+artifact now carries a `boundary:` line naming its tenant. It also proves the
+two guardrails: single-boundary workbooks render **no** boundary line (so the
+prompt prefix stays cache-stable), and legacy `BACKFILL` links are excluded and
+render `unspecified` rather than laundering an unreliable attribution. No LLM /
+no tokens.
 
 ## Smoke test against the app
 

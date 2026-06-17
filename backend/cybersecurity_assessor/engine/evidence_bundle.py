@@ -25,7 +25,15 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import Session, select
 
-from ..models import Evidence, EvidenceKind, EvidenceTag, Objective
+from ..models import (
+    BoundarySegment,
+    Evidence,
+    EvidenceBoundary,
+    EvidenceKind,
+    EvidenceTag,
+    Objective,
+    ScopeLinkSource,
+)
 from .evidence_ranker import (
     DISPOSITION_DEFERRED,
     DISPOSITION_EXAMINED,
@@ -241,6 +249,94 @@ def has_nonscan_evidence(objective_id: int, session: Session) -> bool:
     return False
 
 
+# Boundary-attribution rendering (multi-tenant narrative integrity).
+#
+# For multi-boundary systems (e.g. AWS GovCloud + Azure Gov tenants) the
+# assessor writes per-scope narratives. An artifact that legally applies to ONE
+# tenant but carries no cloud-specific keywords (a global IAM policy, a shared
+# SIEM runbook) would otherwise have its boundary GUESSED by the LLM from prose
+# — silent cross-boundary misattribution that invalidates the SSP/SAR. Three
+# independent model reviews held that deterministic structured signals must beat
+# prompt-faith for a federal 800-53 assessor.
+#
+# Two hard guards keep this from doing more harm than good:
+#   1. EXPLICIT links only. ``EvidenceBoundary`` rows backfilled from the legacy
+#      ``is_boundary_doc`` flag (``ScopeLinkSource.BACKFILL``) are unreliable —
+#      rendering them would launder bad data into authoritative-looking headers.
+#      We render only AUTO (ingest inference) / MANUAL (assessor click) links.
+#   2. MULTI-BOUNDARY only. In a single-boundary workbook the header line is
+#      pure noise AND it would perturb the prompt prefix for every CCI, cold-
+#      busting the prompt cache. We render boundary lines only when the workbook
+#      actually has >=2 BoundarySegments. Single-boundary decks stay byte-
+#      identical to the pre-feature bundle.
+# In a multi-boundary workbook, an artifact with no explicit link renders
+# ``boundary: unspecified`` so the model knows to fall back to text reasoning
+# for that one rather than silently assuming a tenant.
+
+# Links created by these sources are trustworthy enough to render. BACKFILL is
+# deliberately excluded (see guard #1 above).
+_EXPLICIT_LINK_SOURCES: frozenset[ScopeLinkSource] = frozenset(
+    {ScopeLinkSource.AUTO, ScopeLinkSource.MANUAL}
+)
+
+BOUNDARY_UNSPECIFIED = "unspecified"
+
+
+def _workbook_is_multi_boundary(workbook_id: int | None, session: Session) -> bool:
+    """True when the workbook defines >=2 BoundarySegments.
+
+    Cheap COUNT-style probe (LIMIT 2). Returns False on ``workbook_id is None``
+    (the session-free / single-shot paths) so those bundles render exactly as
+    before. Single-boundary workbooks return False → no boundary lines, prompt
+    prefix unchanged, cache stays warm.
+    """
+    if workbook_id is None:
+        return False
+    rows = session.exec(
+        select(BoundarySegment.id)
+        .where(BoundarySegment.workbook_id == workbook_id)
+        .limit(2)
+    ).all()
+    return len(rows) >= 2
+
+
+def _explicit_boundary_labels_by_evidence(
+    evidence_ids: "Sequence[int]", session: Session
+) -> dict[int, list[str]]:
+    """Batched evidence_id -> [BoundarySegment label] for EXPLICIT links only.
+
+    One query, no N+1. Filters out ``ScopeLinkSource.BACKFILL`` so only
+    trustworthy (AUTO/MANUAL) attributions reach the header. Label is
+    ``"<name>"`` or ``"<name> (<kind>)"`` when the segment carries a kind
+    (dmz/internal/mgmt/tenant). Returns ``{}`` when no explicit links exist.
+    """
+    ids = [eid for eid in evidence_ids if eid is not None]
+    if not ids:
+        return {}
+    rows = session.exec(
+        select(
+            EvidenceBoundary.evidence_id,
+            BoundarySegment.name,
+            BoundarySegment.kind,
+        )
+        .join(
+            BoundarySegment,
+            BoundarySegment.id == EvidenceBoundary.boundary_segment_id,
+        )
+        .where(EvidenceBoundary.evidence_id.in_(ids))  # type: ignore[union-attr]
+        .where(EvidenceBoundary.source.in_(_EXPLICIT_LINK_SOURCES))  # type: ignore[union-attr]
+    ).all()
+    out: dict[int, list[str]] = {}
+    for ev_id, name, kind in rows:
+        label = f"{name} ({kind})" if kind else str(name)
+        bucket = out.setdefault(ev_id, [])
+        if label not in bucket:
+            bucket.append(label)
+    for bucket in out.values():
+        bucket.sort()  # deterministic header ordering
+    return out
+
+
 def build_tagged_evidence(objective_id: int, session: Session) -> str | None:
     """Render the EvidenceTag rows for one objective as a prompt block.
 
@@ -268,6 +364,7 @@ def build_tagged_evidence_with_payload(
     session: Session,
     *,
     config: RankerConfig | None = None,
+    workbook_id: int | None = None,
 ) -> tuple[str | None, list["EvidenceShownPayload"], OverflowDecision]:
     """Audit-v1 variant of :func:`build_tagged_evidence`.
 
@@ -329,6 +426,19 @@ def build_tagged_evidence_with_payload(
     anchor_map: dict[int, list[str]] = {
         ev.id: _anchors_from_tag(tag) for tag, ev in rows if ev.id is not None
     }
+    # Boundary attribution — only for multi-boundary workbooks (guard #2). In a
+    # single-boundary workbook (or session-free path) this stays empty and the
+    # header is byte-identical to the pre-feature bundle, keeping the prompt
+    # prefix cache-stable. ``boundary_map`` carries only EXPLICIT (AUTO/MANUAL)
+    # links (guard #1); BACKFILL is excluded so legacy guesses aren't laundered.
+    render_boundaries = _workbook_is_multi_boundary(workbook_id, session)
+    boundary_map: dict[int, list[str]] = (
+        _explicit_boundary_labels_by_evidence(
+            [ev.id for _tag, ev in rows if ev.id is not None], session
+        )
+        if render_boundaries
+        else {}
+    )
     result = rank_artifacts(
         [(tag, ev) for tag, ev in rows],
         load_snippet=lambda ev: _load_snippet(
@@ -351,6 +461,16 @@ def build_tagged_evidence_with_payload(
             f"  kind: {ev.kind.value if hasattr(ev.kind, 'value') else ev.kind}",
             f"  section: {locator}",
         ]
+        # Boundary line — multi-boundary workbooks only (else render_boundaries
+        # is False and this block never adds a line). Explicit link → the
+        # segment label(s); no explicit link → ``unspecified`` so the model
+        # falls back to text reasoning for THIS artifact rather than silently
+        # assuming a tenant. Single-boundary bundles never reach here.
+        if render_boundaries:
+            bsegs = boundary_map.get(ev.id) if ev.id is not None else None
+            header_lines.append(
+                f"  boundary: {', '.join(bsegs) if bsegs else BOUNDARY_UNSPECIFIED}"
+            )
         if ev.doc_number:
             header_lines.append(f"  doc_number: {ev.doc_number}")
         header_lines.append(
