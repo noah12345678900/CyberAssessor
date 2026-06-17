@@ -42,6 +42,7 @@ from ..llm.pricing import compute_cost
 from ..controls.odp_render import fetch_odp_history, resolve_odps
 from ..models import (
     Assessment,
+    AssessmentImplementation,
     AssessmentCitation,
     AssessmentEvidenceShown,
     AssessmentTrace,
@@ -869,6 +870,37 @@ def list_assessments(
     if workbook_id is not None:
         stmt = stmt.where(Assessment.workbook_id == workbook_id)
     rows = s.exec(stmt).all()
+
+    # v0.2 multi-implementation: load the per-scope AssessmentImplementation
+    # rows for every assessment in ONE query (not N), keyed by assessment_id.
+    # ControlDetail's N-impl editor activates ONLY when this list is non-empty
+    # (isMultiImpl = implementations.length > 0); the per-scope CRM chips and
+    # the rolled-up read-only Status pill both render off it. Omitting it here
+    # left currentAssessment.implementations undefined -> [] for every row, so
+    # the editor silently stayed in legacy single-narrative mode and NO
+    # per-scope (or N/A) chips ever rendered even though the impl rows exist
+    # in the DB. Serialize them.
+    impls_by_assessment: dict[int, list[dict]] = {}
+    assessment_ids = [a.id for a in rows if a.id is not None]
+    if assessment_ids:
+        impl_rows = s.exec(
+            select(AssessmentImplementation).where(
+                AssessmentImplementation.assessment_id.in_(assessment_ids)
+            )
+        ).all()
+        for im in impl_rows:
+            impls_by_assessment.setdefault(im.assessment_id, []).append(
+                {
+                    "id": im.id,
+                    "scope_label": im.scope_label,
+                    "source_baseline_id": im.source_baseline_id,
+                    "responsibility": im.responsibility,
+                    "status": im.status,
+                    "narrative": im.narrative,
+                    "evidence_refs": im.evidence_refs,
+                }
+            )
+
     return [
         {
             "id": a.id,
@@ -893,6 +925,11 @@ def list_assessments(
             "confidence": a.confidence,
             "rewrite_requested": a.rewrite_requested,
             "rewrite_requested_refs": a.rewrite_requested_refs,
+            # v0.2 multi-implementation per-scope rows (cloud platforms +
+            # synthesized On-Premises). Empty list for legacy single-narrative
+            # assessments; ControlDetail falls back to the single-narrative
+            # editor in that case.
+            "implementations": impls_by_assessment.get(a.id, []),
         }
         for a in rows
     ]
