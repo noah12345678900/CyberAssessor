@@ -660,6 +660,83 @@ def build_remote_access_config_docx() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# DOCX -- Audit Log Storage Capacity Memo (AU-4) — DELIBERATELY CONTRADICTORY
+# ---------------------------------------------------------------------------
+#
+# Evidence for the AU-4 abstain showcase. This artifact INTERNALLY CONTRADICTS
+# itself: Section 2 asserts the allocated capacity meets the 1-year retention
+# requirement, while Section 4 records a utilization analysis showing the same
+# partition fills in ~40 days and the expansion is only PLANNED. A control whose
+# only evidence both affirms and refutes the requirement is the textbook case
+# the assessor must NOT auto-rule: the LLM legitimately cannot reach a confident
+# verdict, so it abstains (needs_review) and a human adjudicates. The contradiction
+# is what drives low-confidence / dual-pass disagreement → abstain, rather than a
+# fabricated Compliant or Non-Compliant. Cites "AU-4" + "CCI-000137" in body text
+# so the tagger maps it to the right objective.
+
+
+def build_audit_storage_memo_docx() -> Path:
+    from docx import Document
+
+    doc = Document()
+    doc.core_properties.title = "Audit Log Storage Capacity Memo"
+    doc.core_properties.author = "Example System Demo - System Engineering"
+    doc.core_properties.subject = "USD20240623"
+
+    doc.add_heading("Audit Log Storage Capacity Memo", level=0)
+    p = doc.add_paragraph()
+    p.add_run("Document Number: USD20240623").bold = True
+    doc.add_paragraph("Version: 0.9 (DRAFT — pending engineering sign-off)")
+    doc.add_paragraph("Effective Date: 2026-05-10")
+    doc.add_paragraph("System: Example System Demo (Example System Example System Demo IATT)")
+
+    doc.add_heading("1. Purpose", level=1)
+    doc.add_paragraph(
+        "This memo records the audit log storage capacity allocation for the "
+        "Example System Demo SIEM tier, addressing NIST SP 800-53 Rev. 5 control "
+        "AU-4 (Audit Log Storage Capacity), CCI-000137. The organization-defined "
+        "requirement is to retain audit records online for one (1) year without "
+        "loss of records."
+    )
+
+    doc.add_heading("2. Allocated Capacity", level=1)
+    doc.add_paragraph(
+        "A dedicated 500 GB partition is allocated to the SIEM indexer for audit "
+        "record storage. Based on the original sizing estimate, this allocation "
+        "is sufficient to meet the 1-year online retention requirement, and AU-4 "
+        "is therefore satisfied."
+    )
+
+    doc.add_heading("3. Monitoring", level=1)
+    doc.add_paragraph(
+        "Storage utilization is monitored via a CloudWatch alarm that pages the "
+        "on-call engineer at 80% capacity."
+    )
+
+    doc.add_heading("4. Utilization Analysis (2026-05)", level=1)
+    doc.add_paragraph(
+        "NOTE: A utilization analysis completed 2026-05-08 found that, at the "
+        "current measured ingest rate, the 500 GB partition reaches capacity in "
+        "approximately 40 days — far short of the 1-year requirement. Expansion "
+        "to a 4 TB partition (sized for 1-year retention) is PLANNED for the next "
+        "maintenance window but is NOT yet implemented. Until expansion, the "
+        "system relies on oldest-record rollover, which would lose audit records "
+        "before the 1-year retention period elapses."
+    )
+
+    doc.add_heading("5. Status", level=1)
+    doc.add_paragraph(
+        "This memo is a DRAFT pending engineering sign-off; Sections 2 and 4 have "
+        "not yet been reconciled. The capacity posture for AU-4 is unresolved as "
+        "of this writing."
+    )
+
+    out = CONFIGS / "Audit_Log_Storage_Capacity_Memo_USD20240623.docx"
+    doc.save(str(out))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -671,6 +748,7 @@ if __name__ == "__main__":
         build_training_pptx,
         build_gpo_export_xlsx,
         build_remote_access_config_docx,
+        build_audit_storage_memo_docx,
         build_aws_boundary_diagram_vsdx,
         build_azure_boundary_diagram_svg,
     ):

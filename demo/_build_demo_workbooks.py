@@ -251,6 +251,59 @@ NIST_800_53 = FrameworkDemo(
             "AC-18 does not apply to this system.",
             cci="CCI-001438", inherited="No",
         ),
+        # 10th control — the CLOUD-COMPLIANT showcase. PE-3 (Physical Access
+        # Control) is marked "Inherited" by BOTH demo CRMs (AWS GovCloud +
+        # Azure Government own datacenter physical security). Left UNASSESSED
+        # (blank status) so it flows to the assessor, which short-circuits to
+        # COMPLIANT via cloud inheritance (crm_inherited) WITHOUT an LLM call —
+        # demonstrating that an inherited cloud control resolves Compliant
+        # (applicable, met by the provider), distinct from the SC-7 enterprise-
+        # service inheritance and the AC-18 scope-exclusion NA.
+        Req(
+            "PE-3", "Physical Access Control",
+            "PE", "Physical access control for the Example System Demo workloads is "
+            "inherited from the cloud service providers: AWS GovCloud and Azure "
+            "Government operate the datacenter physical-security plane (multi-"
+            "factor perimeter access, biometric server-room boundaries, mantrap "
+            "vestibules, 24x7 guards).",
+            "The organization enforces physical access authorizations at entry "
+            "and exit points to the facility where the information system "
+            "resides.",
+            "If inheriting, cite the provider CRM; otherwise provide the "
+            "facility physical-access procedures and access logs.",
+            "Examine the provider CRM inheritance for each cloud enclave. "
+            "Confirm the datacenter physical-access plane is provider-owned.",
+            status="",
+            results="",
+            cci="CCI-000919", inherited="No",
+        ),
+        # 11th control — the ABSTAIN showcase. AU-4 (Audit Log Storage Capacity)
+        # is in-scope and left UNASSESSED. Its ONLY evidence
+        # (Audit_Log_Storage_Capacity_Memo_USD20240623.docx) internally
+        # contradicts itself — Section 2 asserts the 500 GB allocation meets the
+        # 1-year retention requirement, Section 4's utilization analysis shows
+        # the partition fills in ~40 days and the fix is only PLANNED. A control
+        # whose sole artifact both affirms and refutes the requirement is the
+        # textbook abstain case: the assessor cannot reach a confident verdict,
+        # so it writes a needs_review row (no status) for human adjudication
+        # rather than fabricating Compliant or Non-Compliant.
+        Req(
+            "AU-4", "Audit Log Storage Capacity",
+            "AU", "Audit log storage capacity for the Example System Demo SIEM "
+            "tier is documented in the Audit Log Storage Capacity Memo "
+            "(USD20240623). The memo is a draft whose capacity sections are not "
+            "yet reconciled.",
+            "The organization allocates audit log storage capacity to "
+            "accommodate the organization-defined audit log retention "
+            "requirements.",
+            "Provide the audit storage capacity allocation and a utilization "
+            "analysis demonstrating the retention period is met.",
+            "Examine the allocated capacity against the 1-year retention "
+            "requirement and the measured ingest/utilization rate.",
+            status="",
+            results="",
+            cci="CCI-000137", inherited="No",
+        ),
     ],
 )
 
