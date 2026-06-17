@@ -166,15 +166,21 @@ ROWS = [
      "and databases, (c) configuring Entra ID sign-in and audit log export, "
      "and (d) documenting the customer-defined auditable event list per AU-1.",
      "Implemented"),
+    # DIVERGES from AWS (which marks AU-6 "Shared"): on this Azure deployment
+    # the customer operates its own Microsoft Sentinel workspace and owns all
+    # audit review/analysis/reporting end-to-end, so AU-6 is fully CUSTOMER
+    # here while it is Shared on the AWS side. Demonstrates a control whose
+    # responsibility seam moves between tenants.
     ("AU-6",  "Audit Record Review, Analysis, and Reporting",
-     "Shared",
-     "Microsoft reviews Azure-internal audit logs continuously via the "
-     "Microsoft security operations team and reports relevant findings to "
-     "customers per IR-6.",
-     "Customer is responsible for reviewing customer Activity Logs, Defender "
-     "for Cloud alerts, Microsoft Sentinel incidents, and application logs on "
-     "the customer-defined cadence (minimum weekly for non-critical, "
-     "continuous for critical). Reportable findings escalated per IR-6.",
+     "Customer",
+     "Microsoft provides the log sources (Activity Log, Entra audit, Defender "
+     "for Cloud, Sentinel) but performs no review of customer-tenant audit "
+     "records on the customer's behalf.",
+     "Customer is solely responsible for reviewing, analyzing, and reporting on "
+     "customer Activity Logs, Defender for Cloud alerts, Microsoft Sentinel "
+     "incidents, and application logs on the customer-defined cadence (minimum "
+     "weekly for non-critical, continuous for critical). The customer operates "
+     "the Sentinel workspace and escalates reportable findings per IR-6.",
      "Implemented"),
     ("AU-12", "Audit Record Generation",
      "Shared",
@@ -315,16 +321,23 @@ ROWS = [
      "diagnostic logging of all key operations, and (e) soft-delete and purge "
      "protection prior to permanent removal.",
      "Implemented"),
+    # DIVERGES from AWS (which marks SC-13 "Shared"): in Azure Government the
+    # customer workload uses only Microsoft-provided FIPS 140-2 validated
+    # modules (Key Vault Managed HSM + FIPS service endpoints) with no
+    # customer-side crypto implementation, so the customer fully INHERITS the
+    # validated-module control here. This per-tenant split is the whole point
+    # of the multi-boundary demo — the same control is Shared on AWS but
+    # Inherited on Azure, so the per-scope narratives must differ.
     ("SC-13", "Cryptographic Protection",
-     "Shared",
+     "Inherited",
      "Microsoft provides FIPS 140-2 validated cryptographic modules within "
      "Azure Government via Key Vault, Managed HSM, and FIPS-validated service "
-     "endpoints.",
-     "Customer is responsible for using only FIPS 140-2 validated "
-     "cryptographic implementations: enable FIPS-validated endpoints for "
-     "customer service calls, configure FIPS mode in customer guest operating "
-     "systems where supported, avoid non-FIPS algorithms in applications, and "
-     "document customer cryptographic implementations in the SSP.",
+     "endpoints; the customer workload consumes only these validated modules "
+     "and implements no independent cryptography.",
+     "Customer fully inherits the FIPS 140-2 validated cryptographic modules "
+     "provided by Azure Government. The customer SSP references the Azure "
+     "Government FedRAMP High SSP as the authoritative source; no customer-side "
+     "cryptographic implementation is required for this control.",
      "Implemented"),
     ("SI-2",  "Flaw Remediation",
      "Shared",
