@@ -210,7 +210,8 @@ def backfill_workbook_crm(
             continue
 
         decision = assessor._finalize_crm_decision(
-            row, row.cci_id or row.control_id, entry, outcome=None
+            row, row.cci_id or row.control_id, entry, outcome=None,
+            slices=slices,
         )
         if not decision.accepted or decision.status is None or not decision.narrative:
             # _finalize_crm_decision always accepts, but guard the

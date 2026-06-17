@@ -1326,6 +1326,7 @@ class Assessor:
                 return self._finalize_crm_decision(
                     row, cci, crm_entry, outcome=outcome,
                     workbook_id=workbook_id,
+                    slices=crm_slices,
                 )
             # Hybrid in either scope, OR distinct verdicts across scopes, OR a
             # suppressed short-circuit (evidence overrode an inheritable tag,
@@ -2502,6 +2503,7 @@ class Assessor:
         *,
         outcome,
         workbook_id: int | None = None,
+        slices: list[ImplementationSlice] | None = None,
     ) -> Decision:
         """Build a Decision for a CRM row whose every specified scope is inheritable.
 
@@ -2769,6 +2771,27 @@ class Assessor:
         if onprem_r and onprem_r != cloud_r:
             source_str += f"+onprem_{onprem_r}"
 
+        # Multi-boundary narrative map. The legacy two-slot
+        # narrative_cloud/narrative_on_prem fields (and the single ``entry``
+        # this method is built around) can only describe ONE cloud — for a
+        # multi-CRM control (AWS GovCloud + Azure Government both inherited)
+        # they'd carry just the latest-attach cloud, citing only e.g.
+        # Microsoft. ``plan_implementations`` already fans the per-scope
+        # ``slices`` into one impl row each, but ONLY the customer/hybrid
+        # branch reads ``narratives_by_scope``; the provider/inherited/NA
+        # branches read ``slice.narrative`` directly (the CRM's own per-scope
+        # text), so the impl rows are already multi-cloud-correct. We still
+        # populate ``narratives_by_scope`` here from every slice so the parent
+        # Decision itself carries all clouds for any consumer that reads the
+        # map (and so a future customer/hybrid mix in the same control keeps
+        # its per-scope text). Each slice's own narrative wins; a blank slice
+        # falls back to the scope-named inheritance stub.
+        per_scope: dict[str, str] = {}
+        for sl in slices or []:
+            text = (sl.narrative or "").strip() or _fallback_inheritance_narrative(sl)
+            if text:
+                per_scope[sl.scope_label] = text
+
         return Decision(
             cci_id=cci,
             excel_row=row.excel_row,
@@ -2788,6 +2811,7 @@ class Assessor:
             ],
             narrative_on_prem=narrative_on_prem_out,
             narrative_cloud=narrative_cloud_out,
+            narratives_by_scope=per_scope,
         )
 
     def _render_hybrid_block(

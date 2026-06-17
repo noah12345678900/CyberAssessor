@@ -65,6 +65,10 @@ from cybersecurity_assessor.engine.crm_context import (  # noqa: E402
 from cybersecurity_assessor.engine.impl_persistence import (  # noqa: E402
     persist_assessment_with_impls,
 )
+from cybersecurity_assessor.excel.ccis_reader import (  # noqa: E402
+    _ccis_to_oscal_control_id,
+    _normalize_control,
+)
 from cybersecurity_assessor.models import (  # noqa: E402
     Assessment,
     AssessmentImplementation,
@@ -122,6 +126,158 @@ def _parent(
         narrative_class=NarrativeClass.COMPLIANCE_AFFIRMING,
         needs_review=needs_review,
     )
+
+
+# ---------------------------------------------------------------------------
+# Display-form control_id resolves the OSCAL-keyed CRM slices
+# ---------------------------------------------------------------------------
+#
+# Regression lock for the silent-keying bug: every REAL caller
+# (routes/controls.py x5, engine/crm_backfill.py) passes
+# ``control_id=row.control_id`` — the workbook DISPLAY form ("AC-2(1)",
+# "PE-3"). But ``CrmContext.implementations`` keys ``by_control_impls`` on
+# the OSCAL canonical form ("ac-2.1", "pe-3"), produced by
+# ``build_crm_context`` joining the OSCAL-keyed ``Control`` table. Before the
+# fix, ``persist_assessment_with_impls`` looked up the raw display id, the
+# dict missed, ``slices`` came back ``[]``, NO AssessmentImplementation rows
+# were ever written for any real call, and a fully-inherited multi-CRM
+# control kept only the single latest-attach short-circuit narrative (one
+# cloud). The whole existing suite missed it because it hardcodes the OSCAL
+# form ``control_id="ac-2.1"`` — matching the key by accident.
+#
+# These tests call with the DISPLAY form and assert the impl rows DO land and
+# the parent narrative_q composes BOTH scopes. If a future refactor drops the
+# normalization in impl_persistence.py, these fail loudly.
+
+
+@pytest.mark.parametrize(
+    "display_id, oscal_key",
+    [
+        ("AC-2(1)", "ac-2.1"),
+        ("PE-3", "pe-3"),
+        ("ac-2.1", "ac-2.1"),  # already OSCAL — idempotent
+        ("pe-3", "pe-3"),
+    ],
+)
+def test_control_id_normalizer_maps_display_to_oscal(display_id, oscal_key):
+    """The normalizer the persistence lookup depends on — fast unit guard.
+
+    ``persist_assessment_with_impls`` resolves ``control_id`` via
+    ``_ccis_to_oscal_control_id(_normalize_control(...))`` before the slice
+    lookup. Pin that this maps display→OSCAL AND is idempotent on an already-
+    OSCAL id (so the existing OSCAL-form tests stay green).
+    """
+    assert _ccis_to_oscal_control_id(_normalize_control(display_id)) == oscal_key
+
+
+@pytest.mark.parametrize(
+    "display_id, oscal_key",
+    [
+        ("AC-2(1)", "ac-2.1"),  # enhancement form
+        ("PE-3", "pe-3"),       # base-control form
+    ],
+)
+def test_display_form_control_id_resolves_oscal_keyed_crm(
+    session, display_id, oscal_key
+):
+    """Display-form control_id must resolve OSCAL-keyed by_control_impls.
+
+    Two scope-labeled CRM slices (AWS GovCloud + Azure Government), both
+    ``inherited``. Calling with the workbook DISPLAY id must still hit the
+    OSCAL-keyed slice group: 2 impl rows written, parent narrative_q composes
+    both clouds. This is the end-to-end lock for the keying fix.
+    """
+    crm = CrmContext(
+        by_control_impls={
+            oscal_key: [
+                ImplementationSlice(
+                    scope_label="AWS GovCloud",
+                    responsibility="inherited",
+                    narrative="AWS GovCloud datacenters enforce physical access.",
+                    source_baseline_id=1,
+                ),
+                ImplementationSlice(
+                    scope_label="Azure Government",
+                    responsibility="inherited",
+                    narrative="Microsoft Azure Government enforces physical access.",
+                    source_baseline_id=2,
+                ),
+            ]
+        }
+    )
+    parent = _parent()
+    pid = persist_assessment_with_impls(
+        session,
+        assessment=parent,
+        decision=_decision(),
+        crm_context=crm,
+        control_id=display_id,  # DISPLAY form — what every real caller passes
+        is_new=True,
+    )
+    session.commit()
+
+    rows = session.exec(
+        select(AssessmentImplementation).where(
+            AssessmentImplementation.assessment_id == pid
+        )
+    ).all()
+    # Both scopes landed — the lookup hit despite the display-form input.
+    assert len(rows) == 2, (
+        "display-form control_id failed to resolve OSCAL-keyed CRM slices — "
+        "the keying bug regressed (slices came back empty)"
+    )
+    assert {r.scope_label for r in rows} == {"AWS GovCloud", "Azure Government"}
+    # Parent narrative composes BOTH clouds — not just the latest attach.
+    assert "AWS GovCloud:" in parent.narrative_q
+    assert "Azure Government:" in parent.narrative_q
+
+
+def test_display_form_na_both_scopes_composes_both(session):
+    """NA+NA via display-form id: both scopes NOT_APPLICABLE, both narrated.
+
+    The not_applicable branch had the same dependency on the slice lookup;
+    pin it here so the N/A multi-CRM path can't silently regress to a single-
+    scope parent narrative either.
+    """
+    crm = CrmContext(
+        by_control_impls={
+            "ac-18": [
+                ImplementationSlice(
+                    scope_label="AWS GovCloud",
+                    responsibility="not_applicable",
+                    narrative="Not applicable on AWS GovCloud — no such surface.",
+                    source_baseline_id=1,
+                ),
+                ImplementationSlice(
+                    scope_label="Azure Government",
+                    responsibility="not_applicable",
+                    narrative="Not applicable on Azure Government — no such surface.",
+                    source_baseline_id=2,
+                ),
+            ]
+        }
+    )
+    parent = _parent(status=ComplianceStatus.NOT_APPLICABLE)
+    pid = persist_assessment_with_impls(
+        session,
+        assessment=parent,
+        decision=_decision(status=ComplianceStatus.NOT_APPLICABLE),
+        crm_context=crm,
+        control_id="AC-18",  # DISPLAY form
+        is_new=True,
+    )
+    session.commit()
+
+    rows = session.exec(
+        select(AssessmentImplementation).where(
+            AssessmentImplementation.assessment_id == pid
+        )
+    ).all()
+    assert len(rows) == 2
+    assert all(r.status is ComplianceStatus.NOT_APPLICABLE for r in rows)
+    assert parent.status is ComplianceStatus.NOT_APPLICABLE
+    assert "AWS GovCloud:" in parent.narrative_q
+    assert "Azure Government:" in parent.narrative_q
 
 
 # ---------------------------------------------------------------------------

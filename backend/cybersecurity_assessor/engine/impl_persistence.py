@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from sqlmodel import Session, delete
 
+from ..excel.ccis_reader import _ccis_to_oscal_control_id, _normalize_control
 from ..models import Assessment, AssessmentImplementation
 from .assessor import (
     Decision,
@@ -86,10 +87,12 @@ def persist_assessment_with_impls(
         :func:`engine.crm_context.build_crm_context`. The helper reads
         :meth:`CrmContext.implementations` keyed on *control_id*.
     control_id
-        OSCAL canonical control_id (e.g. ``"ac-2.1"``) — NOT the CCI
-        identifier. Matches the key shape ``CrmContext.implementations``
-        expects, which mirrors ``CrmContext.lookup`` already used by
-        ``_lookup_crm`` in the route layer.
+        Control identifier for the row — accepts EITHER the workbook
+        display form (``"AC-2(1)"``, ``"PE-3"``) or the OSCAL canonical
+        form (``"ac-2.1"``, ``"pe-3"``). It is normalized to OSCAL here
+        before the ``CrmContext.implementations`` lookup, so callers can
+        safely pass ``row.control_id`` (display form) without each having
+        to remember the normalization. NOT the CCI identifier.
     is_new
         ``True`` for INSERT, ``False`` for UPDATE. UPDATE deletes the
         prior impl rows before writing the new set (replace, not
@@ -99,7 +102,17 @@ def persist_assessment_with_impls(
     -------
     The persisted ``Assessment.id``. Always non-None after the flush.
     """
-    slices = crm_context.implementations(control_id)
+    # Normalize to the OSCAL canonical id the CRM context keys on. Every
+    # route/backfill caller passes ``row.control_id`` (workbook DISPLAY form
+    # like "PE-3" / "AC-2(1)"), but ``build_crm_context`` keys
+    # ``by_control_impls`` on the OSCAL form ("pe-3" / "ac-2.1"). Without this
+    # the lookup silently missed for every real caller — ``slices`` came back
+    # empty, NO AssessmentImplementation rows were ever written, and a
+    # fully-inherited control's parent narrative_q kept only the single
+    # latest-attach short-circuit text (one cloud's narrative) instead of the
+    # composed per-scope breakdown. Idempotent if already OSCAL.
+    oscal_control_id = _ccis_to_oscal_control_id(_normalize_control(control_id))
+    slices = crm_context.implementations(oscal_control_id)
     plans = plan_implementations(decision, slices)
 
     # Only override the parent's status/narrative when we have a real
