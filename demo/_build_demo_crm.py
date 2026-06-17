@@ -558,6 +558,20 @@ ROWS = [
      "Implemented"),
 
     # === CUSTOMER (full LLM assessment -- pure customer policy) =============
+    # AC-17 DIVERGES from the Azure CRM (which marks it "Inherited"): on AWS
+    # GovCloud the customer configures and owns the remote-access plane, so this
+    # is a customer obligation here. The per-tenant split is the multi-boundary
+    # demo's headline — same control, different responsibility per cloud.
+    ("AC-17", "Remote Access",
+     "Customer",
+     "AWS provides the network primitives (Client VPN, Verified Access, Security "
+     "Groups, IAM) but does not configure or operate the customer's remote-access "
+     "policy or endpoints.",
+     "Customer is responsible for authorizing remote access prior to connection "
+     "and enforcing approved methods: AWS Client VPN with certificate + IdP "
+     "authentication, conditional-access rules, session logging to CloudWatch, "
+     "and periodic review of remote-access entitlements.",
+     "Implemented"),
     ("AT-1",  "Awareness and Training Policy and Procedures",
      "Customer",
      "Not applicable to the AWS service boundary. Customer maintains the "
