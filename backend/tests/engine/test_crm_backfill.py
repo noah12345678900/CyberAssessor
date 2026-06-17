@@ -1033,6 +1033,159 @@ def test_masked_provider_only_multiscope_still_backfills(
     assert rows[0].status == ComplianceStatus.COMPLIANT
 
 
+def test_two_inherited_crms_backfill_per_scope_rows_and_api_serializes_both(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """END-TO-END regression: 2 inherited CRMs → impl rows + both-cloud column Q + API.
+
+    This is the exact flow the user hit: attach an AWS GovCloud 'inherited' CRM
+    AND an Azure Government 'inherited' CRM to a FRESH workbook, let attach-time
+    backfill run, then read the control via the same endpoint ControlDetail uses
+    (``list_assessments``). Before the three-part fix the symptom was: parent
+    narrative cited only the latest-attach cloud (Azure/Microsoft), NO
+    AssessmentImplementation rows were written (control_id keying bug), and even
+    if they were, the API never serialized them (so no per-scope chips rendered).
+
+    Pins all three together:
+      1. backfill writes 2 AssessmentImplementation rows (keying fix).
+      2. parent narrative_q composes BOTH clouds (narratives_by_scope fix).
+      3. list_assessments serializes ``implementations`` so the UI receives them.
+
+    The prior test (test_masked_provider_only_multiscope_still_backfills) only
+    asserted applied==1 + parent status — which is exactly why the missing impl
+    rows / single-cloud narrative slipped through. This asserts the payload.
+    """
+    from cybersecurity_assessor.models import AssessmentImplementation
+    from cybersecurity_assessor.routes.controls import list_assessments
+
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="inherited",
+        scope_label="AWS GovCloud",
+        attached_at=datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="AWS GovCloud datacenters enforce physical access controls.",
+    )
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="inherited",
+        scope_label="Azure Government",
+        attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Microsoft Azure Government enforces datacenter physical access.",
+    )
+    _install_fake_reader(monkeypatch, [_make_row()])
+
+    result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    # 1. Backfill ran and produced the per-scope impl rows.
+    assert result.applied == 1, f"expected one backfilled control; got {result.as_dict()}"
+    impls = session.exec(select(AssessmentImplementation)).all()
+    assert len(impls) == 2, (
+        "two inherited CRMs must write two AssessmentImplementation rows "
+        f"(keying fix); got {len(impls)}"
+    )
+    assert {im.scope_label for im in impls} == {"AWS GovCloud", "Azure Government"}
+    assert all(im.status is ComplianceStatus.COMPLIANT for im in impls)
+
+    # 2. Parent narrative_q composes BOTH clouds — not just the latest attach.
+    parent = session.exec(select(Assessment)).one()
+    assert "AWS GovCloud" in parent.narrative_q
+    assert "Azure Government" in parent.narrative_q
+    assert "AWS GovCloud datacenters" in parent.narrative_q
+    assert "Microsoft Azure Government" in parent.narrative_q
+
+    # 3. The API the UI calls serializes the per-scope rows so chips render.
+    out = list_assessments(control_ac2.id, workbook_id=workbook.id, s=session)
+    assert len(out) == 1
+    api_impls = out[0]["implementations"]
+    assert len(api_impls) == 2, (
+        "list_assessments must serialize implementations so ControlDetail's "
+        f"N-impl editor/chips activate; got {api_impls!r}"
+    )
+    assert {i["scope_label"] for i in api_impls} == {"AWS GovCloud", "Azure Government"}
+    assert "AWS GovCloud" in out[0]["narrative_q"]
+    assert "Azure Government" in out[0]["narrative_q"]
+
+
+def test_two_na_crms_backfill_per_scope_not_applicable(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """N/A regression: two not_applicable CRMs → 2 NA impl rows, parent NA, API serializes.
+
+    Directly pins the user's "not a single N/A chip loaded" report: a control
+    both CRMs mark not_applicable must backfill two NOT_APPLICABLE impl rows,
+    roll the parent up to NOT_APPLICABLE, and surface both via the API so the
+    per-scope N/A chips render.
+    """
+    from cybersecurity_assessor.models import AssessmentImplementation
+    from cybersecurity_assessor.routes.controls import list_assessments
+
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="not_applicable",
+        scope_label="AWS GovCloud",
+        attached_at=datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Not applicable on AWS GovCloud — no such surface.",
+    )
+    _attach_crm_scoped(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="not_applicable",
+        scope_label="Azure Government",
+        attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
+        narrative="Not applicable on Azure Government — no such surface.",
+    )
+    _install_fake_reader(monkeypatch, [_make_row()])
+
+    result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    assert result.applied == 1, f"got {result.as_dict()}"
+    parent = session.exec(select(Assessment)).one()
+    assert parent.status is ComplianceStatus.NOT_APPLICABLE
+    out = list_assessments(control_ac2.id, workbook_id=workbook.id, s=session)
+    api_impls = out[0]["implementations"]
+    assert len(api_impls) == 2
+    assert all(
+        i["status"] is ComplianceStatus.NOT_APPLICABLE for i in api_impls
+    )
+
+
 def test_multitenant_empty_slices_defers_not_backfill(
     session,
     workbook,
