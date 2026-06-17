@@ -46,6 +46,10 @@ dependencies = [
   "python-docx>=1.1",
   "python-pptx>=1.0",
   "pytesseract>=0.3.13",
+  # Pillow — raster decode for the image extractor (OCR + dimensions/EXIF) and
+  # the PDF OCR render path. Was previously only pulled in transitively via
+  # pdfplumber; declared explicitly now that image.py depends on it directly.
+  "pillow>=10.4",
 
   # LLM — Anthropic is the primary provider (prompt caching, cheaper for our
   # ~3-4k cached system prompt). OpenAI is included as a user-selectable

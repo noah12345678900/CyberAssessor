@@ -36,11 +36,11 @@ get flagged for manual review. With OCR they now extract automatically.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
 from ...models import EvidenceKind
+from ._ocr import ocr_pdf_pages, tesseract_available
 from .base import ExtractedDoc, ExtractorError, register, resolve_doc_number
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,6 @@ logger = logging.getLogger(__name__)
 # text, but low enough that a 50-page scan with one stray "Page 1" footer
 # won't be mistaken for born-digital. Tune if false positives show up.
 _OCR_THRESHOLD_CHARS = 40
-
-# DPI for OCR rendering. 200 is the standard "good enough" for typed text;
-# 300 buys ~30% better accuracy at 2x the CPU. 200 keeps single-page OCR
-# under ~2s on a typical laptop CPU.
-_OCR_DPI = 200
 
 
 def _extract_with_pypdf(stream: BinaryIO, name: str) -> tuple[list[str], dict]:
@@ -84,70 +79,14 @@ def _extract_with_pypdf(stream: BinaryIO, name: str) -> tuple[list[str], dict]:
     return pages, meta
 
 
-def _tesseract_available() -> bool:
-    """Best-effort detection of an installed Tesseract binary.
-
-    Checks ``PATH`` via ``shutil.which`` first (cheap), then asks pytesseract
-    for the version (catches cases where ``tesseract_cmd`` was set explicitly
-    via env or config). Either positive result is enough.
-    """
-    if shutil.which("tesseract"):
-        return True
-    try:
-        import pytesseract  # type: ignore[import-not-found]
-
-        pytesseract.get_tesseract_version()
-        return True
-    except Exception:
-        return False
-
-
-def _extract_with_ocr(stream: BinaryIO, name: str) -> tuple[list[str], dict]:
-    """Stage-3 OCR fallback — render each page and run Tesseract.
-
-    Returns (pages, metadata) shaped like the other stages. ``metadata``
-    is empty because pdfium doesn't surface the same /Info dict as
-    pdfplumber/pypdf; the filename stem is the title fallback anyway.
-
-    Raises if pypdfium2 can't open the file or Tesseract fails on every
-    page. Empty per-page strings are kept — they let the caller compute
-    an honest page_count.
-    """
-    import pypdfium2 as pdfium  # type: ignore[import-not-found]
-    import pytesseract  # type: ignore[import-not-found]
-
-    # Rewind defensively — the stream may have been read twice already.
-    try:
-        stream.seek(0)
-    except Exception:
-        pass
-    data = stream.read()
-    pdf = pdfium.PdfDocument(data)
-    try:
-        pages: list[str] = []
-        # OCR scale: pypdfium2's scale=1 == 72 DPI, so DPI / 72 gives the
-        # multiplier. 200 DPI is the sweet spot for typed text accuracy
-        # vs CPU cost.
-        scale = _OCR_DPI / 72
-        for page_idx in range(len(pdf)):
-            page = pdf[page_idx]
-            try:
-                pil_image = page.render(scale=scale).to_pil()
-                text = pytesseract.image_to_string(pil_image) or ""
-                pages.append(text.strip())
-            except Exception as page_exc:
-                # One bad page shouldn't tank the whole doc — log and
-                # continue with an empty placeholder so page_count stays
-                # truthful and any earlier pages still land.
-                logger.warning(
-                    "OCR failed on page %d of %s: %s", page_idx + 1, name, page_exc
-                )
-                pages.append("")
-            finally:
-                page.close()
-        return pages, {}
-    finally:
-        pdf.close()
+# OCR primitives now live in ._ocr (shared with the image extractor). These
+# module-level aliases preserve the historical names so the rest of this file
+# — and any test that monkeypatches ``pdf._tesseract_available`` — keeps
+# working unchanged. The implementations are identical (the OCR loop was lifted
+# verbatim into _ocr.ocr_pdf_pages); the only behavioral gain is bundled-first
+# binary resolution so OCR works offline on a fresh install.
+_tesseract_available = tesseract_available
+_extract_with_ocr = ocr_pdf_pages
 
 
 @register(".pdf")
