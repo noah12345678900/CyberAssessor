@@ -778,7 +778,42 @@ def plan_implementations(
             # per-scope map still produce non-empty impl rows.
             if decision.status is None:
                 continue
-            narrative = by_scope.get(sl.scope_label) or decision.narrative or ""
+            # Phantom-scope guard. The synthesized On-Premises slice
+            # (crm_context appends it whenever any cloud scope is customer-
+            # owned) carries NO CRM baseline (source_baseline_id is None) and
+            # no CRM narrative — it is a placeholder for "assume residual
+            # customer work on-prem", NOT an assessed scope. Without its OWN
+            # per-scope narrative (which only exists when the LLM actually had
+            # on-prem evidence to assess), it must NOT inherit the control's
+            # COMPLIANT verdict — that would let one evidenced cloud scope
+            # silently pass an evidence-less on-prem footprint. Emit it as an
+            # abstain (status=None) so it surfaces for review instead. A real
+            # CRM-derived customer scope (source_baseline_id set) is unaffected;
+            # the synthesized slice with a genuine per-scope narrative is also
+            # unaffected (it was assessed). Precision over recall.
+            per_scope_narrative = by_scope.get(sl.scope_label)
+            is_synthesized_onprem = (
+                sl.source_baseline_id is None and is_on_prem(sl.scope_label)
+            )
+            if is_synthesized_onprem and not per_scope_narrative:
+                plans.append(
+                    ImplementationPlan(
+                        scope_label=sl.scope_label,
+                        responsibility=resp,
+                        status=None,
+                        narrative=(
+                            "Residual on-premises customer responsibility is "
+                            "assumed for this control but no on-premises evidence "
+                            "was assessed; flagged for reviewer follow-up. The "
+                            "cloud-scope verdict does not extend to the on-premises "
+                            "footprint."
+                        ),
+                        evidence_refs=None,
+                        source_baseline_id=sl.source_baseline_id,
+                    )
+                )
+                continue
+            narrative = per_scope_narrative or decision.narrative or ""
             plans.append(
                 ImplementationPlan(
                     scope_label=sl.scope_label,
