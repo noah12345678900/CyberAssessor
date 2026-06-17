@@ -41,7 +41,7 @@ from ..excel.ccis_reader import (
     _normalize_control,
 )
 from ..baselines.scope_labels import ON_PREM_LABEL, is_on_prem
-from ..models import ComplianceStatus, NarrativeClass
+from ..models import ComplianceStatus, NarrativeClass, VerdictSource
 from . import decision_cache, rules, supersession, validator
 from .crm_context import CrmContext, CrmEntry, ImplementationSlice
 from .evidence_bundle import EvidenceBlock
@@ -901,6 +901,55 @@ def compute_rollup_status(
         return ComplianceStatus.NOT_APPLICABLE
     # All contributing statuses were None: undetermined, not a confident NA.
     return None
+
+
+def decision_to_verdict_source(decision: "Decision") -> VerdictSource:
+    """Map a kernel ``Decision`` to the persisted ``VerdictSource`` enum.
+
+    Single source of truth for every Assessment-write site (the single +
+    batch assess endpoints AND the attach/open-time CRM/rule backfill).
+    Lives in the engine layer so the backfill can stamp ``verdict_source``
+    without a routes→engine import. Order matters:
+
+    1. ``cache_source == "cache_hit"`` wins first — a replayed Decision keeps
+       its original ``source`` string for telemetry, but the persisted row
+       records cache provenance so cost / re-use queries don't double-count.
+    2. ``needs_review`` wins next — every abstain path maps to ``ABSTAIN``
+       regardless of the underlying source string.
+    3. Otherwise dispatch on ``Decision.source``. The CRM family is matched
+       by prefix because hybrid scopes append an ``+onprem_*`` suffix that
+       collapses to ``CRM_HYBRID_MIXED``.
+    4. Unknown source string returns ``ABSTAIN`` as a safety net so a new
+       kernel emission site at least routes the row to the reviewer queue.
+    """
+    if getattr(decision, "cache_source", None) == "cache_hit":
+        return VerdictSource.CACHE_HIT
+    if getattr(decision, "needs_review", False):
+        return VerdictSource.ABSTAIN
+    src = decision.source or ""
+    if src == "rule_8a":
+        return VerdictSource.RULE_8A
+    if src == "rule_8b":
+        return VerdictSource.RULE_8B
+    if src == "rule-8c":
+        return VerdictSource.RULE_8C
+    if src == "rule_no_evidence":
+        return VerdictSource.RULE_NO_EVIDENCE
+    if src == "llm":
+        return VerdictSource.LLM_ACCEPT
+    if src == "llm_after_retry":
+        return VerdictSource.LLM_AFTER_RETRY
+    if src.startswith("crm_"):
+        if "+onprem_" in src:
+            return VerdictSource.CRM_HYBRID_MIXED
+        if src == "crm_provider":
+            return VerdictSource.CRM_PROVIDER
+        if src == "crm_inherited":
+            return VerdictSource.CRM_INHERITED
+        if src == "crm_not_applicable":
+            return VerdictSource.CRM_NOT_APPLICABLE
+        return VerdictSource.CRM_HYBRID_MIXED
+    return VerdictSource.ABSTAIN
 
 
 class Assessor:

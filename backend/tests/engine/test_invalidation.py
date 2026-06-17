@@ -123,19 +123,32 @@ def _assessment(
 def test_invalidate_flips_only_rows_currently_not_in_review(tmp_path: Path) -> None:
     """The only-flip-if-False invariant.
 
-    Seeds two assessments for the same objective: one trusted
-    (needs_review=False, no reason) and one already-flagged
-    (needs_review=True, custom reason). Calls the helper. The trusted row
-    must flip; the flagged row's reason must NOT be overwritten.
+    Seeds two assessments on TWO distinct objectives (one Assessment per
+    (workbook, objective) is enforced by uq_assessment_workbook_objective): one
+    trusted (needs_review=False, no reason) and one already-flagged
+    (needs_review=True, custom reason). Calls the helper for BOTH objectives.
+    The trusted row must flip; the flagged row's reason must NOT be overwritten.
     """
     engine = _engine()
     with Session(engine) as s:
         _fw, obj_id, wb_id = _seed_minimal_tree(s, tmp_path)
+        # Second objective under the same control so both can carry their own
+        # Assessment without violating the (workbook, objective) uniqueness.
+        o2 = Objective(
+            control_id_fk=s.get(Objective, obj_id).control_id_fk,
+            objective_id="CCI-000016",
+            source="CCI",
+            text="Second objective for the invariant test.",
+        )
+        s.add(o2)
+        s.commit()
+        s.refresh(o2)
+        obj_id2 = o2.id
 
         trusted = _assessment(workbook_id=wb_id, objective_id=obj_id, needs_review=False)
         already_flagged = _assessment(
             workbook_id=wb_id,
-            objective_id=obj_id,
+            objective_id=obj_id2,
             needs_review=True,
             review_reason="low-confidence",
         )
@@ -147,7 +160,7 @@ def test_invalidate_flips_only_rows_currently_not_in_review(tmp_path: Path) -> N
         trusted_id = trusted.id
         already_flagged_id = already_flagged.id
 
-        rowcount = invalidate_assessments_for_objectives(s, {obj_id})
+        rowcount = invalidate_assessments_for_objectives(s, {obj_id, obj_id2})
         s.commit()
 
         assert rowcount == 1, (
@@ -178,6 +191,62 @@ def test_invalidate_returns_zero_when_no_matching_rows(tmp_path: Path) -> None:
         rowcount = invalidate_assessments_for_objectives(s, {obj_id})
         s.commit()
         assert rowcount == 0
+
+
+def test_invalidate_exempts_evidence_independent_verdicts(tmp_path: Path) -> None:
+    """CRM-inherited / rule-deterministic rows are NOT flagged; LLM rows ARE.
+
+    A CRM-inherited (or rule_8b NA) verdict's basis is evidence-INDEPENDENT —
+    uploading a local artifact can't change inheritance or a scope exclusion.
+    Flagging those "evidence-changed" was the bug that flipped every inherited
+    control to needs-review on any evidence upload. Only evidence-derived
+    verdicts (llm / rule_no_evidence / cache / NULL legacy) get flagged.
+    """
+    from cybersecurity_assessor.models import VerdictSource
+
+    engine = _engine()
+    with Session(engine) as s:
+        _fw, obj_id, wb_id = _seed_minimal_tree(s, tmp_path)
+        ctrl_fk = s.get(Objective, obj_id).control_id_fk
+
+        def _obj(cci: str) -> int:
+            o = Objective(control_id_fk=ctrl_fk, objective_id=cci, source="CCI", text=cci)
+            s.add(o)
+            s.commit()
+            s.refresh(o)
+            return o.id
+
+        obj_inh = obj_id
+        obj_rule = _obj("CCI-000016")
+        obj_llm = _obj("CCI-000017")
+        obj_legacy = _obj("CCI-000018")
+
+        def _seed(oid: int, vs) -> int:
+            a = _assessment(workbook_id=wb_id, objective_id=oid, needs_review=False)
+            a.verdict_source = vs
+            s.add(a)
+            s.commit()
+            s.refresh(a)
+            return a.id
+
+        inh_id = _seed(obj_inh, VerdictSource.CRM_INHERITED)
+        rule_id = _seed(obj_rule, VerdictSource.RULE_8B)
+        llm_id = _seed(obj_llm, VerdictSource.LLM_ACCEPT)
+        legacy_id = _seed(obj_legacy, None)  # legacy NULL → still flagged
+
+        rowcount = invalidate_assessments_for_objectives(
+            s, {obj_inh, obj_rule, obj_llm, obj_legacy}
+        )
+        s.commit()
+        s.expire_all()
+
+        # Evidence-independent → exempt.
+        assert s.get(Assessment, inh_id).needs_review is False
+        assert s.get(Assessment, rule_id).needs_review is False
+        # Evidence-derived (and NULL legacy) → flagged.
+        assert s.get(Assessment, llm_id).needs_review is True
+        assert s.get(Assessment, legacy_id).needs_review is True
+        assert rowcount == 2
 
 
 def test_invalidate_empty_iterable_is_no_op(tmp_path: Path) -> None:

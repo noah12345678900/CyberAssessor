@@ -1412,6 +1412,20 @@ class BaselineObjective(SQLModel, table=True):
 
 
 class Assessment(SQLModel, table=True):
+    # One Assessment per (workbook, objective). The attach-time CRM/rule
+    # backfill and the assess endpoints all upsert on this pair; without the
+    # constraint two separate attach passes (one CRM attached, then a second)
+    # each inserted a rival row for the same objective — the PE-3 duplicate
+    # bug. SQLite treats NULLs as distinct, so SOC engagement-rooted rows
+    # (workbook_id NULL, engagement_id set) are unaffected.
+    __table_args__ = (
+        UniqueConstraint(
+            "workbook_id",
+            "objective_id",
+            name="uq_assessment_workbook_objective",
+        ),
+    )
+
     id: int | None = Field(default=None, primary_key=True)
     workbook_id: int | None = Field(default=None, foreign_key="workbook.id", index=True)
     # SOC 1/2/3 assessments roll up under an Engagement instead of a Workbook.

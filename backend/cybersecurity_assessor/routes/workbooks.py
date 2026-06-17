@@ -27,7 +27,7 @@ from sqlmodel import Session, select
 
 from ..baselines import CcisWorkbookBaselineSource
 from ..db import chunked, get_session
-from ..engine.crm_backfill import backfill_workbook_crm
+from ..engine.crm_backfill import backfill_workbook_crm, backfill_workbook_rules
 from ..excel.ccis_reader import read_workbook_summary
 from ..models import (
     Assessment,
@@ -184,6 +184,21 @@ def open_workbook(body: WorkbookCreate, s: Session = Depends(get_session)) -> di
         if promote_result["status"] != "no_pending":
             pending_promotion = promote_result
 
+    # Front-load deterministic RULE verdicts (rules.classify_row) so
+    # workbook-intrinsic Compliant/Not-Applicable controls surface in the
+    # Controls grid the moment the workbook is opened — without waiting for the
+    # user to click Assess. The motivating case: a control marked Not
+    # Applicable in workbook col N (e.g. AC-18 wireless scope-exclusion) had no
+    # auto-writer and showed a blank chip. Idempotent + non-stomping: skips any
+    # objective that already has an Assessment. Only runs once a baseline is
+    # bound (need the in-scope objective set).
+    rule_backfill: dict | None = None
+    if wb.id is not None and wb.baseline_id is not None:
+        rb = backfill_workbook_rules(wb.id, s)
+        if rb.applied > 0:
+            s.commit()
+        rule_backfill = rb.as_dict()
+
     summary = read_workbook_summary(p)
     # NOTE: SQLModel's session.exec(select(Single.column)).all() returns
     # a list of bare scalars, not 1-tuples — destructuring with `(bl_id,)`
@@ -220,6 +235,8 @@ def open_workbook(body: WorkbookCreate, s: Session = Depends(get_session)) -> di
         # to invalidate the system-context + boundary-docs caches without
         # waiting for the explicit /pending/promote round-trip.
         "pending_promotion": pending_promotion,
+        # Deterministic-rule backfill counts (None when no baseline bound).
+        "rule_backfill": rule_backfill,
     }
 
 
