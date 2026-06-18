@@ -111,6 +111,28 @@ def _compute_prompt_sha() -> str:
 ADVISOR_PROMPT_SHA: str = _compute_prompt_sha()
 
 
+def _load_system_prompt() -> str:
+    """The advisor's instruction set (residual_advisor.md).
+
+    CRITICAL: ``extract_system_context`` (the client method the advisor
+    calls) deliberately sends NO ``system=`` parameter — its contract is
+    "the caller embeds the full instructions in ``prompt``." The advisor
+    previously did NOT embed them (a stale comment claimed the client loads
+    the .md), so the model received a bare data dump with no output contract,
+    no enum list, and no rules — every call produced free-form prose,
+    ``_parse_extraction_json`` found no JSON, and every POAM hard-abstained
+    with ``[parse_error]``. We now prepend this prompt to the user message so
+    the model actually receives its instructions.
+    """
+    try:
+        return _PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+ADVISOR_SYSTEM_PROMPT: str = _load_system_prompt()
+
+
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
@@ -365,15 +387,21 @@ def build_advisor_prompt(
     findings: list[StigFinding],
     narratives: list[_LinkedControlNarrative],
 ) -> str:
-    """Render the user message for one residual-advisor LLM call.
+    """Render the full message for one residual-advisor LLM call.
 
-    The system prompt (``residual_advisor.md``) is loaded by the LLM
-    client itself; this function emits only the structured user message
-    the prompt's "What you are reasoning over" section describes — three
-    headers (``## POAM``, ``## Contributing findings``, ``## Linked control
-    narratives``) and the per-field payload underneath each.
+    The client method the advisor calls (``extract_system_context``) sends
+    NO ``system=`` parameter, so the instruction set (``residual_advisor.md``)
+    MUST be embedded here — prepended ahead of the structured data. The data
+    section is the three headers (``## POAM``, ``## Contributing findings``,
+    ``## Linked control narratives``) with the per-field payload underneath.
+    Without the prepend the model gets data with no output contract and every
+    call degrades to a parse-error abstain.
     """
-    parts: list[str] = ["## POAM"]
+    parts: list[str] = []
+    if ADVISOR_SYSTEM_PROMPT:
+        parts.append(ADVISOR_SYSTEM_PROMPT)
+        parts.append("")  # blank line between instructions and the data
+    parts.append("## POAM")
     parts.append(f"vulnerability_description: {(poam.vulnerability_description or '').strip()}")
     if poam.mitigations:
         parts.append(f"mitigations: {poam.mitigations.strip()}")

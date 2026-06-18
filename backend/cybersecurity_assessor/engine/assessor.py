@@ -1689,9 +1689,17 @@ class Assessor:
                     )
                     return self._abstain(
                         row, cci,
+                        # ``reason`` is the SHORT triage label (telemetry +
+                        # the UI's amber callout); the truncation keeps it
+                        # tight. ``narrative`` carries the FULL proposal text
+                        # so the persisted column-Q cell is complete — the
+                        # write site falls back to ``review_reason`` only when
+                        # ``narrative`` is None, which truncated AC-7's cell
+                        # mid-word before this was passed through.
                         f"{reason_prefix}: {bad.narrative[:300]}",
                         outcome=outcome,
                         status=bad.status,
+                        narrative=bad.narrative,
                         confidence=bad.confidence,
                         rule=auto.rule,
                         retries=attempt_no,
@@ -1801,9 +1809,13 @@ class Assessor:
                     )
                     return self._abstain(
                         row, cci,
+                        # Short triage label for the reason; full text on
+                        # ``narrative`` so column-Q is complete (see the
+                        # sibling self-abstain site above — AC-7 cut-off fix).
                         f"{reason_prefix}: {proposal.narrative[:300]}",
                         outcome=outcome,
                         status=proposal.status,
+                        narrative=proposal.narrative,
                         confidence=proposal.confidence,
                         rule=auto.rule,
                         retries=attempt_no,
@@ -2282,6 +2294,30 @@ class Assessor:
                 outcome.rejections.append(rej)
 
         accepted = result.ok
+        # Rule #8b is a DETERMINISTIC, human-authored N/A: col N already says
+        # "Not Applicable" and the formatter leads with the validator's NA
+        # phrase. But _format_prefilled_na_narrative inlines the assessor's
+        # own col-Q/U rationale excerpt, and if that borrowed text happens to
+        # carry a gap or strong-affirming phrase the rule-#11 multi-class
+        # guard flips classified_as to AMBIGUOUS → ok=False → the N/A drops to
+        # unresolved and vanishes from the "accepted" count (user's 11/13).
+        # The verdict is authoritative regardless of how the borrowed prose
+        # classifies, so accept an N/A whose ONLY rejection is the ambiguity
+        # status/narrative mismatch. Real formatter bugs (unsupported
+        # citation, format violation, etc.) still reject. The rejection is
+        # still logged above for telemetry.
+        if (
+            not accepted
+            and auto.rule == "8b"
+            and auto.status is ComplianceStatus.NOT_APPLICABLE
+            and result.classified_as is NarrativeClass.AMBIGUOUS
+            and result.rejections
+            and all(
+                r is validator.RejectionReason.STATUS_NARRATIVE_MISMATCH
+                for r, _ in result.rejections
+            )
+        ):
+            accepted = True
         if outcome is not None:
             outcome.accepted = accepted
             outcome.retries_before_accept = 0

@@ -284,12 +284,15 @@ def test_assess_control_persists_hard_abstain_with_needs_review(
     body = resp.json()
 
     # The route returns the kernel's raw Decision shape — coercion only
-    # happens at the DB write boundary. The kernel did accept the abstain
-    # (accepted=True) and flagged needs_review=True; narrative stays None
-    # in the returned payload because the kernel itself did not invent one.
+    # happens at the DB write boundary. The kernel accepted the abstain
+    # (accepted=True) and flagged needs_review=True. The abstain now carries
+    # the LLM's proposal narrative forward (AC-7 fix: ``_abstain`` is passed
+    # ``narrative=proposal.narrative`` so column Q gets the FULL text rather
+    # than a 300-char-truncated review_reason). The stub proposes
+    # "forced abstain", so that's what rides on the payload narrative.
     assert body["accepted"] is True
     assert body["needs_review"] is True
-    assert body["narrative"] is None
+    assert body["narrative"] == "forced abstain"
     assert body["assessment_id"] is not None  # row WAS written (this is the fix)
 
     # The row landed in the table — the silent drop is fixed. Coercion
