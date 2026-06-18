@@ -1449,6 +1449,111 @@ def assess_objective(body: AssessRequest, s: Session = Depends(get_session)) -> 
     }
 
 
+def _persist_one_batch_decision(
+    s: Session,
+    *,
+    decision,
+    obj,
+    row,
+    workbook_id: int,
+    tester: str,
+    crm_context,
+    run_id,
+) -> bool:
+    """Persist ONE accepted decision's Assessment + impl rows.
+
+    Extracted from the Phase-3 loop so the caller can wrap each call in a
+    SAVEPOINT (``s.begin_nested()``): a constraint/IO surprise on a single
+    CCI then rolls back only THAT row's writes instead of poisoning the
+    whole batch transaction (which surfaced to the UI as a 500 — the
+    assessmentimplementation.status NOT NULL bug). Mirrors the single-control
+    save path exactly; ``control_id`` is the OSCAL canonical id. Returns True
+    when the persisted row is a needs_review/abstain row (so the caller can
+    bump ``abstained_count``).
+    """
+    status_to_persist, narrative_to_persist = _coerce_abstain_persistence_fields(
+        decision
+    )
+    existing = s.exec(
+        select(Assessment).where(
+            Assessment.workbook_id == workbook_id,
+            Assessment.objective_id == obj.id,
+        )
+    ).first()
+    when = datetime.now(timezone.utc)
+    nc = decision.narrative_class
+    rw_refs = (
+        json.dumps([[lg, cu] for (lg, cu) in decision.rewrite_requested_refs])
+        if decision.rewrite_requested_refs
+        else None
+    )
+    verdict_src = _decision_to_verdict_source(decision)
+    dual_flags = list(getattr(decision, "dual_narrative_flags", []) or [])
+    dual_flagged_bool = bool(dual_flags)
+    dual_flags_json = json.dumps(dual_flags) if dual_flagged_bool else None
+    if existing:
+        existing.status = status_to_persist
+        existing.tester = tester
+        existing.narrative_q = narrative_to_persist
+        existing.narrative_on_prem = decision.narrative_on_prem
+        existing.narrative_cloud = decision.narrative_cloud
+        existing.narrative_class = nc
+        existing.inheritance_rule = decision.rule
+        existing.excel_row = decision.excel_row
+        existing.date_tested = when
+        existing.needs_review = decision.needs_review
+        existing.review_reason = decision.review_reason
+        existing.confidence = decision.confidence
+        existing.rewrite_requested = decision.rewrite_requested
+        existing.rewrite_requested_refs = rw_refs
+        existing.verdict_source = verdict_src
+        existing.dual_narrative_flagged = dual_flagged_bool
+        existing.dual_narrative_flag_reasons = dual_flags_json
+        existing.run_id = run_id
+        persisted_pk = persist_assessment_with_impls(
+            s,
+            assessment=existing,
+            decision=decision,
+            crm_context=crm_context,
+            control_id=row.control_id,
+            is_new=False,
+        )
+        _persist_audit_trail(s, assessment_id=persisted_pk, decision=decision)
+    else:
+        new_row = Assessment(
+            workbook_id=workbook_id,
+            objective_id=obj.id,
+            excel_row=decision.excel_row,
+            status=status_to_persist,
+            tester=tester,
+            narrative_q=narrative_to_persist,
+            narrative_on_prem=decision.narrative_on_prem,
+            narrative_cloud=decision.narrative_cloud,
+            narrative_class=nc,
+            inheritance_rule=decision.rule,
+            date_tested=when,
+            needs_review=decision.needs_review,
+            review_reason=decision.review_reason,
+            confidence=decision.confidence,
+            rewrite_requested=decision.rewrite_requested,
+            rewrite_requested_refs=rw_refs,
+            verdict_source=verdict_src,
+            dual_narrative_flagged=dual_flagged_bool,
+            dual_narrative_flag_reasons=dual_flags_json,
+            run_id=run_id,
+        )
+        persisted_pk = persist_assessment_with_impls(
+            s,
+            assessment=new_row,
+            decision=decision,
+            crm_context=crm_context,
+            control_id=row.control_id,
+            is_new=True,
+        )
+        _persist_audit_trail(s, assessment_id=persisted_pk, decision=decision)
+    return bool(decision.needs_review)
+
+
 class AssessBatchRequest(BaseModel):
     """Auto-assess every in-scope CCI in the workbook in a single run.
 
@@ -1664,6 +1769,17 @@ def assess_objectives_batch(
     # actually landed), and surface this string in the payload instead of
     # letting a 500 wipe the grid. See the finally block for rationale.
     persist_error: str | None = None
+    # Per-CCI persist failures contained by the SAVEPOINT guard below. A
+    # single bad CCI (e.g. a schema/constraint surprise on one row) rolls
+    # back ONLY its own writes via the nested transaction and is counted
+    # here instead of aborting the whole batch transaction with a 500. The
+    # decision still rides out in ``decisions`` (with ``error`` set) so the
+    # grid renders it for manual retry.
+    persist_errored_count = 0
+    # objective_id -> error string for CCIs whose persist was rolled back by
+    # the SAVEPOINT guard. Stitched onto the matching ``decisions`` entry so
+    # the UI's "Worker errored — re-run these" section surfaces them.
+    per_cci_persist_errors: dict[int, str] = {}
 
     try:
         # ---- Phase 1: serial evidence build (main thread, uses ``s``) ----
@@ -1869,129 +1985,44 @@ def assess_objectives_batch(
                 # surfacing them in the reviewer queue instead of being
                 # silently dropped. Soft abstains pass through untouched.
                 if body.persist:
-                    status_to_persist, narrative_to_persist = (
-                        _coerce_abstain_persistence_fields(decision)
-                    )
-                    existing = s.exec(
-                        select(Assessment).where(
-                            Assessment.workbook_id == body.workbook_id,
-                            Assessment.objective_id == obj.id,
+                    # Per-CCI SAVEPOINT isolation. A constraint/IO surprise on
+                    # ONE row (this is the bug that 500'd the batch:
+                    # assessmentimplementation.status NOT NULL vs the residual
+                    # on-prem abstain's status=None) used to poison the whole
+                    # batch transaction — every prior row's flushed writes were
+                    # rolled back at commit time and the UI got a bare 500. The
+                    # nested transaction scopes the failure to this CCI: on
+                    # error we roll back only its writes, log the full
+                    # traceback, count it, and tag the in-memory decision with
+                    # ``error`` so the grid still renders it for manual retry.
+                    try:
+                        with s.begin_nested():
+                            was_review = _persist_one_batch_decision(
+                                s,
+                                decision=decision,
+                                obj=obj,
+                                row=row,
+                                workbook_id=body.workbook_id,
+                                tester=tester,
+                                crm_context=crm_context,
+                                run_id=rec.run_id,
+                            )
+                        persisted_count += 1
+                        if was_review:
+                            abstained_count += 1
+                    except Exception as persist_exc:  # noqa: BLE001 - contained
+                        persist_errored_count += 1
+                        per_cci_persist_errors[obj.objective_id] = (
+                            f"{type(persist_exc).__name__}: {persist_exc}"
                         )
-                    ).first()
-                    when = datetime.now(timezone.utc)
-                    nc = decision.narrative_class
-                    # v0.2 citation-hygiene: rewrite_requested rides as a
-                    # workflow note, NOT a verdict block. Stored as JSON
-                    # array of [legacy, current] pairs (TEXT column).
-                    # See Assessment.rewrite_requested in models.py and
-                    # the demote logic in engine/assessor.py for context.
-                    rw_refs = (
-                        json.dumps(
-                            [[lg, cu] for (lg, cu) in decision.rewrite_requested_refs]
+                        _log.exception(
+                            "assess-batch: persist failed for CCI %s "
+                            "(objective_id=%s, control=%s) — rolled back this "
+                            "row only, batch continues",
+                            obj.objective_id,
+                            obj.id,
+                            row.control_id,
                         )
-                        if decision.rewrite_requested_refs
-                        else None
-                    )
-                    # v0.2 patent-supporting provenance tag — see
-                    # _decision_to_verdict_source for the single source-of-truth
-                    # mapping that both Assessment-write sites share.
-                    verdict_src = _decision_to_verdict_source(decision)
-                    # v0.2 dual-narrative advisory mirror (batch site —
-                    # same contract as the single-control site above).
-                    dual_flags = list(
-                        getattr(decision, "dual_narrative_flags", []) or []
-                    )
-                    dual_flagged_bool = bool(dual_flags)
-                    dual_flags_json = (
-                        json.dumps(dual_flags) if dual_flagged_bool else None
-                    )
-                    if existing:
-                        existing.status = status_to_persist
-                        existing.tester = tester
-                        existing.narrative_q = narrative_to_persist
-                        existing.narrative_on_prem = decision.narrative_on_prem
-                        existing.narrative_cloud = decision.narrative_cloud
-                        existing.narrative_class = nc
-                        existing.inheritance_rule = decision.rule
-                        existing.excel_row = decision.excel_row
-                        existing.date_tested = when
-                        # v0.2 precision-over-recall: carry the abstain
-                        # triage signal onto the row so export gates can
-                        # refuse it and the UI can render the Review pill.
-                        existing.needs_review = decision.needs_review
-                        existing.review_reason = decision.review_reason
-                        existing.confidence = decision.confidence
-                        existing.rewrite_requested = decision.rewrite_requested
-                        existing.rewrite_requested_refs = rw_refs
-                        existing.verdict_source = verdict_src
-                        existing.dual_narrative_flagged = dual_flagged_bool
-                        existing.dual_narrative_flag_reasons = dual_flags_json
-                        # Audit v1: stamp run_id so an auditor can replay
-                        # the whole batch as a unit.
-                        existing.run_id = rec.run_id
-                        # v0.2 multi-implementation write path — same helper
-                        # the single-control site and crm_backfill use, so a
-                        # control covered by N CRMs (+ synthesized On-Premises
-                        # slice) persists N AssessmentImplementation children
-                        # and a rolled-up parent. The helper flushes (assigns
-                        # the PK) but never commits — the single batched
-                        # ``s.commit()`` in the finally block stays the
-                        # transaction boundary, matching the prior s.flush()
-                        # behavior. Abstain rows keep their coerced parent
-                        # fields. control_id is the OSCAL canonical id.
-                        persisted_pk = persist_assessment_with_impls(
-                            s,
-                            assessment=existing,
-                            decision=decision,
-                            crm_context=crm_context,
-                            control_id=row.control_id,
-                            is_new=False,
-                        )
-                        _persist_audit_trail(
-                            s, assessment_id=persisted_pk, decision=decision
-                        )
-                    else:
-                        new_row = Assessment(
-                            workbook_id=body.workbook_id,
-                            objective_id=obj.id,
-                            excel_row=decision.excel_row,
-                            status=status_to_persist,
-                            tester=tester,
-                            narrative_q=narrative_to_persist,
-                            narrative_on_prem=decision.narrative_on_prem,
-                            narrative_cloud=decision.narrative_cloud,
-                            narrative_class=nc,
-                            inheritance_rule=decision.rule,
-                            date_tested=when,
-                            needs_review=decision.needs_review,
-                            review_reason=decision.review_reason,
-                            confidence=decision.confidence,
-                            rewrite_requested=decision.rewrite_requested,
-                            rewrite_requested_refs=rw_refs,
-                            verdict_source=verdict_src,
-                            dual_narrative_flagged=dual_flagged_bool,
-                            dual_narrative_flag_reasons=dual_flags_json,
-                            # Audit v1: see existing branch above.
-                            run_id=rec.run_id,
-                        )
-                        # v0.2 multi-implementation write path — see the
-                        # existing-row branch above. INSERT skips the
-                        # prior-impl delete (is_new=True). Commit stays
-                        # batched in finally.
-                        persisted_pk = persist_assessment_with_impls(
-                            s,
-                            assessment=new_row,
-                            decision=decision,
-                            crm_context=crm_context,
-                            control_id=row.control_id,
-                            is_new=True,
-                        )
-                        _persist_audit_trail(
-                            s, assessment_id=persisted_pk, decision=decision
-                        )
-                    persisted_count += 1
-                    if decision.needs_review:
-                        abstained_count += 1
             else:
                 unresolved_count += 1
 
@@ -2014,7 +2045,11 @@ def assess_objectives_batch(
                     ),
                     "narrative_on_prem": decision.narrative_on_prem,
                     "narrative_cloud": decision.narrative_cloud,
-                    "narrative_class": decision.narrative_class.value,
+                    "narrative_class": (
+                        decision.narrative_class.value
+                        if decision.narrative_class
+                        else None
+                    ),
                     "source": decision.source,
                     "rule": decision.rule,
                     "retries": decision.retries,
@@ -2048,6 +2083,11 @@ def assess_objectives_batch(
                     # one evidence source failed but the CCI was still
                     # assessed with whatever survived. Empty list = clean.
                     "source_warnings": list(_ev.source_warnings),
+                    # Set when the SAVEPOINT guard rolled back this CCI's
+                    # persist (a verdict was produced but couldn't be saved).
+                    # The UI surfaces it in the "re-run these" section. None
+                    # on the happy path.
+                    "error": per_cci_persist_errors.get(obj.objective_id),
                 }
             )
     finally:
@@ -2121,6 +2161,11 @@ def assess_objectives_batch(
         # failed and was rolled back. The UI renders the in-memory grid plus
         # a "results not saved — retry" banner instead of an empty error.
         "persist_error": persist_error,
+        # Count of CCIs whose individual persist was rolled back by the
+        # SAVEPOINT guard (a verdict was produced but couldn't be saved).
+        # 0 on the happy path; per-CCI detail rides on each decision's
+        # ``error`` key.
+        "persist_errored": persist_errored_count,
         "decisions": decisions,
     }
 

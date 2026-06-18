@@ -1592,7 +1592,16 @@ class AssessmentImplementation(SQLModel, table=True):
     # to keep the table self-contained (the canonical enum lives on
     # BaselineControl and may be NULL there for catalog-only rows).
     responsibility: str | None = None
-    status: ComplianceStatus
+    # Nullable: a per-scope abstain. The synthesized On-Premises residual
+    # slice (engine.assessor.plan_implementations) carries status=None when a
+    # cloud scope is customer-owned but no on-prem evidence was assessed — a
+    # precision-over-recall signal that the cloud verdict must NOT extend to
+    # the on-prem footprint. compute_rollup_status, the API serializer, and
+    # the SAR all already tolerate None; only this column was out of sync,
+    # which 500'd batch persistence on an IntegrityError. NULL means
+    # "acknowledged but unassessed — reviewer follow-up"; the narrative is
+    # always populated in that case so the row is never contentless.
+    status: ComplianceStatus | None = None
     narrative: str
     # JSON-encoded list of evidence-citation tags / doc refs. Same shape
     # as the per-CCI tag list the LLM emits.
