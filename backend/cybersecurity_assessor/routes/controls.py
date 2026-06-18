@@ -20,6 +20,9 @@ from . import _batch_progress
 from ..engine import validator as v
 from ..engine.assessor import (
     Assessor,
+    ImplementationPlan,
+    compose_rolled_narrative,
+    compute_rollup_status,
     decision_to_verdict_source,
     stitch_scope_narrative,
 )
@@ -600,6 +603,14 @@ router = APIRouter(prefix="/api/controls", tags=["controls"])
 _log = logging.getLogger(__name__)
 
 
+class ImplementationEdit(BaseModel):
+    """One per-scope edit from the multi-impl editor."""
+
+    id: int
+    status: ComplianceStatus | None = None
+    narrative: str
+
+
 class AssessmentUpsert(BaseModel):
     workbook_id: int
     objective_id: int
@@ -620,6 +631,17 @@ class AssessmentUpsert(BaseModel):
     narrative_class: NarrativeClass
     inheritance_rule: str | None = None  # "8a", "8b", or None
     date_tested: datetime | None = None  # defaults to now
+    # v0.2 multi-impl save path. When the control carries per-scope
+    # AssessmentImplementation rows (AWS GovCloud / Azure Government /
+    # On-Premises …), the UI ships each edited (id, status, narrative) pair
+    # here. The server applies them to the impl rows AND recomposes the
+    # parent status (worst-of) + narrative_q (labeled per-scope join) from the
+    # full impl set — so column Q always reflects every scope. Omitted/empty
+    # on legacy single-narrative rows, in which case narrative_q above is
+    # persisted verbatim. (Before this field existed, the UI sent impls but
+    # Pydantic dropped them, so per-scope edits were lost and the stale
+    # top-textarea column Q persisted — the AC-17 "Azure overwrites AWS" bug.)
+    implementations: list[ImplementationEdit] | None = None
 
 
 def _resolve_excel_row(
@@ -1009,6 +1031,52 @@ def upsert_assessment(
             needs_review=False,
         )
         s.add(a)
+
+    # v0.2 multi-impl save. The UI ships per-scope edits when the control
+    # carries AssessmentImplementation rows. Apply each edit to its row, then
+    # recompose the parent status (worst-of) + narrative_q (labeled per-scope
+    # join over ALL impl rows) so column Q reflects every scope. Without this
+    # the per-scope edits were dropped (the schema had no `implementations`
+    # field) and the stale top-textarea narrative_q persisted — the AC-17
+    # "Azure inherited overwrites the AWS customer scope" bug. We flush first
+    # so a brand-new Assessment row has its PK for the impl FK lookup.
+    if body.implementations:
+        s.flush()
+        edits_by_id = {e.id: e for e in body.implementations}
+        impl_rows = s.exec(
+            select(AssessmentImplementation).where(
+                AssessmentImplementation.assessment_id == a.id
+            )
+        ).all()
+        for im in impl_rows:
+            edit = edits_by_id.get(im.id)
+            if edit is None:
+                continue
+            im.status = edit.status
+            im.narrative = edit.narrative
+            s.add(im)
+        if impl_rows:
+            # Recompose parent from the FULL impl set (edited + untouched), in
+            # the same scope order plan_implementations/compose use.
+            plans = [
+                ImplementationPlan(
+                    scope_label=im.scope_label,
+                    responsibility=im.responsibility,
+                    status=im.status,
+                    narrative=im.narrative or "",
+                    evidence_refs=im.evidence_refs,
+                    source_baseline_id=im.source_baseline_id,
+                )
+                for im in impl_rows
+            ]
+            rolled_status = compute_rollup_status([p.status for p in plans])
+            if rolled_status is not None:
+                a.status = rolled_status
+            rolled_q = compose_rolled_narrative(plans)
+            if rolled_q:
+                a.narrative_q = rolled_q
+            s.add(a)
+
     # fix #7 -- a manual upsert is the user overriding the engine's verdict.
     # The decision cache is content-addressed, so without this the next
     # /assess on unchanged content replays the stale pre-override Decision
