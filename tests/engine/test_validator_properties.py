@@ -67,6 +67,8 @@ _PIPELINE = settings(deadline=None)
 
 from cybersecurity_assessor.engine.validator import (  # noqa: E402
     _AFFIRMING_PHRASES,
+    _STRONG_AFFIRMING_PHRASES,
+    _WEAK_AFFIRMING_PHRASES,
     _CITE_EXEMPT_SUBSTRINGS,
     _GAP_PHRASES,
     _NA_PHRASES,
@@ -501,24 +503,45 @@ def test_classify_narrative_empty_or_whitespace_is_ambiguous(ws: str) -> None:
 
 @_PIPELINE
 @given(
-    affirming=st.sampled_from(_AFFIRMING_PHRASES),
+    affirming=st.sampled_from(_STRONG_AFFIRMING_PHRASES),
     gap=st.sampled_from(_GAP_PHRASES),
 )
-def test_classify_narrative_multi_class_hits_are_ambiguous(
+def test_classify_narrative_strong_affirm_plus_gap_is_ambiguous(
     affirming: str, gap: str
 ) -> None:
-    """Hitting two phrase tables at once \u2192 AMBIGUOUS (rule #11 mixed case).
+    """STRONG affirming + gap \u2192 AMBIGUOUS (rule #11 mixed case).
 
-    The classifier MUST NOT pick a winner when both compliance-affirming
-    and gap-describing phrases appear; that's the mixed-narrative case
-    rule #11 explicitly defers to the assessor. Property-tested across
-    the full phrase-table cross product.
+    Only a SUBSTANTIVE compliance claim ("confirmed via", "verified via",
+    inheritance prose) co-occurring with a gap phrase is a genuine
+    contradiction the classifier must defer to the assessor. Pinned across the
+    full strong-affirming \u00d7 gap cross product. (WEAK act-of-looking verbs are
+    handled by the companion test below \u2014 they do NOT force ambiguity.)
     """
     # Some phrase pairs share a substring (e.g. "missing" + "no documentation")
-    # that would not change the result; the contract is "two distinct tables
-    # hit \u2192 ambiguous" regardless of overlap.
+    # that would not change the result; the contract is "strong-affirm + gap
+    # \u2192 ambiguous" regardless of overlap.
     narrative = f"{affirming} ... however {gap}"
     assert classify_narrative(narrative) == NarrativeClass.AMBIGUOUS
+
+
+@_PIPELINE
+@given(
+    weak=st.sampled_from(_WEAK_AFFIRMING_PHRASES),
+    gap=st.sampled_from(_GAP_PHRASES),
+)
+def test_classify_narrative_weak_affirm_plus_gap_is_gap(
+    weak: str, gap: str
+) -> None:
+    """WEAK (act-of-looking) affirming + gap \u2192 GAP_DESCRIBING, NOT ambiguous.
+
+    The AU-4 fix invariant: "examined"/"observed" describe the verification
+    ACT, not a compliance claim. Nearly every NC narrative opens "Examined X;
+    <gap>", so a weak verb co-occurring with a gap is the canonical NC shape \u2014
+    it must classify GAP_DESCRIBING (which pairs with a Non-Compliant verdict),
+    never AMBIGUOUS. Pinned across the full weak-affirming \u00d7 gap cross product.
+    """
+    narrative = f"{weak} the control. Finding: {gap}."
+    assert classify_narrative(narrative) == NarrativeClass.GAP_DESCRIBING
 
 
 @given(phrase=st.sampled_from(_AFFIRMING_PHRASES))

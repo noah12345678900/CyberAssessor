@@ -1,46 +1,42 @@
 {
-  "ground_truth": true,
-  "name": "ground_truth_ac7_lockout_threshold_nc",
-  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 44, CCI-000044, assessed 2026-05-27). Non-Compliant verdict \u2014 system failed lockout threshold test. Narrative uses 'Examined/Finding' structure. The phrase 'failed test' and 'did not engage' describe a clear compliance gap. Similar to the AC-6 ground-truth sibling: 'did not engage' may not appear in _GAP_PHRASES, while 'Examined' hits _AFFIRMING_PHRASES \u2014 potentially triggering STATUS_NARRATIVE_MISMATCH and driving to abstain. If the validator does reject, this pins the gap; if it accepts (because 'failed test' or 'did not' is covered), it pins the happy path.",
-  "ccis_row": {
-    "control_id": "AC-7",
-    "ap_acronym": "AC-7.2",
-    "cci_id": "CCI-000044",
-    "guidance": "000044: The information system enforces the organization-defined limit of consecutive invalid logon attempts by a user during the organization-defined time period.",
-    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to limit invalid logon attempts by a user to three attempts during a 15 minute time period.",
-    "inherited": "Local",
-    "narrative": null,
-    "definition": null
+ "ground_truth": true,
+ "name": "ground_truth_ac7_lockout_threshold_nc",
+ "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 44, CCI-000044, assessed 2026-05-27). Non-Compliant verdict — system failed lockout threshold test. Narrative uses 'Examined/Finding' structure. The phrase 'failed test' and 'did not engage' describe a clear compliance gap. Similar to the AC-6 ground-truth sibling: 'did not engage' may not appear in _GAP_PHRASES, while 'Examined' hits _AFFIRMING_PHRASES — potentially triggering STATUS_NARRATIVE_MISMATCH and driving to abstain. If the validator does reject, this pins the gap; if it accepts (because 'failed test' or 'did not' is covered), it pins the happy path. UPDATE 2026-06-18: the _GAP_PHRASES coverage gap this case documented is now FIXED — the 'Examined/Finding' gap wording classifies GAP_DESCRIBING, so the human-verified Non-Compliant verdict is ACCEPTED on the first pass instead of being forced to an abstain by status_narrative_mismatch.",
+ "ccis_row": {
+  "control_id": "AC-7",
+  "ap_acronym": "AC-7.2",
+  "cci_id": "CCI-000044",
+  "guidance": "000044: The information system enforces the organization-defined limit of consecutive invalid logon attempts by a user during the organization-defined time period.",
+  "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to limit invalid logon attempts by a user to three attempts during a 15 minute time period.",
+  "inherited": "Local",
+  "narrative": null,
+  "definition": null
+ },
+ "tagged_evidence": "## Tagged evidence\n- Account lockout test results — manual test of invalid logon attempt enforcement at the system boundary.\n- Access control policy — signed policy defining lockout threshold parameters (3 attempts / 15 minutes).\n",
+ "llm_stub_proposals": [
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
+   "confidence": 0.9
   },
-  "tagged_evidence": "## Tagged evidence\n- Account lockout test results \u2014 manual test of invalid logon attempt enforcement at the system boundary.\n- Access control policy \u2014 signed policy defining lockout threshold parameters (3 attempts / 15 minutes).\n",
-  "llm_stub_proposals": [
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
-      "confidence": 0.9
-    }
-  ],
-  "expected": {
-    "status": null,
-    "proposed_status": "Non-Compliant",
-    "source_in": [
-      "abstain"
-    ],
-    "needs_review": true,
-    "accepted": true,
-    "llm_calls": 3,
-    "rejection_classes_contains": [
-      "status_narrative_mismatch"
-    ]
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
+   "confidence": 0.9
+  },
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested invalid logon attempt enforcement on the information system.\n\nFinding:\nSystem failed test - account lockout did not engage at the defined threshold.",
+   "confidence": 0.9
   }
+ ],
+ "expected": {
+  "status": "Non-Compliant",
+  "source_in": [
+   "llm"
+  ],
+  "needs_review": false,
+  "accepted": true,
+  "llm_calls": 1
+ }
 }
