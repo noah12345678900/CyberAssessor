@@ -245,6 +245,23 @@ ROWS = [
      "and are forwarded to a tamper-resistant store (CloudWatch Logs / S3 "
      "with Object Lock).",
      "Implemented"),
+    # CUSTOMER-owned on AWS (and on Azure — see the Azure CRM). The provider
+    # supplies the durable storage primitives (S3 Object Lock, KMS); the
+    # customer must actually enable immutability + restrict access on its own
+    # audit log stores. Paired with a self-contradicting evidence memo
+    # (USD20240624) this drives the AU-9 abstain showcase WITH both CRMs
+    # attached — see _build_demo_workbooks.py.
+    ("AU-9",  "Protection of Audit Information",
+     "Customer",
+     "AWS provides the durable, encryptable storage primitives (S3 Object "
+     "Lock for write-once-read-many retention, KMS for at-rest encryption, "
+     "IAM for access control) but does not configure them on customer "
+     "buckets.",
+     "Customer is responsible for protecting customer audit information: "
+     "enabling S3 Object Lock (compliance mode) on the audit-log bucket, "
+     "restricting access via least-privilege IAM policies, and enabling "
+     "KMS encryption so audit records cannot be modified or deleted.",
+     "Implemented"),
     ("CM-2",  "Baseline Configuration",
      "Shared",
      "AWS maintains baseline configurations for all AWS-managed infrastructure "

@@ -355,6 +355,39 @@ NIST_800_53 = FrameworkDemo(
             results="",
             cci="CCI-002450", inherited="No",
         ),
+        # 14th control — the ABSTAIN-WITH-BOTH-CRMS showcase. AU-9 (Protection
+        # of Audit Information) is CUSTOMER-owned on BOTH the AWS GovCloud and
+        # Azure Government CRMs (the provider supplies the storage primitives;
+        # the customer must configure immutability/access controls on its own
+        # log stores). Its ONLY evidence — the Audit Information Protection
+        # Memo (USD20240624) — INTERNALLY CONTRADICTS itself: Section 2 asserts
+        # S3 Object Lock / immutable blob retention is ENABLED and AU-9 is met,
+        # while Section 4's configuration review found Object Lock is NOT
+        # enabled on the production log bucket and the fix is only PLANNED.
+        # A customer-owned control whose sole artifact both affirms and refutes
+        # the protection — with BOTH CRMs attached — is the textbook abstain in
+        # the multi-scope context: the assessor cannot reach a confident
+        # verdict, so it writes a needs_review row (no status) for human
+        # adjudication rather than fabricating Compliant or Non-Compliant.
+        # Left UNASSESSED so it flows to the assessor.
+        Req(
+            "AU-9", "Protection of Audit Information",
+            "AU", "Protection of audit information for the Example System Demo "
+            "is customer-owned on both cloud enclaves; immutability and access "
+            "controls on the customer log stores are documented in the Audit "
+            "Information Protection Memo (USD20240624), a draft whose protection "
+            "sections are not yet reconciled.",
+            "The information system protects audit information and audit tools "
+            "from unauthorized access, modification, and deletion.",
+            "Provide the immutability / access-control configuration for the "
+            "customer audit log stores on each cloud enclave.",
+            "Examine the configured object-lock / immutable-retention and access "
+            "controls on the customer log stores against the protection "
+            "requirement; confirm the as-configured state matches the memo.",
+            status="",
+            results="",
+            cci="CCI-001493", inherited="No",
+        ),
     ],
 )
 

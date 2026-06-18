@@ -197,6 +197,21 @@ ROWS = [
      "weekly for non-critical, continuous for critical). The customer operates "
      "the Sentinel workspace and escalates reportable findings per IR-6.",
      "Implemented"),
+    # CUSTOMER-owned on Azure too (matches the AWS CRM): Microsoft supplies
+    # immutable blob storage + Key Vault, but the customer must enable
+    # immutability and lock down access on its own Log Analytics export /
+    # storage. Drives the AU-9 abstain showcase with BOTH CRMs attached.
+    ("AU-9",  "Protection of Audit Information",
+     "Customer",
+     "Microsoft provides immutable storage primitives (Azure Blob immutable "
+     "time-based retention / legal hold, Key Vault, Azure RBAC) but does not "
+     "configure them on customer storage accounts.",
+     "Customer is responsible for protecting customer audit information: "
+     "enabling immutable (WORM) time-based retention on the audit-log "
+     "storage account, restricting access via least-privilege Azure RBAC, "
+     "and enabling customer-managed-key encryption so audit records cannot "
+     "be modified or deleted.",
+     "Implemented"),
     ("AU-12", "Audit Record Generation",
      "Shared",
      "Microsoft generates audit records for all Azure control-plane and "
