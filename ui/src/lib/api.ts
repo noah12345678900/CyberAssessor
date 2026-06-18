@@ -1870,6 +1870,10 @@ export interface MetricsAccuracyLive {
   ccis_accepted: number;
   validator_rejections: number;
   abstained: number;
+  /** Authoritative "decided" denominator = accepted + abstained. Render this
+   * directly; do NOT recompute it by adding validator_rejections (those are
+   * retry events, not terminal per-CCI outcomes — the "13 of 17" bug). */
+  decided: number;
   retries: number;
   dual_pass_disagreements: number;
   accuracy_pct: number | null;

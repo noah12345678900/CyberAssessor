@@ -90,6 +90,7 @@ def test_deterministic_backfill_controls_count_as_accepted():
         acc = _aggregate(rows, s)["accuracy"]
         assert acc["ccis_accepted"] == 13, "all final trusted rows must count"
         assert acc["abstained"] == 0
+        assert acc["decided"] == 13, "decided = accepted + abstained"
         assert acc["accuracy_pct"] == 100.0
 
 
@@ -106,6 +107,8 @@ def test_retry_rejections_not_in_agreement_denominator():
         acc = _aggregate(rows, s)["accuracy"]
         assert acc["ccis_accepted"] == 13
         assert acc["accuracy_pct"] == 100.0, "retry rejections must not lower agreement"
+        # "decided" must NOT include the 2 retry rejections (the 13/17 bug).
+        assert acc["decided"] == 13
         # Raw count still surfaced as telemetry.
         assert acc["validator_rejections"] == 2
 

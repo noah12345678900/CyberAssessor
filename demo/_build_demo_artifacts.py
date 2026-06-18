@@ -797,23 +797,28 @@ def build_audit_info_protection_memo_docx() -> Path:
         "role; write access is limited to the log-forwarding service principal."
     )
 
-    doc.add_heading("4. Configuration Review (2026-05)", level=1)
+    doc.add_heading("4. Conflicting Configuration Notes (UNDATED)", level=1)
     doc.add_paragraph(
-        "NOTE: A configuration review completed 2026-05-09 found that S3 Object "
-        "Lock is NOT actually enabled on the production AWS GovCloud audit bucket "
-        "(it was set only on a staging bucket), and the Azure immutability policy "
-        "is in 'unlocked' state, which still permits deletion by an account "
-        "owner. Enabling Object Lock on the production bucket and locking the "
-        "Azure retention policy is PLANNED for the next maintenance window but is "
-        "NOT yet implemented. Until then, audit records remain deletable by a "
-        "privileged account, contrary to Section 2."
+        "NOTE: A second engineer's annotation in this same draft directly "
+        "contradicts Section 2 and asserts that S3 Object Lock is NOT actually "
+        "enabled on the production AWS GovCloud audit bucket and the Azure "
+        "immutability policy is in 'unlocked' state, which would still permit "
+        "deletion by an account owner. Section 2 and this annotation are BOTH "
+        "undated and neither cites a configuration export, screenshot, or scan; "
+        "there is no as-configured artifact attached to either claim. It is NOT "
+        "possible to determine from this memo which statement reflects the live "
+        "system — the two assertions carry equal weight and no source supersedes "
+        "the other."
     )
 
     doc.add_heading("5. Status", level=1)
     doc.add_paragraph(
-        "This memo is a DRAFT pending engineering sign-off; Sections 2 and 4 have "
-        "not yet been reconciled. The protection posture for AU-9 is unresolved "
-        "as of this writing."
+        "This memo is a DRAFT pending engineering sign-off; Sections 2 and 4 "
+        "directly conflict on whether immutable protection is enabled, neither is "
+        "dated or backed by an as-configured export, and the conflict has not "
+        "been reconciled. The protection posture for AU-9 cannot be determined "
+        "from the available evidence: which of the two contradictory claims is "
+        "current/authoritative is unresolved as of this writing."
     )
 
     out = CONFIGS / "Audit_Information_Protection_Memo_USD20240624.docx"

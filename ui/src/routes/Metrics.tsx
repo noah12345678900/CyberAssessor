@@ -231,7 +231,7 @@ function AccuracySection({
       <SectionHeader
         icon={ShieldCheck}
         title="Accuracy"
-        description="What the assessor got right and the mechanisms that made it right. Accuracy = accepted / (accepted + validator rejects + abstained). Abstentions count against the denominator because they're still a CCI the user has to handle."
+        description="What the assessor got right and the mechanisms that made it right. Accuracy = accepted / decided, where decided = accepted + abstained (final per-CCI verdicts). Abstentions count against the denominator because they're still a CCI the user has to handle; validator rejections are mid-assessment retry events, not terminal outcomes, so they're reported separately and not in the denominator."
       />
 
       <MetricCompareCard
@@ -242,7 +242,7 @@ function AccuracySection({
           value: a.accuracy_pct !== null ? `${a.accuracy_pct.toFixed(1)}%` : "—",
           sublabel:
             a.accuracy_pct !== null
-              ? `${a.ccis_accepted.toLocaleString()} accepted of ${(a.ccis_accepted + a.validator_rejections + a.abstained).toLocaleString()} decided`
+              ? `${a.ccis_accepted.toLocaleString()} accepted of ${a.decided.toLocaleString()} decided`
               : "Run an assessment to populate",
         }}
         reference={refByKey.get("manual_assessment_accuracy") ?? null}

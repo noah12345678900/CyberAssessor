@@ -243,6 +243,13 @@ def _aggregate(rows: list[AssessmentRun], s: Session | None = None) -> dict[str,
             "ccis_accepted": total_accepted,
             "validator_rejections": total_rejects,
             "abstained": total_abstained,
+            # Authoritative "decided" denominator = accepted + abstained (final
+            # per-CCI terminal states). Surfaced explicitly so the UI does NOT
+            # recompute it client-side — a prior UI sublabel did
+            # accepted + validator_rejections + abstained, re-adding the retry
+            # rejections this backend deliberately excludes (the "13 of 17"
+            # bug). Consumers must render this value, not their own sum.
+            "decided": decided_denom,
             "retries": total_retries,
             "dual_pass_disagreements": total_dual_pass,
             "accuracy_pct": accuracy_pct,
