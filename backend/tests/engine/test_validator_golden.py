@@ -34,8 +34,12 @@ _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from cybersecurity_assessor.engine.assessor import (  # noqa: E402
+    stitch_scope_narrative,
+)
 from cybersecurity_assessor.engine.validator import (  # noqa: E402
     RejectionReason,
+    _split_hybrid_narrative,
     classify_narrative,
     validate,
 )
@@ -872,3 +876,106 @@ def test_corroboration_gate_skipped_for_non_compliant_status():
         corroboration_present=False,
     )
     assert not _has_rejection(result, RejectionReason.UNCORROBORATED_STIG_PASS)
+
+
+# ---------------------------------------------------------------------------
+# Multi-cloud stitched-scope split (rule #11 regression — AC-17 re-save bug)
+# ---------------------------------------------------------------------------
+
+
+def _ac17_three_scope_stitched_narrative() -> str:
+    """The real 3-scope AC-17 column-Q block, built via the production stitcher.
+
+    Using ``stitch_scope_narrative`` (rather than a hand-pasted string)
+    guarantees the test exercises the EXACT ``f"{label}:\n\n{text}"``
+    format the validator must recognize — if the stitch format ever drifts,
+    this test drifts with it. Per-scope phrase intent:
+      * AWS GovCloud   -> "verified via"          => COMPLIANCE_AFFIRMING
+      * Azure Gov      -> inheritance prose        => COMPLIANCE_AFFIRMING
+                          (inherited = applicable, met by provider = COMPLIANT)
+      * On-Premises    -> "poa&m" gap phrase      => GAP_DESCRIBING
+    The merged class is GAP_DESCRIBING (precedence GAP > AFFIRMING), pairing
+    cleanly with a Non-Compliant verdict. Azure uses inheritance language ONLY
+    (the real LLM/CRM output shape) — mixing it with an explicit NA phrase
+    would make that one half hit two classes and self-poison to AMBIGUOUS,
+    which is not how the production stitcher renders an inherited scope.
+    """
+    return stitch_scope_narrative(
+        {
+            "AWS GovCloud": (
+                "On AWS GovCloud, verified via USD20240622 that "
+                "customer-configured AWS Client VPN authorizes remote access "
+                "to the management plane."
+            ),
+            "Azure Government": (
+                "Customer fully inherits the managed Azure Bastion "
+                "remote-access control; the customer SSP references the Azure "
+                "Government FedRAMP High SSP as the authoritative source."
+            ),
+            "On-Premises": (
+                "On the On-Premises scope, no evidence was found documenting "
+                "remote-access authorization. POA&M opened."
+            ),
+        }
+    )
+
+
+def test_multicloud_stitched_narrative_splits_per_scope():
+    """3-scope AC-17 stitch splits into 3 blocks, classifies GAP (not AMBIGUOUS).
+
+    Pins the rule #11 re-save bug: pre-fix ``_HYBRID_SPLIT_RE`` only matched
+    "On-prem:" / "Cloud:" markers, so an "AWS GovCloud:" / "Azure Government:"
+    / "On-Premises:" stitch was NOT split — AFFIRMING + NA + GAP phrases
+    collided in one block, hit classes_hit >= 2, and classified AMBIGUOUS,
+    which tripped status_narrative_mismatch on every save.
+
+    Post-fix each scope classifies independently and merges via
+    ``_merge_hybrid_classes`` precedence (AMBIGUOUS > GAP > AFFIRMING > NA):
+    a real GAP scope forces GAP_DESCRIBING overall, which pairs cleanly with
+    a Non-Compliant verdict.
+    """
+    stitched = _ac17_three_scope_stitched_narrative()
+
+    halves = _split_hybrid_narrative(stitched)
+    assert halves is not None
+    assert len(halves) == 3, f"expected 3 per-scope blocks, got {halves!r}"
+    assert halves[0].startswith("AWS GovCloud:")
+    assert halves[1].startswith("Azure Government:")
+    assert halves[2].startswith("On-Premises:")
+
+    klass = classify_narrative(stitched)
+    assert klass is not NarrativeClass.AMBIGUOUS
+    assert klass is NarrativeClass.GAP_DESCRIBING
+
+
+def test_multicloud_stitched_narrative_accepts_non_compliant_save():
+    """End-to-end: the GAP-merging 3-scope stitch saves clean as NON_COMPLIANT.
+
+    The bug surfaced as a validate() rejection on every re-save. This pins
+    that the same narrative now passes rule #11 with a matching status.
+    """
+    stitched = _ac17_three_scope_stitched_narrative()
+
+    result = validate(
+        proposed_status=ComplianceStatus.NON_COMPLIANT,
+        proposed_narrative=stitched,
+    )
+    assert not _has_rejection(result, RejectionReason.STATUS_NARRATIVE_MISMATCH)
+
+
+def test_single_scope_colon_midsentence_not_split():
+    """Precision guard: a plain narrative with a mid-sentence colon must NOT split.
+
+    "Examined the policy: it documents the control." contains a colon but is
+    NOT a stitch header (no blank line follows the colon, and it is prose,
+    not a short scope label on its own line). ``_split_hybrid_narrative`` must
+    return None so the narrative classifies as a single AFFIRMING block —
+    over-matching here would shatter ordinary prose into bogus chunks.
+    """
+    plain = (
+        "Examined the policy: it documents the control and confirmed via "
+        "USD00012345 the remote-access configuration."
+    )
+
+    assert _split_hybrid_narrative(plain) is None
+    assert classify_narrative(plain) is NarrativeClass.COMPLIANCE_AFFIRMING
