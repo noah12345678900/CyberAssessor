@@ -290,3 +290,85 @@ def test_dualscope_cloud_inherited_onprem_customer_does_not_short_circuit():
     assert "scope: dual" in sent
     assert "cloud_responsibility: inherited" in sent
     assert "on_prem_responsibility: customer" in sent
+
+
+# ---------------------------------------------------------------------------
+# AU-6 phantom-cloud guard — per-scope narratives require real CRM context
+# ---------------------------------------------------------------------------
+
+
+def test_no_crm_drops_phantom_cloud_narrative():
+    """AU-6 bug: LLM emits narrative_cloud from workbook text, but NO CRM attached.
+
+    The demo AU-6 column-F text says 'differs by cloud: AWS GovCloud … Azure
+    Government …', so the model emits a narrative_cloud field even with zero CRM
+    overlay. The assessor used to persist it unconditionally → a cloud narrative
+    on a control with no cloud scope. With no customer-owned slice the per-scope
+    cloud/on-prem fields (and narratives_by_scope) must be dropped; only the
+    single column-Q narrative survives.
+    """
+    row = _row(control_id="AU-6", cci_id="CCI-000148")
+    proposal = LlmProposal(
+        status=ComplianceStatus.NON_COMPLIANT,
+        narrative=(
+            "On the on-prem enclave, weekly audit review is substantiated by "
+            "audit_log_review_2026-05-19; POA&M opened."
+        ),
+        narrative_cloud=(
+            "No audit-review evidence was located for the AWS GovCloud or "
+            "Azure Government review split. POA&M opened."
+        ),
+        narrative_on_prem="Weekly audit-record review on the on-prem enclave.",
+        confidence=0.82,
+    )
+    stub = StubLlmClient([proposal] * 5)
+    decision = Assessor(llm=stub).assess(
+        row,
+        tagged_evidence="## evidence_bundle\n- audit_log_review_2026-05-19",
+        crm_context=CrmContext.empty(),
+    )
+    assert decision.source == "llm"
+    assert decision.narrative_cloud is None, (
+        "phantom cloud narrative must be dropped when no CRM is attached"
+    )
+    assert decision.narrative_on_prem is None
+    assert decision.narratives_by_scope == {}
+    # The single canonical narrative is preserved.
+    assert decision.narrative and "on-prem enclave" in decision.narrative
+
+
+def test_customer_crm_keeps_per_scope_narratives():
+    """Guard boundary: a real customer-owned slice KEEPS per-scope narratives.
+
+    Same control, but with both CRMs attached (AWS hybrid + Azure customer +
+    synthesized On-Premises). A customer-owned slice exists, so the gate is a
+    no-op: narrative_cloud / narrative_on_prem / narratives_by_scope all
+    persist. Confirms the AU-6 fix doesn't wipe legitimate multi-scope output.
+    """
+    row = _row(control_id="AU-6", cci_id="CCI-000148")
+    crm = CrmContext(
+        by_control_impls={
+            "au-6": [
+                ImplementationSlice("AWS GovCloud", "hybrid", "AWS shares review", 1),
+                ImplementationSlice("Azure Government", "customer", "Azure customer review", 2),
+                ImplementationSlice("On-Premises", "customer", None, None),
+            ]
+        }
+    )
+    proposal = LlmProposal(
+        status=ComplianceStatus.COMPLIANT,
+        narrative="Weekly audit review confirmed via USD123 across scopes.",
+        narrative_cloud="AWS GovCloud shares SOC review; Azure customer runs Sentinel, confirmed via USD123.",
+        narrative_on_prem="On-prem weekly review confirmed via USD123.",
+        confidence=0.9,
+    )
+    stub = StubLlmClient([proposal] * 6)
+    decision = Assessor(llm=stub).assess(
+        row,
+        tagged_evidence="## responsibility_split\n## evidence_bundle\n- USD123",
+        crm_context=crm,
+    )
+    assert decision.source == "llm"
+    assert decision.narrative_cloud is not None
+    assert decision.narrative_on_prem is not None
+    assert set(decision.narratives_by_scope) >= {"AWS GovCloud", "Azure Government"}
