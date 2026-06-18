@@ -737,6 +737,91 @@ def build_audit_storage_memo_docx() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# DOCX -- Audit Information Protection Memo (AU-9) — DELIBERATELY CONTRADICTORY
+# ---------------------------------------------------------------------------
+#
+# Evidence for the AU-9 ABSTAIN-WITH-BOTH-CRMS showcase. AU-9 is CUSTOMER-owned
+# on BOTH the AWS GovCloud and Azure Government CRMs, so with both CRMs attached
+# the control carries customer-owned per-scope slices AND this single artifact.
+# The memo INTERNALLY CONTRADICTS itself: Section 2 asserts immutable retention
+# (S3 Object Lock / immutable blob) is ENABLED and AU-9 is met, while Section 4's
+# configuration review found Object Lock is NOT enabled on the production audit
+# bucket and the remediation is only PLANNED. A customer-owned control whose
+# sole artifact both affirms and refutes the protection is the textbook abstain
+# in the multi-scope context: the assessor cannot reach a confident verdict, so
+# it abstains (needs_review) for human adjudication rather than fabricating a
+# Compliant or Non-Compliant. This is a genuine IMPLEMENTED-vs-NOT contradiction
+# (enabled vs not enabled) — distinct from a mere parameter-value difference,
+# which the abstain contract resolves to a status, not an abstain. Cites "AU-9"
+# + "CCI-001493" + "USD20240624" so the tagger maps it to the right objective.
+
+
+def build_audit_info_protection_memo_docx() -> Path:
+    from docx import Document
+
+    doc = Document()
+    doc.core_properties.title = "Audit Information Protection Memo"
+    doc.core_properties.author = "Example System Demo - System Engineering"
+    doc.core_properties.subject = "USD20240624"
+
+    doc.add_heading("Audit Information Protection Memo", level=0)
+    p = doc.add_paragraph()
+    p.add_run("Document Number: USD20240624").bold = True
+    doc.add_paragraph("Version: 0.8 (DRAFT — pending engineering sign-off)")
+    doc.add_paragraph("Effective Date: 2026-05-12")
+    doc.add_paragraph("System: Example System Demo (Example System Example System Demo IATT)")
+
+    doc.add_heading("1. Purpose", level=1)
+    doc.add_paragraph(
+        "This memo records the protection posture for customer audit information "
+        "on the Example System Demo cloud enclaves, addressing NIST SP 800-53 "
+        "Rev. 5 control AU-9 (Protection of Audit Information), CCI-001493. The "
+        "requirement is to protect audit records and audit tools from "
+        "unauthorized access, modification, and deletion. AU-9 is customer-owned "
+        "on both the AWS GovCloud and Azure Government enclaves."
+    )
+
+    doc.add_heading("2. Configured Protection", level=1)
+    doc.add_paragraph(
+        "Immutable retention is enabled on the customer audit-log stores: S3 "
+        "Object Lock (compliance mode) on the AWS GovCloud audit bucket and "
+        "immutable time-based blob retention on the Azure Government storage "
+        "account, with least-privilege access policies and KMS / customer-managed "
+        "key encryption. On this basis audit records cannot be modified or "
+        "deleted, and AU-9 is therefore satisfied."
+    )
+
+    doc.add_heading("3. Access Control", level=1)
+    doc.add_paragraph(
+        "Read access to the audit stores is restricted to the security-operations "
+        "role; write access is limited to the log-forwarding service principal."
+    )
+
+    doc.add_heading("4. Configuration Review (2026-05)", level=1)
+    doc.add_paragraph(
+        "NOTE: A configuration review completed 2026-05-09 found that S3 Object "
+        "Lock is NOT actually enabled on the production AWS GovCloud audit bucket "
+        "(it was set only on a staging bucket), and the Azure immutability policy "
+        "is in 'unlocked' state, which still permits deletion by an account "
+        "owner. Enabling Object Lock on the production bucket and locking the "
+        "Azure retention policy is PLANNED for the next maintenance window but is "
+        "NOT yet implemented. Until then, audit records remain deletable by a "
+        "privileged account, contrary to Section 2."
+    )
+
+    doc.add_heading("5. Status", level=1)
+    doc.add_paragraph(
+        "This memo is a DRAFT pending engineering sign-off; Sections 2 and 4 have "
+        "not yet been reconciled. The protection posture for AU-9 is unresolved "
+        "as of this writing."
+    )
+
+    out = CONFIGS / "Audit_Information_Protection_Memo_USD20240624.docx"
+    doc.save(str(out))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -749,6 +834,7 @@ if __name__ == "__main__":
         build_gpo_export_xlsx,
         build_remote_access_config_docx,
         build_audit_storage_memo_docx,
+        build_audit_info_protection_memo_docx,
         build_aws_boundary_diagram_vsdx,
         build_azure_boundary_diagram_svg,
     ):

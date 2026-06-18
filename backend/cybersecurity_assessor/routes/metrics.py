@@ -29,7 +29,14 @@ from sqlmodel import Session, select
 from ..db import get_session
 from ..llm.pricing import RATES, RATES_REVISED
 from ..metrics.references import load_references, rates_revised
-from ..models import AssessmentRun, BaselineControl, CrmShortCircuitEvent
+from ..models import (
+    Assessment,
+    AssessmentRun,
+    BaselineControl,
+    ComplianceStatus,
+    CrmShortCircuitEvent,
+)
+from sqlalchemy import func
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -139,12 +146,27 @@ def _savings(
     }
 
 
-def _aggregate(rows: list[AssessmentRun]) -> dict[str, Any]:
+def _aggregate(rows: list[AssessmentRun], s: Session | None = None) -> dict[str, Any]:
     """Single-pass aggregation over AssessmentRun rows.
 
     Empty input is handled — every numeric field returns 0 or None (UI
     renders 'No runs yet') instead of crashing on a /metrics call against
     a fresh install.
+
+    Accuracy ("CCI verdict agreement") is derived from the FINAL Assessment
+    rows when a session is provided, NOT from the per-run RunRecorder event
+    sums. The run-sum approach undercounted and double-counted:
+      * Deterministic controls (rule 8a/8b, CRM provider/inherited/NA) are
+        written by the open-time backfill with ``outcome=None`` — no
+        AssessmentRun, no ``ccis_accepted`` — and then skipped by a later
+        "Assess all" (skip_existing). They never entered the numerator, so a
+        13-CCI workbook showed "11 of 13". Counting final Assessment rows
+        includes them (one trusted verdict = one accepted CCI).
+      * ``validator_rejections`` counts every retry REJECTION event, so a CCI
+        rejected-then-accepted-on-retry landed in BOTH accepted and rejected,
+        inflating "decided" — the "2 rejects when there were none" symptom.
+        The agreement denominator is now accepted + abstained (final per-CCI
+        states); raw rejection events stay below as a separate telemetry stat.
     """
     n_runs = len(rows)
 
@@ -154,13 +176,36 @@ def _aggregate(rows: list[AssessmentRun]) -> dict[str, Any]:
     total_cache = sum(r.llm_cache_read_tokens for r in rows)
     total_llm_calls = sum(r.llm_calls for r in rows)
 
-    total_accepted = sum(r.ccis_accepted for r in rows)
     total_rejects = sum(r.validator_rejections for r in rows)
     total_retries = sum(r.retry_count for r in rows)
     total_supersession = sum(r.supersession_hits for r in rows)
-    # Newer accuracy counters — fall back to 0 for rows from pre-v0.2 schemas.
-    total_abstained = sum(getattr(r, "abstained", 0) or 0 for r in rows)
     total_dual_pass = sum(getattr(r, "dual_pass_disagreements", 0) or 0 for r in rows)
+
+    # Final per-CCI verdict counts (source of truth) when we have a session.
+    # A trusted verdict (needs_review=False) is "accepted"; an abstain
+    # (needs_review=True) is "abstained". Fall back to the legacy run-sum
+    # behavior only when no session is available (keeps callers that pass just
+    # rows working, though the route always passes the session now).
+    if s is not None:
+        total_accepted = (
+            s.exec(
+                select(func.count(Assessment.id)).where(
+                    Assessment.needs_review.is_(False)  # type: ignore[union-attr]
+                )
+            ).one()
+            or 0
+        )
+        total_abstained = (
+            s.exec(
+                select(func.count(Assessment.id)).where(
+                    Assessment.needs_review.is_(True)  # type: ignore[union-attr]
+                )
+            ).one()
+            or 0
+        )
+    else:
+        total_accepted = sum(r.ccis_accepted for r in rows)
+        total_abstained = sum(getattr(r, "abstained", 0) or 0 for r in rows)
 
     per_run_costs = [r.cost_usd for r in rows if r.cost_usd is not None]
     per_run_durations = [d for d in (_duration_seconds(r) for r in rows) if d is not None]
@@ -175,11 +220,14 @@ def _aggregate(rows: list[AssessmentRun]) -> dict[str, Any]:
         if r.ccis_accepted and _duration_seconds(r) is not None
     ]
 
-    # Accuracy: accepted / (accepted + validator_rejections + abstained).
-    # Abstentions are precision-supporting (the assessor refused to guess)
-    # but they're still a CCI the user has to handle, so they belong in
-    # the denominator alongside rejections.
-    decided_denom = total_accepted + total_rejects + total_abstained
+    # Accuracy ("CCI verdict agreement"): accepted / (accepted + abstained),
+    # over FINAL per-CCI states. "Decided" = every CCI that reached a terminal
+    # state (a trusted verdict OR a reviewer-gated abstain). Validator
+    # rejections are NOT in the denominator: they are mid-assessment retry
+    # events, not terminal per-CCI outcomes, and a rejected-then-accepted CCI
+    # would otherwise be counted twice (the "2 rejects when there were none"
+    # bug). The raw rejection count is still surfaced separately below.
+    decided_denom = total_accepted + total_abstained
     accuracy_pct = _safe_div(total_accepted * 100.0, decided_denom)
 
     # Dual-pass agreement = 1 - disagreement-rate over LLM calls.
@@ -343,7 +391,7 @@ def get_metrics(s: Session = Depends(get_session)) -> dict[str, Any]:
     rows = s.exec(select(AssessmentRun)).all()
     references = load_references()
     return {
-        "live": _aggregate(rows),
+        "live": _aggregate(rows, s),
         "mechanisms": _mechanisms(rows, s),
         "reference": references,
         # Top-level (not nested under live/reference) because savings is the
@@ -368,7 +416,7 @@ def get_metrics_public(s: Session = Depends(get_session)) -> dict[str, Any]:
     rows = s.exec(select(AssessmentRun)).all()
     references = load_references()
     return {
-        "live": _aggregate(rows),
+        "live": _aggregate(rows, s),
         "mechanisms": _mechanisms(rows, s),
         "reference": references,
         "savings": _savings(rows, references),

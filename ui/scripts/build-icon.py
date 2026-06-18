@@ -169,14 +169,34 @@ def main() -> None:
     sizes_desc = sorted(sizes, reverse=True)
     images = [images_by_size[s] for s in sizes_desc]
 
+    # bitmap_format="bmp" forces classic BMP/DIB frames instead of Pillow's
+    # default PNG-compressed frames. Windows Explorer and Start-Menu /
+    # desktop SHORTCUTS render the small sizes (16/32/48) from BMP frames;
+    # a PNG-only ICO renders fine in the running app's taskbar but shows the
+    # generic blank-document icon on the shortcut/exe in some Windows shells —
+    # the persistent "icon is still bugged" symptom that survived a reinstall
+    # even though the (PNG-framed) ICO was valid and embedded in the exe.
+    def _write_ico(path: Path) -> None:
+        images[0].save(
+            path,
+            format="ICO",
+            sizes=[(s, s) for s in sizes_desc],
+            append_images=images[1:],
+            bitmap_format="bmp",
+        )
+        print(f"wrote {path}  ({len(sizes)} resolutions, BMP frames)")
+
+    # public/logo.ico — vite copies this to dist/ for the BrowserWindow icon.
     ico_path = out_dir / "logo.ico"
-    images[0].save(
-        ico_path,
-        format="ICO",
-        sizes=[(s, s) for s in sizes_desc],
-        append_images=images[1:],
-    )
-    print(f"wrote {ico_path}  ({len(sizes)} resolutions)")
+    _write_ico(ico_path)
+
+    # build/icon.ico — electron-builder.json win.icon reads from here to embed
+    # the exe / installer / shortcut icon. Generating it (instead of relying on
+    # a hand-placed copy) keeps the embedded shortcut icon in lockstep with the
+    # runtime icon, both BMP-framed.
+    build_dir = ui_root / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    _write_ico(build_dir / "icon.ico")
 
     # Also drop a 512x512 PNG for any place that wants a raster master
     # (PDF reports, splash screen, etc.).
