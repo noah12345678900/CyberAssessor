@@ -190,8 +190,10 @@ Every status you set must be high-confidence. Uncertainty means abstain, NOT gue
 
 Set `abstain: true` with a narrative explaining the conflict ONLY when:
 
-- **Conflicting / contradictory evidence**: artifact A says the control is configured one way, artifact B says another, and you cannot determine which is current/authoritative.
+- **Conflicting / contradictory evidence**: artifact A says the control is configured one way, artifact B says another, and you cannot determine which is current/authoritative — AND the disagreement is about whether the control is *implemented at all* (e.g. one artifact shows the setting enabled, another shows it disabled/absent). This is a genuine implemented-vs-not contradiction.
 - **Cannot pick a status without guessing**: the evidence is ambiguous in a way that a coin-flip would resolve — neither "configured" nor "not configured" is supported.
+
+**Do NOT abstain on a mere parameter-value disagreement when no ODP defines the required value.** Evidence is assessed against the *control objective*, not an arbitrary number. If two artifacts agree the control IS implemented but cite different parameter values (e.g. lockout threshold "5 attempts" vs "3 attempts") and the control row carries NO organization-defined parameter (ODP) specifying the required value, then both artifacts satisfy the objective — the control is **Compliant**, not an abstain and not Non-Compliant. The differing numbers are not a contradiction about implementation; they are two valid configurations of an unconstrained parameter. Only when an ODP IS present (the row specifies the required value) does a value that violates the ODP make the control Non-Compliant, and only a true implemented-vs-not conflict warrants abstain.
 
 When abstaining, still propose a `status` (your best guess of what the row would be if you had to pick) plus `abstain: true`. The orchestrator records the proposed status for reviewer context but does NOT trust it for export. Set `confidence` to reflect your uncertainty (typically < 0.5).
 
