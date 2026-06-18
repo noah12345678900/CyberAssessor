@@ -1992,14 +1992,60 @@ class Assessor:
                     outcome.stated_confidence = proposal.confidence
                     outcome.proposed_status = proposal.status.value
                     outcome.final_status = proposal.status.value
-                # Dual-narrative passthrough: when the LLM emitted only the
-                # single ``narrative`` field (old prompt versions / models),
-                # fall back to that text for the on-prem side so the UI never
-                # renders an empty box for a customer-owned control.
-                proposal_on_prem = proposal.narrative_on_prem
-                proposal_cloud = proposal.narrative_cloud
-                if proposal_on_prem is None and proposal_cloud is None:
-                    proposal_on_prem = narrative
+                # Per-scope narratives are ONLY meaningful when the control
+                # actually has multi-boundary CRM context. Without it, the
+                # LLM's narrative_cloud / narrative_on_prem fields are PHANTOMS:
+                # a control whose workbook text merely *mentions* clouds (e.g.
+                # AU-6's "differs by cloud: AWS GovCloud … Azure Government …")
+                # makes the model emit a narrative_cloud even with NO CRM
+                # attached, and the assessor was persisting it unconditionally —
+                # a cloud narrative on a control with zero cloud overlay.
+                #
+                # "Real multi-boundary context" is EITHER of:
+                #   (a) a customer-owned per-scope slice (``crm_slices`` — the
+                #       v0.2 scope-labeled CRM path; same signal
+                #       ``narratives_by_scope_from_proposal`` filters on, with
+                #       the synthesized On-Premises slice riding along whenever a
+                #       cloud slice is customer/hybrid), OR
+                #   (b) a legacy single-CRM ``crm_entry`` whose responsibility is
+                #       customer-owned on EITHER scope (the dual-column
+                #       cloud+on-prem CrmEntry that carries no by_control_impls
+                #       slices but is still legitimate multi-scope context).
+                # AU-6 with no CRM has crm_entry=None AND empty crm_slices, so
+                # both are False → phantom dropped. Either present → kept.
+                has_customer_scope = any(
+                    sl.responsibility in _CUSTOMER_OWNED_RESPONSIBILITIES
+                    for sl in crm_slices
+                ) or (
+                    crm_entry is not None
+                    and (
+                        crm_entry.responsibility in _CUSTOMER_OWNED_RESPONSIBILITIES
+                        or crm_entry.responsibility_onprem
+                        in _CUSTOMER_OWNED_RESPONSIBILITIES
+                    )
+                )
+                # RAW LLM halves — kept for the advisory dual-narrative LEAK
+                # check below, which must fire on the model's actual output
+                # regardless of CRM presence (a swap-the-halves / provider-leak
+                # mislabel is an LLM-quality signal worth surfacing even with no
+                # overlay). Persistence uses the GATED values further down.
+                raw_on_prem = proposal.narrative_on_prem
+                raw_cloud = proposal.narrative_cloud
+                if has_customer_scope:
+                    proposal_on_prem = raw_on_prem
+                    proposal_cloud = raw_cloud
+                    # Dual-narrative passthrough: when the LLM emitted only the
+                    # single ``narrative`` field (old prompt versions / models),
+                    # fall back to that text for the on-prem side so the UI
+                    # never renders an empty box for a customer-owned control.
+                    if proposal_on_prem is None and proposal_cloud is None:
+                        proposal_on_prem = narrative
+                else:
+                    # No multi-boundary context — suppress phantom per-scope
+                    # narratives for PERSISTENCE; the single ``narrative`` is the
+                    # whole story. (The leak check above still sees raw_*.)
+                    proposal_on_prem = None
+                    proposal_cloud = None
 
                 # Boundary-aware per-scope narrative map. Key the LLM's two
                 # per-side halves onto the actual customer-owned scope labels
@@ -2031,9 +2077,16 @@ class Assessor:
                         crm_resp_for_check = "hybrid"
                     else:
                         crm_resp_for_check = cloud_r2 or onprem_r2
+                # Run the advisory leak check on the RAW LLM halves, not the
+                # gated values: a swap-the-halves / provider-leak mislabel is an
+                # LLM-quality signal worth surfacing even when no CRM is attached
+                # (the gate only suppresses PERSISTENCE of phantom per-scope
+                # narratives — it must not blind the advisory). With no CRM the
+                # raw halves are whatever the model emitted; with a CRM they
+                # equal the persisted values.
                 dual_result = validator.validate_dual_narratives(
-                    narrative_on_prem=proposal_on_prem,
-                    narrative_cloud=proposal_cloud,
+                    narrative_on_prem=raw_on_prem,
+                    narrative_cloud=raw_cloud,
                     crm_responsibility=crm_resp_for_check,
                 )
                 notes.extend(dual_result.notes)
@@ -2044,8 +2097,8 @@ class Assessor:
                                 cci=cci,
                                 rejection_class=flagged_reason.value,  # type: ignore[arg-type]
                                 original_output=(
-                                    f"on_prem={proposal_on_prem!r} "
-                                    f"cloud={proposal_cloud!r}"
+                                    f"on_prem={raw_on_prem!r} "
+                                    f"cloud={raw_cloud!r}"
                                 ),
                                 corrective_context=(
                                     "Dual-narrative advisory; verdict still "
