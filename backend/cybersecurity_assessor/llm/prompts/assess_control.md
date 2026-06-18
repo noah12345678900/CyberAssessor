@@ -188,12 +188,47 @@ Every status you set must be high-confidence. Uncertainty means abstain, NOT gue
 
 ### When to abstain — `abstain: true`
 
-Set `abstain: true` with a narrative explaining the conflict ONLY when:
+Abstain is NARROW. It is reserved for the case where you genuinely cannot
+reach ANY verdict because you cannot tell **which evidence reflects the live
+system** — not for any disagreement between artifacts. A conflict where one
+artifact already shows a violation is a finding (Non-Compliant), not an
+abstain: you do not need to know "which is right" to know compliance cannot
+be certified.
 
-- **Conflicting / contradictory evidence**: artifact A says the control is configured one way, artifact B says another, and you cannot determine which is current/authoritative — AND the disagreement is about whether the control is *implemented at all* (e.g. one artifact shows the setting enabled, another shows it disabled/absent). This is a genuine implemented-vs-not contradiction.
-- **Cannot pick a status without guessing**: the evidence is ambiguous in a way that a coin-flip would resolve — neither "configured" nor "not configured" is supported.
+Set `abstain: true` ONLY when BOTH hold:
+1. The evidence is genuinely contradictory about whether the control is
+   implemented (one artifact shows it satisfied, another shows it not), AND
+2. You **cannot determine which artifact is current/authoritative** — e.g. two
+   undated or same-dated sources from the same boundary disagree and nothing
+   establishes precedence. A human must reconcile provenance/recency before a
+   verdict is possible.
 
-**Do NOT abstain on a mere parameter-value disagreement when no ODP defines the required value.** Evidence is assessed against the *control objective*, not an arbitrary number. If two artifacts agree the control IS implemented but cite different parameter values (e.g. lockout threshold "5 attempts" vs "3 attempts") and the control row carries NO organization-defined parameter (ODP) specifying the required value, then both artifacts satisfy the objective — the control is **Compliant**, not an abstain and not Non-Compliant. The differing numbers are not a contradiction about implementation; they are two valid configurations of an unconstrained parameter. Only when an ODP IS present (the row specifies the required value) does a value that violates the ODP make the control Non-Compliant, and only a true implemented-vs-not conflict warrants abstain.
+If you CAN tell which is authoritative (one is newer, one is the as-configured
+scan vs a stale policy draft, one is explicitly superseded), use that one and
+set the corresponding status — do not abstain.
+
+**Conflicting evidence against a SET STANDARD (ODP present) → Non-Compliant, not abstain.**
+When the control row carries an organization-defined parameter (the required
+value) and any authoritative artifact for that boundary shows a configuration
+that VIOLATES it, the control is **Non-Compliant** — even if another artifact
+shows a compliant value. Compliance cannot be demonstrated when a current
+source shows a violation; the conflict itself means the system's posture is not
+reliably the compliant one. Cite both artifacts in the narrative, state which
+shows the violation, and include "POA&M". Abstain here ONLY if you truly cannot
+tell which artifact is current (rule above).
+
+**Parameter-value disagreement with NO ODP → Compliant.** If two artifacts agree
+the control IS implemented but cite different values (e.g. lockout "5" vs "3")
+and the row carries NO ODP specifying the required value, both satisfy the
+objective — the control is **Compliant**. The differing numbers are two valid
+configurations of an unconstrained parameter, not a contradiction about
+implementation. Do not abstain and do not mark Non-Compliant.
+
+**Decision tree for two conflicting artifacts on the same boundary:**
+- ODP present, one artifact violates it → **Non-Compliant** (the violation is a finding).
+- No ODP, both show the control implemented (just different values) → **Compliant**.
+- Implemented-vs-NOT conflict (enabled vs disabled/absent) AND you cannot tell which is current/authoritative → **abstain**.
+- Implemented-vs-NOT conflict but one source is clearly authoritative (newer / as-configured / supersedes the other) → use it; **Compliant or Non-Compliant** accordingly.
 
 When abstaining, still propose a `status` (your best guess of what the row would be if you had to pick) plus `abstain: true`. The orchestrator records the proposed status for reviewer context but does NOT trust it for export. Set `confidence` to reflect your uncertainty (typically < 0.5).
 
