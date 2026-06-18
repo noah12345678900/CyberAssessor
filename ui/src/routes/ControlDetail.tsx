@@ -228,6 +228,12 @@ export function ControlDetail() {
 
   const c = control.data;
   const currentAssessment = assessments.data?.find((a) => a.objective_id === objectiveId);
+  // Scope of the selected objective. A catalog-only stub (in_workbook===false)
+  // is out of scope: assessing it produces the empty-narrative Compliant
+  // glitch, so the Assess (kernel) button is gated on this. undefined field
+  // (legacy / no baseline) is treated as in-scope.
+  const selectedObjectiveInScope =
+    c?.objectives.find((o) => o.id === objectiveId)?.in_workbook !== false;
 
   return (
     <div className="p-8 space-y-6">
@@ -340,6 +346,7 @@ export function ControlDetail() {
         <div className="lg:col-span-6 space-y-6">
           <AssessmentPanel
             objectiveId={objectiveId}
+            objectiveInScope={selectedObjectiveInScope}
             workbookId={workbookId}
             existingNarrative={currentAssessment?.narrative_q ?? ""}
             existingNarrativeOnPrem={currentAssessment?.narrative_on_prem ?? null}
@@ -1278,6 +1285,7 @@ function isValidationError(
 
 function AssessmentPanel({
   objectiveId,
+  objectiveInScope = true,
   workbookId,
   existingNarrative,
   existingStatus,
@@ -1292,6 +1300,7 @@ function AssessmentPanel({
   implementations,
 }: {
   objectiveId?: number;
+  objectiveInScope?: boolean;
   workbookId?: number;
   existingNarrative: string;
   existingStatus?: ComplianceStatus;
@@ -1505,6 +1514,16 @@ function AssessmentPanel({
 
   async function proposeFromKernel() {
     if (!objectiveId || !workbookId) return;
+    if (!objectiveInScope) {
+      // Out-of-scope (catalog-only) CCI: assessing it yields the
+      // empty-narrative Compliant glitch. The button is disabled for this,
+      // but guard the handler too in case it's invoked another way.
+      toast.error(
+        "Out-of-scope CCI",
+        "This objective isn't in the workbook scope; select an in-scope CCI to assess.",
+      );
+      return;
+    }
     try {
       const decision = await propose.mutateAsync({ workbookId, objectiveId });
       // Don't auto-apply — surface the proposal as a reviewable preview the
@@ -1747,7 +1766,17 @@ function AssessmentPanel({
           <Button
             variant="secondary"
             onClick={proposeFromKernel}
-            disabled={!objectiveId || !workbookId || propose.isPending}
+            disabled={
+              !objectiveId ||
+              !workbookId ||
+              !objectiveInScope ||
+              propose.isPending
+            }
+            title={
+              !objectiveInScope
+                ? "This CCI is out of the workbook scope — select an in-scope CCI to assess."
+                : undefined
+            }
             className="flex-1 min-w-[200px]"
           >
             <Sparkles className="h-4 w-4" />
