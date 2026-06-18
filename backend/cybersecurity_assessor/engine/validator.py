@@ -46,8 +46,24 @@ logger = logging.getLogger(__name__)
 # Phrase tables
 # ---------------------------------------------------------------------------
 
-# Affirming verbs — describe assessment ACTS that PROVE implementation.
-_AFFIRMING_PHRASES: tuple[str, ...] = (
+# Affirming phrases split into STRONG and WEAK (2026-06-18).
+#
+# STRONG affirming = a substantive CLAIM that the control is implemented
+# ("confirmed via", "verified via", "configured to", inheritance prose). These
+# count toward the ``classes_hit >= 2 → AMBIGUOUS`` rule: a strong affirmation
+# co-occurring with a gap or NA phrase is genuinely contradictory and must
+# abort.
+#
+# WEAK affirming = an ACT-OF-LOOKING verb ("examined", "observed") that
+# describes the assessor's verification activity, NOT the outcome. Nearly every
+# narrative — Compliant, NC, or NA — opens with "Examined X; …", so a weak verb
+# does NOT signal compliance by itself. It must NOT count toward the ambiguity
+# rule: "Examined the memo; the capacity is short … POA&M opened" is a clean
+# GAP narrative, not an ambiguous one. Weak verbs classify COMPLIANCE_AFFIRMING
+# only as a LAST RESORT — when no strong/na/gap phrase hit. This is the AU-4
+# fix: "examined " + "poa&m"/"not yet implemented" previously hit affirming +
+# gap → classes_hit=2 → AMBIGUOUS → rule #11 rejected an obviously-NC verdict.
+_STRONG_AFFIRMING_PHRASES: tuple[str, ...] = (
     "confirmed via",
     "verified in",
     "verified via",
@@ -59,9 +75,6 @@ _AFFIRMING_PHRASES: tuple[str, ...] = (
     "demonstrated by",
     "evidenced by",
     "documented in",
-    "observed in",
-    "observed that",
-    "examined ",
     "auto-compliant per",
     "automatically compliant per",
     # Inheritance prose (LLM-authored AND CRM slice-default). An inherited
@@ -77,13 +90,28 @@ _AFFIRMING_PHRASES: tuple[str, ...] = (
     # leaned NA via the embedding fallback. "inherits"/"inherited" do NOT appear
     # in the deterministic provider/NA templates, and the full-prepositional
     # "inherited from aws/…" leak phrases live in a separate check, so no
-    # collision with NA/provider/gap classification.
+    # collision with NA/provider/gap classification. Inheritance IS a
+    # substantive compliance claim, so it lives in STRONG.
     "fully inherits",
     "customer inherits",
     "inherits the",
     "inherits this control",
     "inherited remote-access",
     "as the authoritative source",
+)
+
+# WEAK / act-of-looking verbs — see the big comment above. These never
+# contribute to the multi-class ambiguity count.
+_WEAK_AFFIRMING_PHRASES: tuple[str, ...] = (
+    "observed in",
+    "observed that",
+    "examined ",
+)
+
+# Backward-compat union: any external reader that imported the old combined
+# table keeps working. Internal classification uses the split tables.
+_AFFIRMING_PHRASES: tuple[str, ...] = (
+    _STRONG_AFFIRMING_PHRASES + _WEAK_AFFIRMING_PHRASES
 )
 
 # NA-justifying phrases — explain why the control doesn't apply.
@@ -137,6 +165,24 @@ _GAP_PHRASES: tuple[str, ...] = (
     "deficient",
     "does not currently",
     "has not been",
+    # Ground-truth NC narratives from the real Example System IATT workbook
+    # (tests/eval/cases/ground_truth_*_nc.json) use "Examined / Finding"
+    # structure with gap wording the table didn't cover, so the validator
+    # wrongly classified a human-verified Non-Compliant as AMBIGUOUS and forced
+    # an abstain. These phrases are each present ONLY in their NC case (verified
+    # no Compliant narrative contains them — no over-match):
+    # Scoped to the literal NC patterns from the ground-truth cases so they
+    # can't over-match a negated-success Compliant phrasing (e.g. "no controls
+    # failed test", "lockout did not occur because the threshold was correct").
+    "system failed test",          # ac7 auto-lockout + lockout-threshold ("System failed test - …")
+    "lockout did not occur",       # ac7 auto-lockout
+    "did not engage at the defined threshold",  # ac7 lockout-threshold
+    "not fully deployed",          # ac6 least-privilege
+    "not consistently enforced",   # ac6 least-privilege
+    "have not been provided",      # cp9 backup-protection ("has not been" misses the plural)
+    "no in-boundary artifact",     # si3 freshclam ("No in-boundary artifact …")
+    "no in-boundary vulnerability scan",  # si4 acas-scan ("No in-boundary vulnerability scan result …")
+    "no malicious code protection implementation artifact",  # si3 av entry-point
 )
 
 # Requirement-restatement red flags — Q text starting with these patterns
@@ -696,22 +742,35 @@ def _classify_single(narrative_q: str) -> NarrativeClass:
         return NarrativeClass.AMBIGUOUS
 
     haystack = narrative_q.casefold()  # finding #19: Unicode-consistent fold for phrase matching
-    is_affirming = _has_any(haystack, _AFFIRMING_PHRASES)
+    is_strong_affirm = _has_any(haystack, _STRONG_AFFIRMING_PHRASES)
+    is_weak_affirm = _has_any(haystack, _WEAK_AFFIRMING_PHRASES)
     is_na = _has_any(haystack, _NA_PHRASES)
     is_gap = _has_any(haystack, _GAP_PHRASES)
 
     # Multi-class hits within a SINGLE block → ambiguous (rule #11 mixed
-    # case). For hybrid narratives this only fires when one half is
-    # internally inconsistent — the cross-half mix that pre-fix tripped
-    # this branch is now caught by the per-half split above.
-    classes_hit = sum((is_affirming, is_na, is_gap))
+    # case). Only STRONG affirming counts toward the ambiguity tally — a weak
+    # act-of-looking verb ("examined"/"observed") co-occurring with a gap or NA
+    # phrase is the NORMAL shape of an NC/NA narrative ("Examined X; found a
+    # gap; POA&M opened"), not a contradiction. Counting weak verbs here was
+    # the AU-4 bug: a clearly-NC narrative classified AMBIGUOUS and rule #11
+    # rejected the save. For hybrid narratives this branch only fires when one
+    # scope-half is internally inconsistent (the cross-half mix is handled by
+    # the per-half split above).
+    classes_hit = sum((is_strong_affirm, is_na, is_gap))
     if classes_hit >= 2:
         return NarrativeClass.AMBIGUOUS
     if is_na:
         return NarrativeClass.NA_JUSTIFYING
     if is_gap:
         return NarrativeClass.GAP_DESCRIBING
-    if is_affirming:
+    if is_strong_affirm:
+        return NarrativeClass.COMPLIANCE_AFFIRMING
+    # Weak affirming is a LAST-RESORT signal: only when nothing substantive
+    # (strong-affirm / na / gap) hit does an act-of-looking verb classify the
+    # narrative as affirming. This preserves "Examined the policy; it is in
+    # place." → COMPLIANCE_AFFIRMING while letting "Examined …; gap" fall to
+    # GAP above.
+    if is_weak_affirm:
         return NarrativeClass.COMPLIANCE_AFFIRMING
 
     # --- Embedding fallback (new) -----------------------------------------

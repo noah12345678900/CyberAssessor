@@ -1,46 +1,42 @@
 {
-  "ground_truth": true,
-  "name": "ground_truth_ac7_auto_lockout_nc",
-  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 48, CCI-002238, assessed 2026-05-27). Non-Compliant verdict \u2014 automatic lockout did not occur per defined parameters. Sibling to the AC-7.2 lockout threshold case (CCI-000044) \u2014 same control family, different CCI, same failure pattern (system failed test). Narrative uses 'Examined/Finding' structure with 'did not occur' gap language. Pins the same _GAP_PHRASES coverage gap as the AC-6 and AC-7.2 siblings.",
-  "ccis_row": {
-    "control_id": "AC-7",
-    "ap_acronym": "AC-7.6",
-    "cci_id": "CCI-002238",
-    "guidance": "002238: The information system automatically locks the account or node for either an organization-defined time period, until the locked account or node is released by an administrator, or delays the next login prompt according to the organization-defined delay algorithm when the maximum number of unsuccessful attempts is exceeded.",
-    "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to automatically lock the account or node until the locked account is released by an administrator and delays the next login prompt for a minimum of 5 seconds when the maximum number of unsuccessful attempts is exceeded.",
-    "inherited": "Local",
-    "narrative": null,
-    "definition": null
+ "ground_truth": true,
+ "name": "ground_truth_ac7_auto_lockout_nc",
+ "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 48, CCI-002238, assessed 2026-05-27). Non-Compliant verdict — automatic lockout did not occur per defined parameters. Sibling to the AC-7.2 lockout threshold case (CCI-000044) — same control family, different CCI, same failure pattern (system failed test). Narrative uses 'Examined/Finding' structure with 'did not occur' gap language. Pins the same _GAP_PHRASES coverage gap as the AC-6 and AC-7.2 siblings. UPDATE 2026-06-18: the _GAP_PHRASES coverage gap this case documented is now FIXED — the 'Examined/Finding' gap wording classifies GAP_DESCRIBING, so the human-verified Non-Compliant verdict is ACCEPTED on the first pass instead of being forced to an abstain by status_narrative_mismatch.",
+ "ccis_row": {
+  "control_id": "AC-7",
+  "ap_acronym": "AC-7.6",
+  "cci_id": "CCI-002238",
+  "guidance": "002238: The information system automatically locks the account or node for either an organization-defined time period, until the locked account or node is released by an administrator, or delays the next login prompt according to the organization-defined delay algorithm when the maximum number of unsuccessful attempts is exceeded.",
+  "procedures": "The organization conducting the inspection/assessment examines the information system to ensure the organization being inspected/assessed configures the information system to automatically lock the account or node until the locked account is released by an administrator and delays the next login prompt for a minimum of 5 seconds when the maximum number of unsuccessful attempts is exceeded.",
+  "inherited": "Local",
+  "narrative": null,
+  "definition": null
+ },
+ "tagged_evidence": "## Tagged evidence\n- Account lockout test results — manual test of automatic lockout behavior after exceeding maximum unsuccessful logon attempts.\n- Access control policy — signed policy defining lockout and delay parameters.\n",
+ "llm_stub_proposals": [
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
+   "confidence": 0.9
   },
-  "tagged_evidence": "## Tagged evidence\n- Account lockout test results \u2014 manual test of automatic lockout behavior after exceeding maximum unsuccessful logon attempts.\n- Access control policy \u2014 signed policy defining lockout and delay parameters.\n",
-  "llm_stub_proposals": [
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
-      "confidence": 0.9
-    }
-  ],
-  "expected": {
-    "status": null,
-    "proposed_status": "Non-Compliant",
-    "source_in": [
-      "abstain"
-    ],
-    "needs_review": true,
-    "accepted": true,
-    "llm_calls": 3,
-    "rejection_classes_contains": [
-      "status_narrative_mismatch"
-    ]
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
+   "confidence": 0.9
+  },
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nTested automatic account/node lockout after exceeding the defined maximum unsuccessful logon attempts.\n\nFinding:\nSystem failed test - automatic lockout did not occur per the defined parameters.",
+   "confidence": 0.9
   }
+ ],
+ "expected": {
+  "status": "Non-Compliant",
+  "source_in": [
+   "llm"
+  ],
+  "needs_review": false,
+  "accepted": true,
+  "llm_calls": 1
+ }
 }

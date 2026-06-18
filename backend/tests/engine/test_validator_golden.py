@@ -979,3 +979,106 @@ def test_single_scope_colon_midsentence_not_split():
 
     assert _split_hybrid_narrative(plain) is None
     assert classify_narrative(plain) is NarrativeClass.COMPLIANCE_AFFIRMING
+
+
+# ---------------------------------------------------------------------------
+# Weak (act-of-looking) vs strong affirming — the AU-4 false-ambiguous fix
+# ---------------------------------------------------------------------------
+
+
+def test_au4_examined_plus_gap_classifies_gap_not_ambiguous():
+    """AU-4: 'Examined …; <gap>; POA&M opened' is GAP, not AMBIGUOUS.
+
+    Real AU-4 narrative from the live DB. 'examined ' is a WEAK act-of-looking
+    verb that describes the assessment activity, not a compliance claim; it
+    co-occurs with strong gap phrases ('not yet implemented', 'poa&m').
+    Pre-fix this hit affirming + gap → classes_hit>=2 → AMBIGUOUS → rule #11
+    rejected an obviously-NC verdict on every save. Post-fix weak verbs don't
+    count toward the ambiguity tally, so the substantive gap signal wins.
+    """
+    narrative = (
+        "Examined the Audit Log Storage Capacity Memo (USD20240623, chunk 0); "
+        "its utilization analysis found the allocated 500 GB SIEM partition "
+        "reaches capacity in ~40 days, far short of the 1-year retention "
+        "requirement, and the sized 4 TB expansion is planned but not yet "
+        "implemented. POA&M opened."
+    )
+    assert classify_narrative(narrative) is NarrativeClass.GAP_DESCRIBING
+    result = validate(
+        proposed_status=ComplianceStatus.NON_COMPLIANT,
+        proposed_narrative=narrative,
+    )
+    assert not _has_rejection(result, RejectionReason.STATUS_NARRATIVE_MISMATCH)
+
+
+def test_weak_examined_alone_still_affirming():
+    """A plain 'Examined X; the control is in place.' stays COMPLIANCE_AFFIRMING.
+
+    Weak affirming is a last-resort signal: when NOTHING substantive (strong
+    affirm / na / gap) hits, an act-of-looking verb still classifies the
+    narrative as affirming so genuine Compliant narratives that lead with
+    'Examined' aren't lost.
+    """
+    narrative = "Examined the Default Domain Policy; the session lock is in place."
+    assert classify_narrative(narrative) is NarrativeClass.COMPLIANCE_AFFIRMING
+
+
+def test_strong_affirm_plus_gap_still_ambiguous():
+    """A STRONG affirmation co-occurring with a gap is STILL ambiguous.
+
+    The split only demotes WEAK verbs. 'verified via …' (strong) + a gap phrase
+    is a genuine contradiction and must remain AMBIGUOUS so rule #11 forces the
+    assessor to clarify — this is the behavior that protects against a real
+    affirm/gap conflict slipping through as a confident verdict.
+    """
+    narrative = (
+        "Verified via USD00012345 that the control is configured; however no "
+        "evidence found for the secondary enclave and a POA&M is open."
+    )
+    assert classify_narrative(narrative) is NarrativeClass.AMBIGUOUS
+
+
+def test_ac7_conflicting_evidence_stays_ambiguous():
+    """AC-7 correct-abstain: conflicting-evidence prose hits NO phrase → ambiguous.
+
+    The user flagged AC-7 as the ONE correct abstain — the LLM saw two evidence
+    sources reporting different lockout thresholds and abstained. Its narrative
+    is a raw conflict statement with no affirm/na/gap phrase, so it falls
+    through to AMBIGUOUS. The STRONG/WEAK split must NOT accidentally flip this
+    to a confident verdict.
+    """
+    narrative = (
+        "Conflicting configuration evidence: STIG CKL chunk 0 "
+        "(SV-254244r877393_rule) reports the hardening baseline enforces "
+        "lockout threshold=3/15, but the Default Domain Policy export shows "
+        "threshold=5/15. The two sources disagree on the enforced value."
+    )
+    assert classify_narrative(narrative) is NarrativeClass.AMBIGUOUS
+
+
+def test_ground_truth_nc_gap_phrases_classify_gap():
+    """The ground-truth NC narratives (gap-phrase coverage) classify GAP.
+
+    Mirrors tests/eval/cases/ground_truth_*_nc.json. Each uses
+    'Examined/Finding' structure with gap wording that was missing from
+    _GAP_PHRASES; pre-fix they classified AMBIGUOUS and forced an abstain
+    instead of the human-verified Non-Compliant.
+    """
+    cases = [
+        "Examined RBAC. Finding: RBAC implementation is not fully deployed; "
+        "least privilege is not consistently enforced.",
+        "Examined lockout. Finding: System failed test - automatic lockout "
+        "did not occur per the defined parameters.",
+        "Examined lockout. Finding: System failed test - account lockout did "
+        "not engage at the defined threshold.",
+        "Examined backups. Finding: documented controls for protecting backup "
+        "confidentiality, integrity, and availability have not been provided.",
+        "Examined AV. Finding: No malicious code protection implementation "
+        "artifact for the assessed boundary was located.",
+        "Examined AV updates. Finding: No in-boundary artifact demonstrating "
+        "automatic update of malicious code protection mechanisms was located.",
+        "Examined scans. Finding: No in-boundary vulnerability scan result was "
+        "located for the assessed boundary.",
+    ]
+    for nq in cases:
+        assert classify_narrative(nq) is NarrativeClass.GAP_DESCRIBING, nq[:60]

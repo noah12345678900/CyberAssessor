@@ -113,6 +113,7 @@ def _coerce_abstain_persistence_fields(
     (kernel emitted a proposal but set needs_review=True) pass through
     untouched because both fields are already populated.
     """
+    is_hard_abstain = decision.status is None
     status = (
         decision.status
         if decision.status is not None
@@ -131,10 +132,33 @@ def _coerce_abstain_persistence_fields(
     # and validation already ran on the single ``decision.narrative`` upstream
     # (the "not logically" half of the contract). Single-boundary rows have
     # <2 scopes, ``stitch_scope_narrative`` returns None, and we keep the
-    # plain narrative.
+    # plain narrative. NOTE: this runs BEFORE the review-reason prefix below so
+    # the prefix is applied to whichever narrative is FINAL — a prior ordering
+    # bug let the stitch clobber the prefix for multi-scope hard abstains.
     narrative = stitch_scope_narrative(
         getattr(decision, "narratives_by_scope", None)
     ) or narrative
+    # When a hard abstain (status=None) is coerced to NON_COMPLIANT but carries
+    # the LLM's last narrative (single-scope OR the stitched multi-scope block),
+    # that text reflects the model's REJECTED proposal — e.g. RA-5: the LLM
+    # proposed Compliant ("…confirming vulnerability scanning is performed…"),
+    # the uncorroborated_stig_pass gate rejected it (scan-only, no corroborating
+    # policy/SOP), retries exhausted → abstain. Persisting that compliant-reading
+    # text under an NC verdict is the "status=NC but narrative reads Compliant"
+    # confusion the user hit. Prefix the review reason so column Q STATES why the
+    # verdict is held — applied AFTER the stitch so it survives on the
+    # multi-scope path too. Guard ``review_reason not in narrative`` avoids
+    # double-prefixing the hard-abstain-no-narrative case (which fell back to
+    # review_reason as the narrative above).
+    if (
+        is_hard_abstain
+        and decision.narrative
+        and decision.review_reason
+        and decision.review_reason not in narrative
+    ):
+        narrative = (
+            f"[Needs review — {decision.review_reason}]\n\n{narrative}"
+        )
     return status, narrative
 
 

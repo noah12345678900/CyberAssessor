@@ -1,46 +1,42 @@
 {
-  "ground_truth": true,
-  "name": "ground_truth_si3_no_av_entry_point_nc",
-  "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 306, CCI-002619, assessed 2026-05-27). Non-Compliant verdict \u2014 no malicious code protection artifact located for the assessed boundary. Narrative uses 'Examined/Finding' structure with 'was located' and 'not' describing a missing artifact \u2014 a boundary-scoping gap (prior evidence pertained to a different environment). The phrase 'No ... was located' describes a documentation gap. 'Reviewed' hits _AFFIRMING_PHRASES. This tests the validator's handling of boundary-scoping NC findings.",
-  "ccis_row": {
-    "control_id": "SI-3",
-    "ap_acronym": "SI-3.1",
-    "cci_id": "CCI-002619",
-    "guidance": "002619: The organization employs malicious code protection mechanisms at information system entry points to detect malicious code.",
-    "procedures": "The organization conducting the inspection/assessment examines the information system architecture as well as the organization's documentation of information system entry points and verifies that malicious code protection mechanisms are implemented.",
-    "inherited": "Local",
-    "narrative": null,
-    "definition": null
+ "ground_truth": true,
+ "name": "ground_truth_si3_no_av_entry_point_nc",
+ "description": "Ground-truth fixture from active Example System IATT CCIS workbook (row 306, CCI-002619, assessed 2026-05-27). Non-Compliant verdict — no malicious code protection artifact located for the assessed boundary. Narrative uses 'Examined/Finding' structure with 'was located' and 'not' describing a missing artifact — a boundary-scoping gap (prior evidence pertained to a different environment). The phrase 'No ... was located' describes a documentation gap. 'Reviewed' hits _AFFIRMING_PHRASES. This tests the validator's handling of boundary-scoping NC findings. UPDATE 2026-06-18: the _GAP_PHRASES coverage gap this case documented is now FIXED — the 'Examined/Finding' gap wording classifies GAP_DESCRIBING, so the human-verified Non-Compliant verdict is ACCEPTED on the first pass instead of being forced to an abstain by status_narrative_mismatch.",
+ "ccis_row": {
+  "control_id": "SI-3",
+  "ap_acronym": "SI-3.1",
+  "cci_id": "CCI-002619",
+  "guidance": "002619: The organization employs malicious code protection mechanisms at information system entry points to detect malicious code.",
+  "procedures": "The organization conducting the inspection/assessment examines the information system architecture as well as the organization's documentation of information system entry points and verifies that malicious code protection mechanisms are implemented.",
+  "inherited": "Local",
+  "narrative": null,
+  "definition": null
+ },
+ "tagged_evidence": "## Tagged evidence\n- Prior assessment notes — reference antivirus weekly scans with SIEM forwarding for malicious code protection (scoped to DSO environment).\n- Configuration repository search — no antivirus configuration or scan logs located for the EI boundary under assessment.\n",
+ "llm_stub_proposals": [
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
+   "confidence": 0.9
   },
-  "tagged_evidence": "## Tagged evidence\n- Prior assessment notes \u2014 reference antivirus weekly scans with SIEM forwarding for malicious code protection (scoped to DSO environment).\n- Configuration repository search \u2014 no antivirus configuration or scan logs located for the EI boundary under assessment.\n",
-  "llm_stub_proposals": [
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
-      "confidence": 0.9
-    },
-    {
-      "status": "Non-Compliant",
-      "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
-      "confidence": 0.9
-    }
-  ],
-  "expected": {
-    "status": null,
-    "proposed_status": "Non-Compliant",
-    "source_in": [
-      "abstain"
-    ],
-    "needs_review": true,
-    "accepted": true,
-    "llm_calls": 3,
-    "rejection_classes_contains": [
-      "status_narrative_mismatch"
-    ]
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
+   "confidence": 0.9
+  },
+  {
+   "status": "Non-Compliant",
+   "narrative": "Examined:\nReviewed prior assessment notes citing antivirus weekly scans with SIEM forwarding for malicious code protection.\n\nFinding:\nNo malicious code protection implementation artifact (configuration, scan log, alert evidence) for the assessed boundary was located. Antivirus artifacts referenced in prior notes are scoped to the DSO environment, not the boundary under assessment.",
+   "confidence": 0.9
   }
+ ],
+ "expected": {
+  "status": "Non-Compliant",
+  "source_in": [
+   "llm"
+  ],
+  "needs_review": false,
+  "accepted": true,
+  "llm_calls": 1
+ }
 }

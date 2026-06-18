@@ -98,3 +98,78 @@ def test_soft_abstain_passes_through_untouched() -> None:
     status, narrative = _coerce_abstain_persistence_fields(decision)
     assert status is ComplianceStatus.NON_COMPLIANT
     assert narrative == "LLM verdict with citation it could not verify."
+
+
+def test_hard_abstain_with_narrative_prefixes_review_reason() -> None:
+    """RA-5 case: hard abstain that kept the LLM's (rejected) compliant narrative.
+
+    The uncorroborated_stig_pass gate rejects a scan-only Compliant proposal;
+    retries exhaust → hard abstain with status=None but narrative = the LLM's
+    compliant-reading text. Persisting that under the coerced NON_COMPLIANT
+    verdict made column Q read Compliant while the status said NC — the user's
+    "NC but the narrative reads compliant" confusion. The coercion now PREFIXES
+    the review reason so column Q states why the verdict is held; the original
+    text follows for context.
+    """
+    decision = Decision(
+        cci_id="CCI-001054",
+        excel_row=7,
+        accepted=True,
+        status=None,
+        proposed_status=ComplianceStatus.COMPLIANT,
+        narrative=(
+            "Examined the ACAS/Tenable.sc scan report; credentialed results "
+            "observed across all in-scope hosts, confirming scanning is "
+            "performed against the boundary."
+        ),
+        narrative_class=NarrativeClass.COMPLIANCE_AFFIRMING,
+        source="abstain",
+        rule=None,
+        needs_review=True,
+        review_reason=(
+            "validator-exhausted: uncorroborated_stig_pass: scan-only evidence, "
+            "no non-scan corroborating artifact"
+        ),
+    )
+    status, narrative = _coerce_abstain_persistence_fields(decision)
+    assert status is ComplianceStatus.NON_COMPLIANT
+    # Leads with the review flag, then the original text.
+    assert narrative.startswith("[Needs review — ")
+    assert "uncorroborated_stig_pass" in narrative
+    assert "credentialed results" in narrative  # original context preserved
+
+
+def test_multiscope_hard_abstain_prefix_survives_stitch() -> None:
+    """Multi-scope hard abstain: the review-reason prefix must survive stitching.
+
+    Regression for the ordering bug an agent caught: the per-scope
+    stitch_scope_narrative line runs in the coercion helper, and previously it
+    ran AFTER the prefix and CLOBBERED it — so a multi-cloud hard abstain again
+    showed compliant-reading per-scope text under an NC status. The prefix is
+    now applied AFTER the stitch, so column Q for a multi-scope abstain leads
+    with the review flag, then the labeled per-scope block.
+    """
+    decision = Decision(
+        cci_id="CCI-000063",
+        excel_row=8,
+        accepted=True,
+        status=None,
+        proposed_status=ComplianceStatus.COMPLIANT,
+        narrative="single-blob fallback (should be replaced by the stitch)",
+        narrative_class=NarrativeClass.COMPLIANCE_AFFIRMING,
+        source="abstain",
+        rule=None,
+        needs_review=True,
+        review_reason="validator-exhausted: dual-pass-disagreement across scopes",
+    )
+    decision.narratives_by_scope = {
+        "AWS GovCloud": "On AWS GovCloud, verified via USD20240622 the VPN config.",
+        "Azure Government": "Customer fully inherits the managed Azure Bastion control.",
+    }
+    status, narrative = _coerce_abstain_persistence_fields(decision)
+    assert status is ComplianceStatus.NON_COMPLIANT
+    # Prefix survived AND the stitched per-scope block is present underneath.
+    assert narrative.startswith("[Needs review — ")
+    assert "dual-pass-disagreement" in narrative
+    assert "AWS GovCloud:" in narrative
+    assert "Azure Government:" in narrative
