@@ -304,6 +304,57 @@ NIST_800_53 = FrameworkDemo(
             results="",
             cci="CCI-000137", inherited="No",
         ),
+        # 12th control — the HYBRID + CUSTOMER per-tenant split showcase. AU-6
+        # (Audit Record Review) is marked "Shared" (→ hybrid) by the AWS
+        # GovCloud CRM but "Customer" by the Azure Government CRM: on AWS the
+        # provider does some SOC-side review, while on Azure the customer runs
+        # its own Sentinel workspace and owns review end-to-end. Left UNASSESSED
+        # so it flows to the assessor; with BOTH CRMs attached the grid shows an
+        # AWS GovCloud "Hybrid" chip alongside an Azure Government "Customer"
+        # chip — the mixed-responsibility combo this control exists to exercise.
+        Req(
+            "AU-6", "Audit Record Review, Analysis, and Reporting",
+            "AU", "Audit record review for the Example System Demo differs by "
+            "cloud: the AWS GovCloud enclave shares review between the provider "
+            "SOC and the customer, while the Azure Government enclave is reviewed "
+            "end-to-end by the customer's Microsoft Sentinel workspace.",
+            "The organization reviews and analyzes information system audit "
+            "records for indications of inappropriate or unusual activity.",
+            "Provide the audit-review cadence and sample findings for each cloud "
+            "enclave; cite the provider-shared review where applicable.",
+            "Examine the audit-review process per scope. For the customer-owned "
+            "scope verify the SIEM review cadence; for the shared scope confirm "
+            "the provider/customer review split.",
+            status="",
+            results="",
+            cci="CCI-000148", inherited="No",
+        ),
+        # 13th control — the HYBRID + INHERITED per-tenant split showcase. SC-13
+        # (Cryptographic Protection) is marked "Shared" (→ hybrid) by the AWS
+        # GovCloud CRM but "Inherited" by the Azure Government CRM: on AWS the
+        # customer must select FIPS endpoints / configure guest-OS FIPS mode,
+        # while on Azure the workload consumes only Microsoft-provided validated
+        # modules and fully inherits the control. Left UNASSESSED so it flows to
+        # the assessor; with BOTH CRMs attached the grid shows an AWS GovCloud
+        # "Hybrid" chip alongside an Azure Government "Inherited" chip.
+        Req(
+            "SC-13", "Cryptographic Protection",
+            "SC", "Cryptographic protection for the Example System Demo differs by "
+            "cloud: the AWS GovCloud enclave shares responsibility (customer "
+            "selects FIPS endpoints and guest-OS FIPS mode), while the Azure "
+            "Government enclave consumes only Microsoft-provided FIPS 140-2 "
+            "validated modules and fully inherits the control.",
+            "The information system implements organization-defined cryptographic "
+            "uses and type of cryptography in accordance with applicable laws.",
+            "Provide the FIPS-validated module configuration per cloud enclave; "
+            "cite the provider CRM where the control is inherited.",
+            "Examine the cryptographic implementation per scope. For the shared "
+            "scope verify FIPS endpoint/guest-OS configuration; for the inherited "
+            "scope confirm the provider supplies the validated modules.",
+            status="",
+            results="",
+            cci="CCI-002450", inherited="No",
+        ),
     ],
 )
 
