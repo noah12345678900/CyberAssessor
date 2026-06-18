@@ -64,6 +64,26 @@ _AFFIRMING_PHRASES: tuple[str, ...] = (
     "examined ",
     "auto-compliant per",
     "automatically compliant per",
+    # Inheritance prose (LLM-authored AND CRM slice-default). An inherited
+    # scope is COMPLIANT (applicable, met by the provider) → COMPLIANCE_AFFIRMING
+    # per _finalize_crm_decision's class_map (assessor.py: inherited →
+    # COMPLIANCE_AFFIRMING). Before these anchors, free-form inheritance text
+    # ("Customer fully inherits the managed Azure Bastion control … references
+    # the … SSP as the authoritative source") hit no phrase table and scored
+    # below the embedding threshold → AMBIGUOUS, poisoning the whole multi-scope
+    # hybrid to AMBIGUOUS and tripping rule #11 on every re-save. These also fix
+    # a latent misclassification of the CRM slice-default inheritance narrative
+    # ("customer inherits this control from the provider") which previously
+    # leaned NA via the embedding fallback. "inherits"/"inherited" do NOT appear
+    # in the deterministic provider/NA templates, and the full-prepositional
+    # "inherited from aws/…" leak phrases live in a separate check, so no
+    # collision with NA/provider/gap classification.
+    "fully inherits",
+    "customer inherits",
+    "inherits the",
+    "inherits this control",
+    "inherited remote-access",
+    "as the authoritative source",
 )
 
 # NA-justifying phrases — explain why the control doesn't apply.
@@ -152,6 +172,27 @@ _RESTATEMENT_JACCARD_THRESHOLD = 0.5
 # merge via _merge_hybrid_classes' precedence rules.
 _HYBRID_SPLIT_RE = re.compile(
     r"(?im)^\s*(?:##\s*responsibility_split|on[-_ ]?prem(?:ises)?\s*[:\-]|cloud\s*[:\-])"
+)
+
+# Multi-cloud stitched-scope header detection. ``stitch_scope_narrative``
+# (assessor.py) renders a >=2-scope column-Q block as per-scope chunks of the
+# exact form ``f"{label}:\n\n{text}"`` joined by ``"\n\n"``, where ``label`` is
+# a CRM scope label ("AWS GovCloud", "Azure Government") or the synthesized
+# ON_PREM_LABEL ("On-Premises"). Pre-fix, ``_HYBRID_SPLIT_RE`` only knew the
+# LLM's "On-prem:" / "Cloud:" markers, so a 3-scope AWS/Azure/On-Prem stitch
+# went UNSPLIT — its AFFIRMING + NA + GAP phrases collided in one block,
+# hit the classes_hit >= 2 branch, classified AMBIGUOUS, and rule #11 rejected
+# every re-save (status_narrative_mismatch).
+#
+# This pattern matches a STITCH header precisely: line-start, a plausible
+# scope label (1-40 chars of letters/digits/spaces/hyphens/parens only — no
+# terminal punctuation but the colon), a single trailing colon, end-of-line,
+# then a blank line (the ``:\n\n`` stitch separator). Requiring the blank
+# line after the colon is what distinguishes a header from prose that merely
+# contains a mid-sentence colon ("Examined the policy: it documents...") —
+# such prose is not followed by a blank line, so it never matches.
+_SCOPE_HEADER_SPLIT_RE = re.compile(
+    r"(?m)^[ \t]*([A-Za-z0-9][A-Za-z0-9 ()\-]{0,39}):[ \t]*\r?\n[ \t]*\r?\n"
 )
 
 # v0.2 dual-narrative leak phrases. The on-prem half of a hybrid narrative
@@ -712,8 +753,20 @@ def _split_hybrid_narrative(narrative_q: str) -> list[str] | None:
     marker narratives fall back to the original whole-narrative path so
     we don't over-trigger on documents that happen to mention the word
     "cloud" in an unrelated sentence.
+
+    Two marker families are recognized and merged: the legacy LLM-emitted
+    "On-prem:" / "Cloud:" / ``## responsibility_split`` markers
+    (``_HYBRID_SPLIT_RE``) and the deterministic per-scope headers that
+    ``stitch_scope_narrative`` writes for multi-cloud controls
+    (``_SCOPE_HEADER_SPLIT_RE``, e.g. "AWS GovCloud:" / "Azure Government:").
+    Offsets from both are de-duplicated by start position so a header that
+    happens to satisfy both patterns (none currently do) is counted once.
     """
-    matches = list(_HYBRID_SPLIT_RE.finditer(narrative_q))
+    starts: set[int] = set()
+    for regex in (_HYBRID_SPLIT_RE, _SCOPE_HEADER_SPLIT_RE):
+        for m in regex.finditer(narrative_q):
+            starts.add(m.start())
+    matches = sorted(starts)
     if len(matches) < 2:
         return None
 
@@ -721,13 +774,13 @@ def _split_hybrid_narrative(narrative_q: str) -> list[str] | None:
     # Preamble before the first marker — only kept when it has any content
     # so the typical "## responsibility_split\nOn-prem: ..." layout doesn't
     # produce an empty leading chunk that would classify as AMBIGUOUS.
-    preamble = narrative_q[: matches[0].start()].strip()
+    preamble = narrative_q[: matches[0]].strip()
     if preamble:
         chunks.append(preamble)
 
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(narrative_q)
-        chunk = narrative_q[m.start():end].strip()
+    for i, start in enumerate(matches):
+        end = matches[i + 1] if i + 1 < len(matches) else len(narrative_q)
+        chunk = narrative_q[start:end].strip()
         if chunk:
             chunks.append(chunk)
 

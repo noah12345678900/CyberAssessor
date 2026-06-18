@@ -1488,13 +1488,22 @@ export function Controls() {
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  setEmassExportOpen(true);
+                  if (!workbookId) return;
+                  // Repointed to the apply-all flow: writes Status + Test
+                  // Results into the CCIS workbook copy in Downloads — the
+                  // actual eMASS re-import deliverable — with no prompts. The
+                  // old "Controls"-tab template exporter required a sheet named
+                  // "Controls" that CCIS WORKING SHEET workbooks don't have.
+                  applyAllMut.mutate({
+                    workbookId,
+                    family: familyFilter !== "__all__" ? familyFilter : undefined,
+                  });
                 }}
                 disabled={!workbookId}
                 title={
                   !workbookId
                     ? "Pick a workbook in the Workbook dropdown below — the export targets that workbook's assessments."
-                    : "eMASS-strict xlsx — copies your enterprise-services controls template, inserts a Program-Specific Controls column after Control Acronym, writes one row per in-scope control with the multi-line status rollup. Skips needs_review rows."
+                    : "Writes Compliance Status (col N) + Test Results (col Q) into the CCIS workbook copy in Downloads (the eMASS re-import file). One click, no prompts. Skips needs_review rows."
                 }
               >
                 <FileSpreadsheet className="h-4 w-4" />

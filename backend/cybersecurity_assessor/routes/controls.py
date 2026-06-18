@@ -25,7 +25,10 @@ from ..engine.assessor import (
 )
 from ..engine.crm_context import build_crm_context
 from ..engine.evidence_bundle import EvidenceBlock
-from ..engine.impl_persistence import persist_assessment_with_impls
+from ..engine.impl_persistence import (
+    persist_assessment_with_impls,
+    preview_rolled_narrative,
+)
 from ..system_context import build_boundary_brief
 from ..engine.inputs import (
     _is_coverage_control,
@@ -1361,10 +1364,18 @@ def assess_objective(body: AssessRequest, s: Session = Depends(get_session)) -> 
         "status": decision.status.value if decision.status else None,
         "narrative": decision.narrative,
         # Visual multi-boundary form of column Q (labeled per-scope block) —
-        # None for single-boundary rows. The GUI prefers this for display; the
-        # plain ``narrative`` stays the validated single text for any consumer
-        # that classifies it. Mirrors what the save path persists to narrative_q.
-        "narrative_stitched": stitch_scope_narrative(decision.narratives_by_scope),
+        # None for single-boundary rows. The GUI prefers this for display AND
+        # diffs it against the existing narrative_q before save. It MUST mirror
+        # exactly what the save path persists, which is compose_rolled_narrative
+        # over EVERY plan row (all scopes incl. inherited/provider). The old
+        # stitch_scope_narrative(narratives_by_scope) covered customer-owned
+        # scopes only, so inherited scopes (e.g. Azure) showed as "removed" in
+        # the re-assess diff even though the save re-adds them. Fall back to the
+        # customer-only stitch only when there are no per-scope plans.
+        "narrative_stitched": (
+            preview_rolled_narrative(decision, crm_context, row.control_id)
+            or stitch_scope_narrative(decision.narratives_by_scope)
+        ),
         "narrative_on_prem": decision.narrative_on_prem,
         "narrative_cloud": decision.narrative_cloud,
         "narrative_class": decision.narrative_class.value,
@@ -1968,10 +1979,14 @@ def assess_objectives_batch(
                     "status": decision.status.value if decision.status else None,
                     "narrative": decision.narrative,
                     # Visual multi-boundary form of column Q (labeled per-scope
-                    # block); None for single-boundary rows. Mirrors persisted
-                    # narrative_q. See single-control handler for rationale.
-                    "narrative_stitched": stitch_scope_narrative(
-                        decision.narratives_by_scope
+                    # block); None for single-boundary rows. MUST mirror the
+                    # persisted narrative_q (all scopes via compose_rolled_narrative),
+                    # not the customer-only stitch. See single-control handler.
+                    "narrative_stitched": (
+                        preview_rolled_narrative(
+                            decision, crm_context, row.control_id
+                        )
+                        or stitch_scope_narrative(decision.narratives_by_scope)
                     ),
                     "narrative_on_prem": decision.narrative_on_prem,
                     "narrative_cloud": decision.narrative_cloud,

@@ -155,3 +155,39 @@ def persist_assessment_with_impls(
             )
 
     return assessment.id
+
+
+def preview_rolled_narrative(
+    decision: Decision,
+    crm_context: CrmContext,
+    control_id: str,
+) -> str | None:
+    """Compute the column-Q text a SAVE would persist — for the proposal preview.
+
+    The assess/propose endpoints show the user a diff of the proposed column-Q
+    against the existing assessment before they save. Previously the preview
+    used ``stitch_scope_narrative(decision.narratives_by_scope)``, which only
+    stitches CUSTOMER-OWNED scopes (``narratives_by_scope`` is populated by
+    ``narratives_by_scope_from_proposal`` for customer/hybrid slices only).
+    Inherited/provider scopes — whose narrative comes from the CRM's verbatim
+    text in ``plan_implementations`` — were therefore ABSENT from the preview,
+    even though ``persist_assessment_with_impls`` writes them via
+    ``compose_rolled_narrative`` over EVERY plan row. The diff then showed the
+    inherited (e.g. Azure) scope as "removed" on re-assess, alarming the user,
+    when in fact the save re-adds it.
+
+    This helper reproduces the persist path's column-Q derivation exactly —
+    ``plan_implementations`` over the same OSCAL-normalized slices, then
+    ``compose_rolled_narrative`` — so the preview shows the same scope set the
+    save will land. Returns ``None`` when there are no per-scope plans (single-
+    boundary control) so callers fall back to the plain ``decision.narrative``,
+    matching the persist path's "only override when rolled is truthy" gate.
+    Pure/read-only: no session, no writes.
+    """
+    oscal_control_id = _ccis_to_oscal_control_id(_normalize_control(control_id))
+    slices = crm_context.implementations(oscal_control_id)
+    plans = plan_implementations(decision, slices)
+    if not plans or decision.status is None:
+        return None
+    rolled = compose_rolled_narrative(plans)
+    return rolled or None
