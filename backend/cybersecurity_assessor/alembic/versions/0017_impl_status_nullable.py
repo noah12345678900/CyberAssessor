@@ -88,9 +88,15 @@ def downgrade() -> None:
     # status. Backfill the residual-abstain rows to NON_COMPLIANT (the
     # safest defensible verdict for an unassessed customer scope) so the
     # downgrade doesn't fail on legitimately-null rows.
+    #
+    # The column stores the enum NAME, not its value: SQLAlchemy's Enum
+    # adapter persists ``ComplianceStatus.NON_COMPLIANT.name`` ("NON_COMPLIANT"),
+    # NOT its ``.value`` ("Non-Compliant"). Writing the value here would inject
+    # a string no row ever legitimately contains and trip a LookupError on the
+    # next load. Use the NAME.
     bind.execute(
         sa.text(
-            f"UPDATE {_TABLE} SET {_COLUMN} = 'Non-Compliant' "
+            f"UPDATE {_TABLE} SET {_COLUMN} = 'NON_COMPLIANT' "
             f"WHERE {_COLUMN} IS NULL"
         )
     )
