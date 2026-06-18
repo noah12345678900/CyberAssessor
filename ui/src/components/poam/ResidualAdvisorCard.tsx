@@ -34,11 +34,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
 import { toast } from "@/components/ui/toaster";
-import type { PoamResidualSuggestion } from "@/lib/api";
+import { api, type PoamResidualSuggestion } from "@/lib/api";
 import { humanize } from "@/lib/errors";
 import { formatDateTime } from "@/lib/poamFormat";
 import {
+  qk,
   useApplyPoamResidualSuggestion,
   usePoamResidualSuggestion,
 } from "@/lib/queries";
@@ -75,16 +79,30 @@ export interface ResidualAdvisorCardProps {
 }
 
 export function ResidualAdvisorCard({ poamId }: ResidualAdvisorCardProps) {
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
   const suggestion = usePoamResidualSuggestion(poamId, { enabled: true });
   const apply = useApplyPoamResidualSuggestion({
     onSuccess: () => toast.success("Residual risk updated"),
     onError: (e) => toast.error("Apply failed", humanize(e)),
   });
 
+  // Refresh must BYPASS the server-side decision cache. suggestion.refetch()
+  // reruns the original queryFn with force_refresh undefined, so it just
+  // replays the cached decision — the button looked like a no-op. Call the
+  // API directly with force_refresh:true and write the fresh result into the
+  // query cache so the card re-renders with it.
   const onRefresh = () => {
-    suggestion.refetch().catch((e: unknown) => {
-      toast.error("Refresh failed", humanize(e));
-    });
+    setRefreshing(true);
+    api
+      .getPoamResidualSuggestion(poamId, { force_refresh: true })
+      .then((fresh) => {
+        queryClient.setQueryData(qk.poamResidualSuggestion(poamId), fresh);
+      })
+      .catch((e: unknown) => {
+        toast.error("Refresh failed", humanize(e));
+      })
+      .finally(() => setRefreshing(false));
   };
 
   const onApply = () => {
@@ -183,7 +201,7 @@ export function ResidualAdvisorCard({ poamId }: ResidualAdvisorCardProps) {
         {suggestion.data && (
           <p className="text-[11px] text-muted-foreground">
             Decided {formatDateTime(suggestion.data.decided_at)} ·{" "}
-            {suggestion.data.cache_source === "hit" ? "cached" : "fresh"}
+            {suggestion.data.cache_source === "cache_hit" ? "cached" : "fresh"}
           </p>
         )}
       </CardContent>
@@ -193,11 +211,11 @@ export function ResidualAdvisorCard({ poamId }: ResidualAdvisorCardProps) {
           variant="outline"
           size="sm"
           onClick={onRefresh}
-          disabled={suggestion.isFetching}
+          disabled={suggestion.isFetching || refreshing}
         >
           <RefreshCw
             className={`h-3.5 w-3.5 ${
-              suggestion.isFetching ? "animate-spin" : ""
+              suggestion.isFetching || refreshing ? "animate-spin" : ""
             }`}
           />
           Refresh suggestion

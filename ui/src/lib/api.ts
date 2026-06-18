@@ -3047,8 +3047,9 @@ export interface PoamResidualSuggestion {
   confidence: "low" | "medium" | "high";
   key_factors: string[];
   decided_at: string;
-  /** ``"miss"`` = fresh model call; ``"hit"`` = decision-cache replay. */
-  cache_source: "miss" | "hit";
+  /** ``null`` = fresh model call; ``"cache_hit"`` = decision-cache replay.
+   * (Backend stamps exactly these — residual_advisor.py replay()/store_cache.) */
+  cache_source: "cache_hit" | null;
 }
 
 export interface PoamMilestone {

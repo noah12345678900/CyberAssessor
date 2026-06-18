@@ -130,10 +130,20 @@ export function ControlDetail() {
     [workbooks.data, control.data?.framework_id],
   );
 
-  // Hydrate defaults once data lands
+  // Hydrate defaults once data lands. Prefer the first IN-SCOPE objective
+  // (in_workbook !== false) over catalog-only stubs that sort ahead of it.
+  // For AC-7 the catalog puts out-of-scope CCI-000043 at objectives[0],
+  // ahead of in-scope CCI-000044; defaulting to [0] blindly auto-selected
+  // the wrong CCI and let "Assess (kernel)" run against an out-of-scope row
+  // with thin evidence, yielding the empty-narrative Compliant glitch. The
+  // `!== false` keeps legacy/unscoped rows (field undefined) treated as
+  // in-scope, matching the backend contract.
   useEffect(() => {
     if (objectiveId === undefined && control.data?.objectives.length) {
-      setObjectiveId(control.data.objectives[0].id);
+      const objs = control.data.objectives;
+      const firstInScope =
+        objs.find((o) => o.in_workbook !== false) ?? objs[0];
+      setObjectiveId(firstInScope.id);
     }
   }, [objectiveId, control.data]);
   useEffect(() => {

@@ -50,8 +50,14 @@ if (isDev) {
 // that don't exist.
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const BACKEND_DIR = path.join(REPO_ROOT, "backend");
-// __dirname is ui/dist-electron/, so ../public reaches ui/public/.
-const ICON_PATH = path.join(__dirname, "..", "public", "logo.ico");
+// __dirname is dist-electron/ (dev) or app.asar/dist-electron/ (packaged).
+// Vite copies public/logo.ico -> dist/logo.ico at build time, and
+// electron-builder's `files` includes dist/** but NOT public/**. So the
+// packaged app must read the dist copy — the old ../public path resolved to
+// app.asar/public/logo.ico which doesn't exist, so BrowserWindow.icon
+// silently fell back to the default Electron icon. ../dist/logo.ico works in
+// both dev (after a build) and the packaged asar.
+const ICON_PATH = path.join(__dirname, "..", "dist", "logo.ico");
 // Stable AppUserModelID — Windows uses this to group taskbar buttons under
 // the right icon. Without setting this explicitly, Electron apps inherit the
 // default "electron.app.<name>" ID and Windows shows the default Electron

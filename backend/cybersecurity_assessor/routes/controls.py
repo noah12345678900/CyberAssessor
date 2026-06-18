@@ -156,9 +156,21 @@ def _coerce_abstain_persistence_fields(
         and decision.review_reason
         and decision.review_reason not in narrative
     ):
-        narrative = (
-            f"[Needs review — {decision.review_reason}]\n\n{narrative}"
-        )
+        # The prefix states WHY the verdict is held. Most review_reasons are
+        # concise ("validator-exhausted: dual-pass-disagreement across
+        # scopes") and belong in column Q verbatim. But the llm-abstain /
+        # llm-parse-error reasons embed the first 300 chars of the proposal
+        # narrative for telemetry — echoing that whole reason here duplicated
+        # the narrative head in column Q (the AC-7
+        # "[Needs review — llm-abstain: <300 chars>] … <same full text>"
+        # double-up). Detect that specific embed and keep only the short
+        # category label for those two; otherwise use the full reason.
+        prefix_reason = decision.review_reason
+        for _embed in ("llm-abstain:", "llm-parse-error:"):
+            if prefix_reason.startswith(_embed):
+                prefix_reason = _embed.rstrip(":")
+                break
+        narrative = f"[Needs review — {prefix_reason}]\n\n{narrative}"
     return status, narrative
 
 
