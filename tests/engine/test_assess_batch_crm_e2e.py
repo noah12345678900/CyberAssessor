@@ -147,7 +147,7 @@ def _make_ccis_row(*, cci_id: str, control_id: str = "AC-2", excel_row: int = 42
     )
 
 
-def _engine_and_app():
+def _engine_and_app(monkeypatch=None):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -161,6 +161,18 @@ def _engine_and_app():
 
     app = create_app()
     app.dependency_overrides[get_session] = _override_get_session
+
+    # The Assessor's decision-cache worker session is created from the
+    # PRODUCTION engine (engine/assessor.py `_worker_cache_session` does
+    # `from ..db import engine`), NOT the dependency-overridden session. When
+    # the kernel reaches a cache STORE (a non-cached LLM decision), it writes
+    # to that engine — which in a test points at the real on-disk DB (or none),
+    # raising "no such table: decisioncache". Point db.engine at this in-memory
+    # engine so cache reads/writes land in the same StaticPool DB the test set
+    # up. (The passing single-control tests sidestep this by monkeypatching
+    # Assessor.assess wholesale; these e2e tests run the real assess path.)
+    if monkeypatch is not None:
+        monkeypatch.setattr("cybersecurity_assessor.db.engine", engine)
     return engine, app
 
 
@@ -302,7 +314,7 @@ def test_batch_one_crm_inherited_short_circuits_no_500(
     tmp_path, monkeypatch
 ) -> None:
     """One inherited CRM → Compliant short-circuit, no LLM, 200, no error."""
-    engine, app = _engine_and_app()
+    engine, app = _engine_and_app(monkeypatch)
     wb_path = tmp_path / "one_crm.xlsx"
     wb_path.touch()
 
@@ -355,7 +367,7 @@ def test_batch_two_crms_customer_cloud_residual_onprem_no_500(
     emits a status=None residual ImplementationPlan. Pre-fix that raised
     IntegrityError mid-flush and rolled back the whole batch.
     """
-    engine, app = _engine_and_app()
+    engine, app = _engine_and_app(monkeypatch)
     wb_path = tmp_path / "two_crm.xlsx"
     wb_path.touch()
 
