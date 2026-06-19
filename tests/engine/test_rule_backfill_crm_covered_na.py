@@ -241,3 +241,171 @@ def test_crm_covered_and_uncovered_col_n_na_both_get_real_rows(session, monkeypa
         assert len(session.exec(select(Assessment)).all()) == 2
     finally:
         wb_path.unlink(missing_ok=True)
+
+
+def _rule8a_row(*, control_id: str, cci_id: str, excel_row: int, source: str) -> CcisRow:
+    """A col-L 'Yes' + col-M named-source row → classify_row → COMPLIANT_8A."""
+    return CcisRow(
+        excel_row=excel_row,
+        required=True,
+        control_id=control_id,
+        ap_acronym=None,
+        cci_id=cci_id,
+        implementation_status=None,
+        designation=None,
+        narrative=None,
+        definition=f"{control_id} definition.",
+        guidance=None,
+        procedures=None,
+        inherited="Yes",  # Column L = Remote/Yes
+        remote_inheritance=source,  # Column M names the source → 8a
+        status=None,
+        date_tested=None,
+        tester=None,
+        results=None,
+        previous_status=None,
+        previous_date=None,
+        previous_tester=None,
+        previous_results=None,
+    )
+
+
+def test_rule8a_stale_compliant_healed_when_crm_makes_control_hybrid(
+    session, monkeypatch
+):
+    """SC-7 fix: a whole-control rule_8a Compliant (written at open when no CRM
+    existed) must NOT survive a later HYBRID CRM attach.
+
+    SC-7 has col L="Yes" + col M="SDA Enterprise Service" → classify_row →
+    COMPLIANT_8A, so workbook-open rule-backfill writes Compliant (correct with
+    no cloud slices). Attaching two HYBRID CRMs makes the cloud slices need
+    assessment, so the whole-control Compliant is stale and masks them. The CRM
+    self-heal must DELETE it (healed_deleted), and a subsequent RE-OPEN
+    rule-backfill must NOT resurrect it (the control is now CRM-hybrid-covered).
+    A col-N rule_8b NA control in the same workbook must be unaffected (PE-10
+    guard still holds).
+    """
+    fw = Framework(name="NIST SP 800-53", version="Rev 5")
+    session.add(fw)
+    session.commit()
+    session.refresh(fw)
+
+    sc7 = _make_control(session, fw.id, "sc-7", "SC")
+    sc7_obj = _make_objective(session, sc7, "CCI-001097")
+    pe10 = _make_control(session, fw.id, "pe-10", "PE")
+    pe10_obj = _make_objective(session, pe10, "CCI-000813")
+
+    primary = Baseline(
+        framework_id=fw.id, name="primary", source_type=BaselineSourceType.CCIS_WORKBOOK
+    )
+    session.add(primary)
+    session.commit()
+    session.refresh(primary)
+
+    wb_path = Path("unused_sc7.xlsx")
+    wb_path.write_bytes(b"")
+    try:
+        wb = Workbook(path=str(wb_path), filename=wb_path.name, baseline_id=primary.id)
+        session.add(wb)
+        session.commit()
+        session.refresh(wb)
+        _in_scope(session, primary.id, sc7, sc7_obj, 5)
+        _in_scope(session, primary.id, pe10, pe10_obj, 6)
+
+        monkeypatch.setattr(
+            crm_backfill,
+            "read_workbook_index",
+            lambda _p: CcisIndex(
+                workbook_path=wb_path,
+                sheet_name="WORKING SHEET",
+                rows=[
+                    _rule8a_row(
+                        control_id="SC-7",
+                        cci_id="CCI-001097",
+                        excel_row=5,
+                        source="SDA Enterprise Service",
+                    ),
+                    _na_row(control_id="PE-10", cci_id="CCI-000813", excel_row=6),
+                ],
+            ),
+        )
+
+        # 1) Open: rule-backfill writes SC-7 Compliant (rule_8a) + PE-10 NA (8b).
+        backfill_workbook_rules(workbook_id=wb.id, session=session)
+        session.commit()
+        by_cci = {
+            session.get(Objective, a.objective_id).objective_id: a
+            for a in session.exec(select(Assessment)).all()
+        }
+        assert by_cci["CCI-001097"].status is ComplianceStatus.COMPLIANT
+        assert by_cci["CCI-001097"].inheritance_rule == "8a"
+        assert by_cci["CCI-000813"].status is ComplianceStatus.NOT_APPLICABLE
+
+        # 2) Attach two HYBRID CRMs to SC-7 (and NA CRMs to PE-10).
+        for label in ("AWS GovCloud", "Azure Government"):
+            crm = Baseline(
+                framework_id=fw.id,
+                name=f"CRM-{label}",
+                source_type=BaselineSourceType.CRM,
+                scope_label=label,
+            )
+            session.add(crm)
+            session.commit()
+            session.refresh(crm)
+            session.add(
+                BaselineControl(
+                    baseline_id=crm.id,
+                    control_id=sc7.id,
+                    in_scope=True,
+                    responsibility="hybrid",
+                    responsibility_narrative=f"{label} shared boundary.",
+                )
+            )
+            session.add(
+                BaselineControl(
+                    baseline_id=crm.id,
+                    control_id=pe10.id,
+                    in_scope=True,
+                    responsibility="not_applicable",
+                    responsibility_narrative=f"{label} N/A.",
+                )
+            )
+            session.add(
+                WorkbookOverlay(
+                    workbook_id=wb.id,
+                    baseline_id=crm.id,
+                    attached_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            session.commit()
+
+        heal = backfill_workbook_crm(workbook_id=wb.id, session=session)
+        session.commit()
+        # SC-7's stale rule_8a row was deleted (healed); PE-10's 8b survives.
+        assert heal.healed_deleted >= 1
+        remaining = {
+            session.get(Objective, a.objective_id).objective_id: a
+            for a in session.exec(select(Assessment)).all()
+        }
+        assert "CCI-001097" not in remaining, (
+            "stale rule_8a Compliant must be healed away on hybrid CRM attach"
+        )
+        assert remaining["CCI-000813"].status is ComplianceStatus.NOT_APPLICABLE, (
+            "PE-10 rule_8b NA must survive the CRM attach (PE-10 guard)"
+        )
+
+        # 3) RE-OPEN: rule-backfill must NOT resurrect SC-7's rule_8a Compliant
+        # (the control is now CRM-hybrid-covered).
+        backfill_workbook_rules(workbook_id=wb.id, session=session)
+        session.commit()
+        final = {
+            session.get(Objective, a.objective_id).objective_id: a
+            for a in session.exec(select(Assessment)).all()
+        }
+        assert "CCI-001097" not in final, (
+            "re-open rule-backfill must not resurrect the stale rule_8a Compliant "
+            "for a now-hybrid-CRM-covered control"
+        )
+        assert final["CCI-000813"].status is ComplianceStatus.NOT_APPLICABLE
+    finally:
+        wb_path.unlink(missing_ok=True)
