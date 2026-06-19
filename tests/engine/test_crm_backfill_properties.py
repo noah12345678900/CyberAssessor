@@ -620,3 +620,98 @@ def test_all_counters_are_non_negative_ints(
     for name, val in result.as_dict().items():
         assert isinstance(val, int), f"{name} is {type(val).__name__}, not int"
         assert val >= 0, f"{name} is negative: {val}"
+
+
+# ---------------------------------------------------------------------------
+# Flex-slice (pie-slice model) backfill — Column L drives the synthesized
+# On-Premises/workbook slice's status, NOT the CRM. Regression for PE-3
+# (clouds inherited + col L = named source) showing "—" because the backfill
+# deferred the whole control to the LLM on the flex slice's "customer" label.
+# ---------------------------------------------------------------------------
+
+
+def _setup_flex_control(
+    session, workbook_file, monkeypatch, *, col_l: str
+):
+    """One control inherited on TWO scope-labeled cloud CRMs (AWS + Azure),
+    with the given Column-L value on the workbook row. Scope-labeled CRMs
+    cause build_crm_context to synthesize the On-Premises flex slice."""
+    _wipe(session)
+    fw = Framework(name="NIST SP 800-53", version="Rev 5")
+    session.add(fw); session.commit(); session.refresh(fw)
+    primary = Baseline(framework_id=fw.id, name="primary",
+                       source_type=BaselineSourceType.CCIS_WORKBOOK)
+    session.add(primary); session.commit(); session.refresh(primary)
+    wb = Workbook(path=str(workbook_file), filename=workbook_file.name,
+                  baseline_id=primary.id)
+    session.add(wb); session.commit(); session.refresh(wb)
+
+    control = Control(framework_id=fw.id, control_id="pe-3",
+                      title="Physical Access Control", family="PE")
+    session.add(control); session.commit(); session.refresh(control)
+    obj = Objective(control_id_fk=control.id, objective_id="CCI-000919",
+                    source="CCI", text="Physical access")
+    session.add(obj); session.commit(); session.refresh(obj)
+    session.add(BaselineControl(baseline_id=primary.id, control_id=control.id,
+                                in_scope=True))
+    session.add(BaselineObjective(baseline_id=primary.id, objective_id=obj.id,
+                                  source_row=100))
+    session.commit()
+
+    for label in ("AWS GovCloud", "Azure Government"):
+        crm = Baseline(framework_id=fw.id, name=f"CRM-{label}",
+                       source_type=BaselineSourceType.CRM, scope_label=label)
+        session.add(crm); session.commit(); session.refresh(crm)
+        session.add(WorkbookOverlay(workbook_id=wb.id, baseline_id=crm.id,
+                                    attached_at=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        session.add(BaselineControl(baseline_id=crm.id, control_id=control.id,
+                                    in_scope=True, responsibility="inherited",
+                                    responsibility_narrative=f"{label} inherits"))
+        session.commit()
+
+    row = _make_row(excel_row=100, control_id="PE-3", cci_id="CCI-000919")
+    row.inherited = col_l  # Column L
+    fake_index = CcisIndex(workbook_path=Path("unused.xlsx"),
+                           sheet_name="WORKING SHEET", rows=[row])
+    monkeypatch.setattr(crm_backfill, "read_workbook_index", lambda _p: fake_index)
+    return wb.id, obj.id
+
+
+def test_flex_col_l_inherited_backfills_compliant(session, workbook_file, monkeypatch):
+    """PE-3: clouds inherited + Column L names an inheritance source
+    ("DoW Enterprise" → INHERITED) → backfill auto-writes COMPLIANT with all
+    three scopes Compliant. (Regression: previously deferred → "—".)"""
+    wb_id, obj_id = _setup_flex_control(
+        session, workbook_file, monkeypatch, col_l="DoW Enterprise"
+    )
+    result = backfill_workbook_crm(wb_id, session)
+    session.commit()
+    assert result.applied == 1
+    a = session.exec(select(Assessment).where(Assessment.objective_id == obj_id)).one()
+    assert a.status is ComplianceStatus.COMPLIANT
+    impls = {
+        im.scope_label: im.status
+        for im in session.exec(
+            select(crm_backfill.AssessmentImplementation).where(
+                crm_backfill.AssessmentImplementation.assessment_id == a.id
+            )
+        )
+    }
+    assert impls.get("On-Premises") is ComplianceStatus.COMPLIANT
+    assert impls.get("AWS GovCloud") is ComplianceStatus.COMPLIANT
+    assert impls.get("Azure Government") is ComplianceStatus.COMPLIANT
+
+
+def test_flex_col_l_assess_defers_to_llm(session, workbook_file, monkeypatch):
+    """Column L = "No" (ASSESS) → the flex outcome depends on assess-time
+    evidence (NC-on-no-evidence), which backfill runs before. So backfill must
+    DEFER (write nothing), not write a premature verdict."""
+    wb_id, obj_id = _setup_flex_control(
+        session, workbook_file, monkeypatch, col_l="No"
+    )
+    result = backfill_workbook_crm(wb_id, session)
+    session.commit()
+    assert result.applied == 0
+    assert result.skipped_non_deterministic == 1
+    rows = session.exec(select(Assessment).where(Assessment.objective_id == obj_id)).all()
+    assert rows == []

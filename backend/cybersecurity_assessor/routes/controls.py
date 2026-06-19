@@ -1132,6 +1132,19 @@ def upsert_assessment(
             rolled_q = compose_rolled_narrative(plans)
             if rolled_q:
                 a.narrative_q = rolled_q
+            # AU-9 manual-save fix: a manual upsert is the reviewer asserting a
+            # verdict. If the impl set is indeterminate (every impl status is
+            # None — e.g. a synthesized flex slice that was never assessed, or a
+            # stale phantom-guard stub), compute_rollup_status returns None and
+            # the parent keeps body.status above — BUT if the user saved without
+            # an explicit parent status while the impls are all None, a.status
+            # would be None and the row would silently skip the workbook write
+            # (ccis_writer gates on status is not None). Never let a manual save
+            # leave the parent statusless when the user provided one: restore the
+            # explicit body.status as the floor so the verdict always persists
+            # and is writable.
+            if a.status is None and body.status is not None:
+                a.status = body.status
             s.add(a)
 
     # fix #7 -- a manual upsert is the user overriding the engine's verdict.

@@ -1064,14 +1064,23 @@ def workbook_col_l_status(
     INHERITED (named source → Compliant). A control whose CCIs are all
     INHERITED rolls up INHERITED; any ASSESS CCI makes the whole control ASSESS.
 
-    Returns one entry per control that has at least one workbook CCI:
+    Returns one entry per control that ACTUALLY HAS a synthesized flex slice
+    (i.e. the control is covered by CRM cloud slices — the pie-slice model only
+    synthesizes a flex slice for those). Controls with no CRM (e.g. a wholly
+    column-N Not Applicable control like AC-18) have NO flex slice and get NO
+    entry here, so the grid omits the chip for them — the flex chip describes a
+    slice that doesn't exist otherwise.
+
+    Each entry:
       ``control_id``  — OSCAL canonical id (matches the grid's Control.control_id)
       ``outcome``     — "inherited" | "assess" | "escalate"
       ``value``       — a representative raw col-L cell (the one that drove the
                         rollup), for the chip tooltip/label.
     Empty list when the workbook can't be read (chip simply omitted).
     """
+    from ..baselines.scope_labels import ON_PREM_LABEL
     from ..engine import rules
+    from ..engine.crm_context import build_crm_context
     from ..excel.ccis_reader import (
         _ccis_to_oscal_control_id,
         _normalize_control,
@@ -1088,28 +1097,68 @@ def workbook_col_l_status(
     except (ValueError, FileNotFoundError, OSError):
         return []
 
+    # A control gets a flex chip when EITHER:
+    #   (1) it has a synthesized flex slice — build_crm_context synthesizes the
+    #       ON_PREM flex slice for CRM-covered controls; OR
+    #   (2) it is wholly Column-N Not Applicable (rule 8b) — even with NO CRM,
+    #       a fully-N/A control (e.g. AC-18, no CRM, col N="Not Applicable")
+    #       should show an "N/A" flex chip, not a blank "—". (Owner: AC-18 must
+    #       read N/A.)
+    crm_context = build_crm_context(workbook_id, s)
+    flex_control_ids = {
+        oscal
+        for oscal, sls in crm_context.by_control_impls.items()
+        if any(sl.scope_label == ON_PREM_LABEL for sl in sls)
+    }
+
     # Worst-of precedence: higher number wins when aggregating a control's CCIs.
     _RANK = {
         rules.ColLFlexOutcome.INHERITED: 1,
         rules.ColLFlexOutcome.ESCALATE: 2,
         rules.ColLFlexOutcome.ASSESS: 3,
     }
-    # control_id -> (rank, outcome, representative_raw_value)
-    agg: dict[str, tuple[int, rules.ColLFlexOutcome, str]] = {}
+    # control_id -> (rank, outcome_value, representative_raw_value). outcome_value
+    # is a plain string so we can emit the synthetic "na" outcome (not a
+    # ColLFlexOutcome member) when the workbook's Column N already marks the
+    # control Not Applicable.
+    agg: dict[str, tuple[int, str, str]] = {}
+    # Track whether EVERY CCI of a control is column-N Not Applicable: a wholly
+    # N/A control (rule 8b) has no real flex assessment to do, so the chip
+    # should read "N/A". One non-NA CCI voids the N/A (mirrors
+    # compute_rollup_status's "N/A only if ALL are N/A"). This is ALSO the
+    # signal that earns a no-CRM control a chip at all (case 2 above).
+    col_n_na_all: dict[str, bool] = {}
     for cci_row in index.by_cci().values():
         if not cci_row.control_id:
             continue
         oscal = _ccis_to_oscal_control_id(_normalize_control(cci_row.control_id))
+        is_na = (cci_row.status or "").strip().lower() in (
+            "not applicable", "n/a", "na",
+        )
+        col_n_na_all[oscal] = is_na if oscal not in col_n_na_all else (
+            col_n_na_all[oscal] and is_na
+        )
         outcome = rules.resolve_col_l_flex_status(cci_row.inherited)
         rank = _RANK[outcome]
         prev = agg.get(oscal)
         if prev is None or rank > prev[0]:
-            agg[oscal] = (rank, outcome, (cci_row.inherited or "").strip())
+            agg[oscal] = (rank, outcome.value, (cci_row.inherited or "").strip())
 
-    return [
-        {"control_id": oscal, "outcome": outcome.value, "value": value}
-        for oscal, (_rank, outcome, value) in agg.items()
-    ]
+    out: list[dict] = []
+    for oscal, (_rank, outcome_value, value) in agg.items():
+        wholly_na = col_n_na_all.get(oscal, False)
+        # Emit a chip only when the control has a flex slice OR is wholly N/A.
+        if oscal not in flex_control_ids and not wholly_na:
+            continue
+        # Column-N Not Applicable wins: the control is wholly N/A (rule 8b),
+        # so the flex slice has nothing to assess — show "na" not "assess".
+        if wholly_na:
+            out.append({"control_id": oscal, "outcome": "na", "value": value})
+        else:
+            out.append(
+                {"control_id": oscal, "outcome": outcome_value, "value": value}
+            )
+    return out
 
 
 @router.get("/{workbook_id}/review-queue")

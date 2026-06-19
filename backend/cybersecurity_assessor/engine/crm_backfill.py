@@ -29,11 +29,13 @@ from ..models import (
     Baseline,
     BaselineControl,
     BaselineObjective,
+    ComplianceStatus,
     Control,
     Objective,
     VerdictSource,
     Workbook,
 )
+from ..baselines.scope_labels import ON_PREM_LABEL
 from . import rules
 from .assessor import Assessor, decision_to_verdict_source
 from .crm_context import CrmContext, build_crm_context
@@ -241,11 +243,50 @@ def backfill_workbook_crm(
         # assess time so the customer-side work is never silently set
         # COMPLIANT-by-inheritance without evidence.
         slices = assessor._lookup_crm_slices(row, crm_context)
+        # Flex (On-Premises/workbook) slice handling (pie-slice model). The
+        # synthesized flex slice carries responsibility="customer" as its ROUTING
+        # label, but its STATUS comes from the workbook's Column L, not the CRM.
+        # So "customer" on the flex slice must NOT, by itself, defer the control
+        # to the LLM. Resolve Column L: INHERITED → the flex slice is
+        # deterministically Compliant (write it now via flex_statuses); ASSESS or
+        # ESCALATE → the flex outcome depends on assess-time evidence retrieval
+        # (NC-on-no-evidence / abstain), which backfill runs BEFORE — so defer
+        # those to the LLM/assess path rather than writing a premature verdict.
+        flex_slice = next(
+            (
+                s
+                for s in slices
+                if s.scope_label == ON_PREM_LABEL and s.source_baseline_id is None
+            ),
+            None,
+        )
+        flex_statuses: dict[str, str] | None = None
+        if flex_slice is not None:
+            flex_outcome = rules.resolve_col_l_flex_status(row.inherited)
+            if flex_outcome is rules.ColLFlexOutcome.INHERITED:
+                flex_statuses = {ON_PREM_LABEL: ComplianceStatus.COMPLIANT.value}
         if slices:
-            slice_resps = [s.responsibility for s in slices if s.responsibility]
-            deterministic = bool(slice_resps) and all(
-                r in _DETERMINISTIC for r in slice_resps
+            # The flex slice's routing "customer" label is excluded from the
+            # cloud determinism check; its determinism is decided by Column L
+            # above (flex_statuses set ⟺ col L INHERITED ⟺ deterministic).
+            cloud_resps = [
+                s.responsibility
+                for s in slices
+                if s.responsibility
+                and not (
+                    s.scope_label == ON_PREM_LABEL and s.source_baseline_id is None
+                )
+            ]
+            clouds_deterministic = bool(cloud_resps) and all(
+                r in _DETERMINISTIC for r in cloud_resps
             )
+            if flex_slice is not None:
+                # Flex-bearing control: deterministic only when the clouds are
+                # all inheritable AND Column L resolved the flex slice to
+                # INHERITED (flex_statuses set). Otherwise defer to assess time.
+                deterministic = clouds_deterministic and flex_statuses is not None
+            else:
+                deterministic = clouds_deterministic
         elif multi_tenant:
             # Multi-tenant workbook but NO per-scope slices for this control —
             # scope attribution is missing/unreliable here (e.g. a CRM lacked a
@@ -303,6 +344,7 @@ def backfill_workbook_crm(
         decision = assessor._finalize_crm_decision(
             row, row.cci_id or row.control_id, entry, outcome=None,
             slices=slices,
+            flex_statuses=flex_statuses,
         )
         if not decision.accepted or decision.status is None or not decision.narrative:
             # _finalize_crm_decision always accepts, but guard the

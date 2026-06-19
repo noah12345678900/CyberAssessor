@@ -400,15 +400,20 @@ ROWS = [
      "correlation, (d) Defender for Cloud vulnerability assessment, and (e) "
      "customer SIEM integration where applicable. Alerts triaged per IR-4.",
      "Implemented"),
+    # MP-6 DIVERGES from the AWS CRM (which marks it "Not Applicable"): on Azure
+    # Government media sanitization is fully Inherited — Microsoft operates the
+    # entire media-sanitization plane and the customer inherits it. Paired with
+    # AWS "Not Applicable", this is the PER-CLOUD-N/A demo (one N/A cloud slice +
+    # one inherited cloud slice).
     ("MP-6",  "Media Sanitization",
-     "Shared",
+     "Inherited",
      "Microsoft sanitizes decommissioned physical storage media per NIST SP "
-     "800-88 Rev. 1 with documented certificates of destruction.",
-     "Customer is responsible for sanitizing customer-managed data: disk "
-     "deletion (customer-managed key deletion = cryptographic erasure), "
-     "purging versioned storage including soft-deleted blobs, database "
-     "deletion, and scheduled purge of customer-managed Key Vault keys that "
-     "encrypted retired data.",
+     "800-88 Rev. 1 with documented certificates of destruction, and performs "
+     "cryptographic erasure of the customer-managed media plane on the Azure "
+     "Government enclave.",
+     "Customer fully inherits Azure Government media sanitization for this "
+     "system; no customer-side media-sanitization implementation is required on "
+     "this enclave.",
      "Implemented"),
 
     # === CUSTOMER (full LLM assessment -- pure customer policy) =============

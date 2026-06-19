@@ -424,3 +424,104 @@ def test_no_crm_col_l_named_source_whole_control_8a_no_regression():
     assert d.source == "rule_8a"
     assert d.status is ComplianceStatus.COMPLIANT
     assert d.needs_review is False
+
+
+def test_cloud_slice_status_derives_from_its_own_narrative_not_whole_control():
+    """SC-13 / AC-17 regression: the LLM emits ONE whole-control status, but a
+    customer/hybrid CLOUD slice's status must come from ITS OWN per-scope
+    narrative — never blindly copy the whole-control proposal.status. Scenario:
+    AWS hybrid with a COMPLIANT per-scope narrative + on-prem flex (col L="No"
+    → ASSESS → NC). Parent rolls up NC, but the AWS slice must stay COMPLIANT
+    (its narrative is compliant), not show NC."""
+    from cybersecurity_assessor.engine.assessor import LlmProposal, plan_implementations
+    from cybersecurity_assessor.engine.evidence_bundle import EvidenceBlock
+
+    class _Stub:
+        _audit_citations = False
+
+        def propose(self, **_k):
+            return LlmProposal(
+                status=ComplianceStatus.NON_COMPLIANT,  # whole-control verdict
+                narrative=(
+                    "No on-premises evidence found for this control objective; "
+                    "POA&M opened pending implementation evidence."
+                ),
+                confidence=0.8,
+                narratives_by_scope={
+                    # Compliant-reading AWS narrative (the contradiction source).
+                    "AWS GovCloud": (
+                        "On AWS GovCloud, examined the STIG result confirming via "
+                        "the configuration that FIPS mode is enforced for the "
+                        "customer-owned workload."
+                    ),
+                },
+            )
+
+        def propose_twice(self, **k):
+            p = self.propose(**k)
+            return (p, p)
+
+    ev = EvidenceBlock(
+        text="## evidence_bundle\n- STIG result", has_artifacts=True,
+        has_coverage=False, has_findings=False, has_hosts=False,
+        has_nonscan_artifact=True,
+    )
+    slices = [
+        ImplementationSlice("AWS GovCloud", "hybrid", "aws shared", 1),
+        ImplementationSlice("Azure Government", "inherited", "azure inh", 2),
+        ImplementationSlice("On-Premises", "customer", None, None),
+    ]
+    entry = CrmEntry(
+        control_id="sc-13", responsibility="hybrid", narrative="aws shared",
+        source_baseline_id=1, responsibility_onprem=None, narrative_onprem=None,
+    )
+    crm = CrmContext(
+        by_control={"sc-13": entry}, by_control_impls={"sc-13": slices}
+    )
+    d = Assessor(llm=_Stub()).assess(
+        _row("SC-13", col_l="No"), crm_context=crm,
+        tagged_evidence=ev.text, evidence_block=ev,
+    )
+    assert d.status is ComplianceStatus.NON_COMPLIANT  # worst-of (on-prem NC)
+    by_scope_status = {
+        p.scope_label: p.status for p in plan_implementations(d, slices)
+    }
+    # The headline assertion: AWS slice is COMPLIANT (from its own narrative),
+    # NOT Non-Compliant copied from the whole-control verdict.
+    assert by_scope_status["AWS GovCloud"] is ComplianceStatus.COMPLIANT
+    assert by_scope_status["Azure Government"] is ComplianceStatus.COMPLIANT
+    assert by_scope_status["On-Premises"] is ComplianceStatus.NON_COMPLIANT
+
+
+def test_gap_finalizer_honors_per_cloud_na_status():
+    """MP-6 regression: the deterministic flex-gap finalizer must honor a cloud
+    slice's actual responsibility. AWS=not_applicable + Azure=inherited + flex
+    col L="No" (ASSESS, no evidence) → AWS slice Not Applicable (NOT a blanket
+    Compliant), Azure Compliant, On-Prem Non-Compliant, parent worst-of NC."""
+    from cybersecurity_assessor.engine.assessor import plan_implementations
+    from cybersecurity_assessor.engine.evidence_bundle import EvidenceBlock
+
+    no_ev = EvidenceBlock(
+        text=None, has_artifacts=False, has_coverage=False,
+        has_findings=False, has_hosts=False,
+    )
+    slices = [
+        ImplementationSlice("AWS GovCloud", "not_applicable", "aws na", 1),
+        ImplementationSlice("Azure Government", "inherited", "azure inh", 2),
+        ImplementationSlice("On-Premises", "customer", None, None),
+    ]
+    entry = CrmEntry(
+        control_id="mp-6", responsibility="inherited", narrative="azure inh",
+        source_baseline_id=2, responsibility_onprem=None, narrative_onprem=None,
+    )
+    crm = CrmContext(
+        by_control={"mp-6": entry}, by_control_impls={"mp-6": slices}
+    )
+    d = Assessor(llm=None).assess(
+        _row("MP-6", col_l="No"), crm_context=crm, evidence_block=no_ev
+    )
+    assert d.status is ComplianceStatus.NON_COMPLIANT
+    by_status = {p.scope_label: p.status for p in plan_implementations(d, slices)}
+    assert by_status["AWS GovCloud"] is ComplianceStatus.NOT_APPLICABLE
+    assert by_status["Azure Government"] is ComplianceStatus.COMPLIANT
+    assert by_status["On-Premises"] is ComplianceStatus.NON_COMPLIANT

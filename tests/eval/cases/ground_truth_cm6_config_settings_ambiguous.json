@@ -1,7 +1,7 @@
 {
   "ground_truth": true,
   "name": "ground_truth_cm6_config_settings_ambiguous",
-  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for CM-6 configuration settings. This simulates a genuinely ambiguous scenario where STIG scan results are partially available but inconclusive \u2014 some systems show compliant checks while others have not been scanned. The LLM returns low confidence (0.3, just under the 0.35 threshold), triggering the confidence-floor abstain gate at engine/assessor.py:1075-1094. Tests the confidence-floor gate with a realistic assessment scenario rather than the synthetic CCI-000017 used in abstain_low_confidence.json.",
+  "description": "Ground-truth fixture for CM-6 configuration settings with PARTIAL STIG coverage: 3 of 7 boundary hosts scanned; the other 4 are not yet baselined. Genuinely inconclusive, so the LLM SELF-SIGNALS abstain (abstain:true) \u2014 the legitimate 'I can't tell' path now that the low-confidence gate is removed (owner decision 2026-06-19). The narrative names exactly what is missing ('3 of 7', '4 not baselined') so the investigator can chase the gap and fall back to NC if the missing scans aren't provided. review_reason carries 'llm-abstain'.",
   "ccis_row": {
     "control_id": "CM-6",
     "ap_acronym": "CM-6.1",
@@ -16,18 +16,17 @@
   "llm_stub_proposals": [
     {
       "status": "Compliant",
-      "narrative": "Examined configuration management policy and partial STIG scan results; confirmed that scanned hosts have DISA STIG baselines applied and documented in the configuration management plan.",
-      "confidence": 0.3
+      "narrative": "Examined the configuration management policy and partial STIG scan results: only 3 of 7 boundary hosts are scanned; the remaining 4 hosts are not yet baselined. Scanned hosts have DISA STIG baselines applied, but with 4 of 7 hosts unbaselined the control state cannot be confirmed from the artifacts alone — the 4 missing hosts must be baselined/scanned (or excluded with justification) before a verdict can be reached.",
+      "confidence": 0.3,
+      "abstain": true
     }
   ],
   "expected": {
-    "status": null,
-    "proposed_status": "Compliant",
     "source_in": [
       "abstain"
     ],
     "needs_review": true,
     "accepted": true,
-    "review_reason_contains_regex": "low-confidence"
+    "review_reason_contains_regex": "llm-abstain"
   }
 }

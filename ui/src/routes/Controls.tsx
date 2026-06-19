@@ -1344,19 +1344,26 @@ export function Controls() {
                   inherited: "Inherited",
                   assess: "Assess",
                   escalate: "Escalate",
+                  na: "N/A",
                 };
                 const chipClass =
                   r.outcome === "inherited"
                     ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                     : r.outcome === "escalate"
                       ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                      : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
+                      : r.outcome === "na"
+                        ? "border-muted bg-muted text-muted-foreground"
+                        : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
                 const raw = r.value.trim() === "" ? "(blank)" : r.value.trim();
+                const title =
+                  r.outcome === "na"
+                    ? `Control is Not Applicable (workbook Column N) — flex slice N/A`
+                    : `Workbook Column L: ${raw} — flex slice ${labelMap[r.outcome] ?? r.outcome}`;
                 return (
                   <Badge
                     variant="outline"
                     className={chipClass}
-                    title={`Workbook Column L: ${raw} — flex slice ${labelMap[r.outcome] ?? r.outcome}`}
+                    title={title}
                   >
                     {labelMap[r.outcome] ?? r.outcome}
                   </Badge>

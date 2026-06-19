@@ -561,18 +561,23 @@ ROWS = [
      "DynamoDB) using customer-managed KMS keys, and (d) MFA Delete on "
      "critical S3 buckets.",
      "Implemented"),
+    # MP-6 DIVERGES from the Azure CRM (which marks it "Inherited"): on AWS
+    # GovCloud media sanitization is Not Applicable to the customer — AWS
+    # performs cryptographic erasure of the customer-managed media plane itself.
+    # Paired with Azure "Inherited", this is the PER-CLOUD-N/A demo: one N/A
+    # cloud slice beside one inherited cloud slice in a mixed worst-of rollup.
     ("MP-6",  "Media Sanitization",
-     "Shared",
-     "AWS sanitizes decommissioned physical storage media per NIST SP 800-88 "
-     "Rev. 1 guidelines including degaussing, shredding, or pulverization "
-     "with documented certificates of destruction.",
-     "Customer is responsible for sanitizing customer-managed data: (a) EBS "
-     "volume deletion (KMS key deletion = NIST 800-88 cryptographic erasure "
-     "when customer-managed CMK is used), (b) emptying versioned S3 buckets "
-     "including all noncurrent versions and delete markers, (c) RDS snapshot "
-     "deletion, and (d) scheduled deletion of customer-managed KMS CMKs that "
-     "encrypted retired data.",
-     "Implemented"),
+     "Not Applicable",
+     "Not applicable to the AWS GovCloud customer service offering for this "
+     "system: AWS performs NIST SP 800-88 cryptographic erasure of the "
+     "customer-managed storage media plane (EBS/S3 key destruction) as a "
+     "provider operation; there is no separate customer media-sanitization "
+     "action on this enclave.",
+     "Not applicable to customer on AWS GovCloud. The customer retains no "
+     "media-sanitization implementation or compensating-control responsibility "
+     "for this enclave; sanitization is provider-performed via cryptographic "
+     "erasure.",
+     "Not Implemented"),
 
     # === CUSTOMER (full LLM assessment -- pure customer policy) =============
     # AC-17 DIVERGES from the Azure CRM (which marks it "Inherited"): on AWS
