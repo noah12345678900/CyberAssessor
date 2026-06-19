@@ -78,6 +78,18 @@ ROWS = [
      "Customer fully inherits Microsoft datacenter physical access controls "
      "and has no compensating-control responsibility.",
      "Implemented"),
+    ("PE-8",  "Visitor Access Records",
+     "Inherited",
+     "Microsoft maintains visitor access records for all Azure Government "
+     "datacenter facilities, logging visitor identity, escort, purpose, and "
+     "entry/exit times, retained and reviewed per Microsoft facility-security "
+     "procedures.",
+     "Customer fully inherits Azure datacenter visitor access records. Customer "
+     "personnel are not granted physical access to Azure Government datacenters, "
+     "so there is no customer-side cloud visitor log. The customer remains "
+     "responsible for visitor access records at any customer-operated "
+     "on-premises facility hosting the system's flex footprint.",
+     "Implemented"),
     ("PE-6",  "Monitoring Physical Access",
      "Inherited",
      "Microsoft monitors datacenter physical access via CCTV with 90-day "
