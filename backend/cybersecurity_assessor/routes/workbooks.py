@@ -41,8 +41,10 @@ from ..models import (
     BaselineControl,
     BaselineSourceType,
     BoundarySegment,
+    CalibrationEntry,
     ComplianceStatus,
     Component,
+    ComponentAsset,
     Control,
     CrmCorpusFeatures,
     CrmShortCircuitEvent,
@@ -50,6 +52,7 @@ from ..models import (
     Evidence,
     EvidenceAsset,
     EvidenceBoundary,
+    EvidenceComponent,
     EvidenceRetentionEvent,
     Framework,
     Objective,
@@ -58,10 +61,13 @@ from ..models import (
     PoamEvidence,
     PoamMilestone,
     PoamObjective,
+    PoamRiskHistory,
     RequirementMap,
     RequirementSource,
+    ResidualSuggestionCache,
     StigFinding,
     SweepDecision,
+    SweepHit,
     SweepRun,
     SystemContext,
     Workbook,
@@ -473,6 +479,11 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
             select(BoundarySegment.id).where(BoundarySegment.workbook_id == workbook_id)
         ).all()
     ]
+    component_ids = [
+        row for row in s.exec(
+            select(Component.id).where(Component.workbook_id == workbook_id)
+        ).all()
+    ]
     # StigFinding has no workbook_id column — it hangs off Evidence. Snapshot
     # the Evidence ids attached to this workbook now so the StigFinding delete
     # below can filter by evidence_id. Evidence itself is NULL'd (not deleted)
@@ -502,6 +513,20 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
         # enterprise — doesn't crash the delete with "too many SQL variables".
         traces = shown = cites = 0
         for batch in chunked(assessment_ids):
+            # ORDER MATTERS under PRAGMA foreign_keys=ON: AssessmentCitation
+            # has a NOT-NULL FK to AssessmentEvidenceShown
+            # (citation.evidence_shown_id), so the citation MUST be deleted
+            # BEFORE the evidence-shown row it points at. The previous order
+            # (shown before citation) raised a FK constraint failure → the
+            # whole workbook delete 500'd whenever any assessment had a
+            # self-cite. Trace has no children; order among trace/citation is
+            # free, but citation-before-shown is mandatory.
+            r = s.exec(
+                delete(AssessmentCitation).where(
+                    AssessmentCitation.assessment_id.in_(batch)
+                )
+            )
+            cites += getattr(r, "rowcount", 0) or 0
             r = s.exec(
                 delete(AssessmentTrace).where(
                     AssessmentTrace.assessment_id.in_(batch)
@@ -514,12 +539,6 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
                 )
             )
             shown += getattr(r, "rowcount", 0) or 0
-            r = s.exec(
-                delete(AssessmentCitation).where(
-                    AssessmentCitation.assessment_id.in_(batch)
-                )
-            )
-            cites += getattr(r, "rowcount", 0) or 0
         counts["assessment_traces"] = traces
         counts["assessment_evidence_shown"] = shown
         counts["assessment_citations"] = cites
@@ -528,6 +547,23 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
 
     # AssessmentRun is nullable-FK'd to workbook but we treat it as
     # workbook-owned — the run captures one ingest of this workbook.
+    # CalibrationEntry has a NOT-NULL FK (run_id) to AssessmentRun, so it MUST
+    # be deleted FIRST or the run delete raises a FK constraint failure under
+    # foreign_keys=ON. Snapshot the run ids (CalibrationEntry has no
+    # workbook_id) before deleting the runs.
+    run_ids = [
+        row for row in s.exec(
+            select(AssessmentRun.id).where(AssessmentRun.workbook_id == workbook_id)
+        ).all()
+    ]
+    if run_ids:
+        cal = 0
+        for batch in chunked(run_ids):
+            r = s.exec(delete(CalibrationEntry).where(CalibrationEntry.run_id.in_(batch)))
+            cal += getattr(r, "rowcount", 0) or 0
+        counts["calibration_entries"] = cal
+    else:
+        counts["calibration_entries"] = 0
     r = s.exec(delete(AssessmentRun).where(AssessmentRun.workbook_id == workbook_id))
     counts["assessment_runs"] = getattr(r, "rowcount", 0) or 0
 
@@ -539,32 +575,69 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
         counts["poam_evidence_links"] = getattr(r, "rowcount", 0) or 0
         r = s.exec(delete(PoamMilestone).where(PoamMilestone.poam_id.in_(poam_ids)))
         counts["poam_milestones"] = getattr(r, "rowcount", 0) or 0
+        # PoamRiskHistory + ResidualSuggestionCache also FK poam_id (NOT NULL) —
+        # must be deleted before the Poam parent or the delete 500s.
+        r = s.exec(delete(PoamRiskHistory).where(PoamRiskHistory.poam_id.in_(poam_ids)))
+        counts["poam_risk_history"] = getattr(r, "rowcount", 0) or 0
+        r = s.exec(
+            delete(ResidualSuggestionCache).where(
+                ResidualSuggestionCache.poam_id.in_(poam_ids)
+            )
+        )
+        counts["residual_suggestion_cache"] = getattr(r, "rowcount", 0) or 0
     r = s.exec(delete(Poam).where(Poam.workbook_id == workbook_id))
     counts["poams"] = getattr(r, "rowcount", 0) or 0
 
     # --- Sweep state -----------------------------------------------------------
     r = s.exec(delete(SweepDecision).where(SweepDecision.workbook_id == workbook_id))
     counts["sweep_decisions"] = getattr(r, "rowcount", 0) or 0
+    # SweepHit has a NOT-NULL FK (sweep_run_id) to SweepRun — delete the hits
+    # before the runs. Snapshot the run ids first (SweepHit has no workbook_id).
+    sweep_run_ids = [
+        row for row in s.exec(
+            select(SweepRun.id).where(SweepRun.workbook_id == workbook_id)
+        ).all()
+    ]
+    if sweep_run_ids:
+        hits = 0
+        for batch in chunked(sweep_run_ids):
+            r = s.exec(delete(SweepHit).where(SweepHit.sweep_run_id.in_(batch)))
+            hits += getattr(r, "rowcount", 0) or 0
+        counts["sweep_hits"] = hits
+    else:
+        counts["sweep_hits"] = 0
     r = s.exec(delete(SweepRun).where(SweepRun.workbook_id == workbook_id))
     counts["sweep_runs"] = getattr(r, "rowcount", 0) or 0
 
     # --- CRM telemetry ---------------------------------------------------------
-    r = s.exec(delete(CrmSuspicionLog).where(CrmSuspicionLog.workbook_id == workbook_id))
-    counts["crm_suspicion_logs"] = getattr(r, "rowcount", 0) or 0
+    # CrmShortCircuitEvent has an FK (suspicion_log_id) to CrmSuspicionLog, so
+    # the short-circuit events MUST be deleted BEFORE the suspicion logs or the
+    # suspicion-log delete 500s under foreign_keys=ON.
     r = s.exec(
         delete(CrmShortCircuitEvent).where(CrmShortCircuitEvent.workbook_id == workbook_id)
     )
     counts["crm_short_circuit_events"] = getattr(r, "rowcount", 0) or 0
+    r = s.exec(delete(CrmSuspicionLog).where(CrmSuspicionLog.workbook_id == workbook_id))
+    counts["crm_suspicion_logs"] = getattr(r, "rowcount", 0) or 0
     r = s.exec(delete(CrmCorpusFeatures).where(CrmCorpusFeatures.workbook_id == workbook_id))
     counts["crm_corpus_features"] = getattr(r, "rowcount", 0) or 0
 
     # --- Boundary + assets (with their link tables) ---------------------------
+    # Asset has two NOT-NULL-FK link children: EvidenceAsset (evidence↔asset)
+    # and ComponentAsset (component↔asset). Both must be deleted before the
+    # Asset rows. ComponentAsset is also a child of Component (deleted later),
+    # so clearing it here by asset_id covers the asset side; the component side
+    # is a no-op by then.
     if asset_ids:
         asset_links = 0
+        comp_asset_links = 0
         for batch in chunked(asset_ids):
             r = s.exec(delete(EvidenceAsset).where(EvidenceAsset.asset_id.in_(batch)))
             asset_links += getattr(r, "rowcount", 0) or 0
+            r = s.exec(delete(ComponentAsset).where(ComponentAsset.asset_id.in_(batch)))
+            comp_asset_links += getattr(r, "rowcount", 0) or 0
         counts["evidence_asset_links"] = asset_links
+        counts["component_asset_links"] = comp_asset_links
     r = s.exec(delete(Asset).where(Asset.workbook_id == workbook_id))
     counts["assets"] = getattr(r, "rowcount", 0) or 0
 
@@ -609,6 +682,28 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
     #   * OverrideEpoch    — per-(workbook,objective) override generation counter
     #   * EvidenceRetentionEvent — per-workbook evidence-eviction ledger
     #   * AutomationSchedule     — per-workbook sync schedules
+    # Component has two NOT-NULL-FK link children: EvidenceComponent
+    # (evidence↔component) and ComponentAsset (component↔asset). Delete both
+    # before the Component rows. (ComponentAsset rows tied to this workbook's
+    # assets were already cleared above by asset_id; this catches any keyed on
+    # a component whose paired asset lived elsewhere.)
+    if component_ids:
+        ev_comp = comp_asset2 = 0
+        for batch in chunked(component_ids):
+            r = s.exec(
+                delete(EvidenceComponent).where(
+                    EvidenceComponent.component_id.in_(batch)
+                )
+            )
+            ev_comp += getattr(r, "rowcount", 0) or 0
+            r = s.exec(
+                delete(ComponentAsset).where(ComponentAsset.component_id.in_(batch))
+            )
+            comp_asset2 += getattr(r, "rowcount", 0) or 0
+        counts["evidence_component_links"] = ev_comp
+        counts["component_asset_links"] = (
+            counts.get("component_asset_links", 0) + comp_asset2
+        )
     r = s.exec(delete(Component).where(Component.workbook_id == workbook_id))
     counts["components"] = getattr(r, "rowcount", 0) or 0
     r = s.exec(delete(OverrideEpoch).where(OverrideEpoch.workbook_id == workbook_id))
@@ -1093,23 +1188,20 @@ def workbook_col_l_status(
     INHERITED (named source → Compliant). A control whose CCIs are all
     INHERITED rolls up INHERITED; any ASSESS CCI makes the whole control ASSESS.
 
-    Returns one entry per control that ACTUALLY HAS a synthesized flex slice
-    (i.e. the control is covered by CRM cloud slices — the pie-slice model only
-    synthesizes a flex slice for those). Controls with no CRM (e.g. a wholly
-    column-N Not Applicable control like AC-18) have NO flex slice and get NO
-    entry here, so the grid omits the chip for them — the flex chip describes a
-    slice that doesn't exist otherwise.
+    Returns one entry per control in the workbook — Column L is a
+    workbook-intrinsic attestation, so EVERY control has a flex-slice status
+    regardless of whether any CRM is attached. (Earlier this was gated to
+    CRM-covered controls only, which wrongly hid the Inherited chip for a
+    col-L/col-M inherited control like PE-3/SC-7 whenever no CRM was attached.)
 
     Each entry:
       ``control_id``  — OSCAL canonical id (matches the grid's Control.control_id)
-      ``outcome``     — "inherited" | "assess" | "escalate"
+      ``outcome``     — "inherited" | "assess" | "escalate" | "na"
       ``value``       — a representative raw col-L cell (the one that drove the
                         rollup), for the chip tooltip/label.
     Empty list when the workbook can't be read (chip simply omitted).
     """
-    from ..baselines.scope_labels import ON_PREM_LABEL
     from ..engine import rules
-    from ..engine.crm_context import build_crm_context
     from ..excel.ccis_reader import (
         _ccis_to_oscal_control_id,
         _normalize_control,
@@ -1125,20 +1217,6 @@ def workbook_col_l_status(
         index = read_workbook_index(Path(wb.path))
     except (ValueError, FileNotFoundError, OSError):
         return []
-
-    # A control gets a flex chip when EITHER:
-    #   (1) it has a synthesized flex slice — build_crm_context synthesizes the
-    #       ON_PREM flex slice for CRM-covered controls; OR
-    #   (2) it is wholly Column-N Not Applicable (rule 8b) — even with NO CRM,
-    #       a fully-N/A control (e.g. AC-18, no CRM, col N="Not Applicable")
-    #       should show an "N/A" flex chip, not a blank "—". (Owner: AC-18 must
-    #       read N/A.)
-    crm_context = build_crm_context(workbook_id, s)
-    flex_control_ids = {
-        oscal
-        for oscal, sls in crm_context.by_control_impls.items()
-        if any(sl.scope_label == ON_PREM_LABEL for sl in sls)
-    }
 
     # Worst-of precedence: higher number wins when aggregating a control's CCIs.
     _RANK = {
@@ -1177,12 +1255,9 @@ def workbook_col_l_status(
 
     out: list[dict] = []
     for oscal, (_rank, outcome_value, value) in agg.items():
+        # Column-N Not Applicable wins: a wholly-N/A control (rule 8b) has no
+        # real flex assessment to do, so show "na" not the raw col-L outcome.
         wholly_na = col_n_na_all.get(oscal, False)
-        # Emit a chip only when the control has a flex slice OR is wholly N/A.
-        if oscal not in flex_control_ids and not wholly_na:
-            continue
-        # Column-N Not Applicable wins: the control is wholly N/A (rule 8b),
-        # so the flex slice has nothing to assess — show "na" not "assess".
         if wholly_na:
             out.append({"control_id": oscal, "outcome": "na", "value": value})
         else:
