@@ -237,7 +237,16 @@ export function Controls() {
   // lives under r4 makes resolve_odps query a framework with zero OdpAssignment
   // rows, so `{{ insert: param, ... }}` placeholders render as literal brackets.
   useEffect(() => {
-    if (!workbooks.data || workbooks.data.length === 0) return;
+    if (!workbooks.data) return; // still loading — don't clear a valid id
+    if (workbooks.data.length === 0) {
+      // No workbooks left (e.g. the active one was just deleted). Clear the
+      // dangling active id so downstream queries/exports keyed on workbookId
+      // stop referencing a now-deleted workbook. Without this the grid kept
+      // acting on the deleted id and behaved as if the workbook were "still
+      // there" after a delete.
+      if (workbookId !== undefined) setWorkbookId(undefined);
+      return;
+    }
     // Track the active (most-recently-opened) workbook. There is no picker:
     // opening a workbook on the Workbooks page bumps last_opened, reorders this
     // list, and this effect re-points scope at it. Realign the framework too so

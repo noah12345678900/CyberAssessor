@@ -60,7 +60,42 @@ _SYSTEM_VERDICT_SOURCES = {
     VerdictSource.RULE_8B,
     VerdictSource.RULE_8C,
 }
+# CRM-DERIVED subset: rows the CRM backfill itself authored from CRM overlays.
+# These are the ONLY rows the CRM self-heal may delete/overwrite when the CRM
+# picture changes. RULE_* verdicts are workbook-INTRINSIC attestations (col-N
+# Not Applicable → 8b, col-M named inheritance → 8a) — written by
+# backfill_workbook_rules from the eMASS workbook itself, not from any CRM. A
+# CRM attach must NEVER delete or clobber a workbook attestation (PE-10 bug:
+# attaching a CRM whose flex slice resolves col-L ASSESS judged the control
+# "non-deterministic" and the self-heal deleted the valid rule_8b NA row). The
+# workbook fact stands regardless of CRM coverage; only re-derive/heal rows the
+# CRM owns. (RULE_8C is never written by backfill — only the deterministic
+# COMPLIANT_8A/NOT_APPLICABLE_8B verdicts are — but it's listed for symmetry.)
+_CRM_DERIVED_VERDICT_SOURCES = {
+    VerdictSource.CRM_PROVIDER,
+    VerdictSource.CRM_INHERITED,
+    VerdictSource.CRM_NOT_APPLICABLE,
+    VerdictSource.CRM_HYBRID_MIXED,
+}
 _SYSTEM_TESTER = "system"
+
+
+def _is_crm_derived(assessment: Assessment) -> bool:
+    """True when the row was written by the CRM backfill from a CRM overlay.
+
+    Narrower than :func:`_is_system_written`: a CRM-derived row is one the CRM
+    self-heal may delete (stale inheritance) or re-derive in place (slice set
+    grew). A RULE_8A/8B verdict is system-written but NOT CRM-derived — it is a
+    workbook attestation the CRM must never touch. Requires both the CRM
+    verdict_source AND the backfill tester sentinel (a human/LLM never gets
+    healed).
+    """
+    vs = assessment.verdict_source
+    if vs is None or vs not in _CRM_DERIVED_VERDICT_SOURCES:
+        return False
+    if assessment.tester and assessment.tester != _SYSTEM_TESTER:
+        return False
+    return True
 
 
 def _is_system_written(assessment: Assessment) -> bool:
@@ -309,13 +344,21 @@ def backfill_workbook_crm(
             # Hybrid / customer (on any scope) — this control needs the LLM at
             # assess time. SELF-HEAL: if a PRIOR backfill (run when only one
             # CRM was attached and the control looked all-inheritable) already
-            # wrote a deterministic row, it is now STALE — a later CRM made the
-            # control customer/hybrid. Delete that system-written row + its
+            # wrote a CRM-DERIVED deterministic row, it is now STALE — a later
+            # CRM made the control customer/hybrid. Delete that CRM row + its
             # impl rows so the control defers cleanly to the LLM instead of
             # showing a frozen single-scope COMPLIANT. Never touch a user- or
             # LLM-authored row. This is the AC-17 fix (Azure attached first →
             # deterministic row; AWS attached second → now customer/hybrid).
-            if existing is not None and _is_system_written(existing):
+            #
+            # GUARD (PE-10 fix): only delete CRM-DERIVED rows. A RULE_8A/8B
+            # verdict is a workbook attestation (col-N Not Applicable / col-M
+            # named inheritance), NOT a CRM guess — a CRM attach must never
+            # delete it. Before this guard the predicate was _is_system_written,
+            # which includes RULE_*, so attaching a CRM whose flex slice
+            # resolved col-L ASSESS judged the control non-deterministic and
+            # deleted the valid rule_8b NA row (PE-10 vanished from the count).
+            if existing is not None and _is_crm_derived(existing):
                 session.exec(
                     delete(AssessmentImplementation).where(
                         AssessmentImplementation.assessment_id == existing.id
@@ -325,11 +368,18 @@ def backfill_workbook_crm(
                 existing_by_obj.pop(obj.id, None)
                 healed_deleted += 1
             else:
+                # Either a user/LLM row OR a workbook RULE_* attestation — both
+                # are preserved. The control still defers to the LLM at assess
+                # time, but the existing authoritative row stays put.
                 skipped_non_det += 1
             continue
 
-        # Deterministic control. If a user/LLM row already owns it, leave it.
-        if existing is not None and not _is_system_written(existing):
+        # Deterministic control. If a user/LLM row OR a workbook RULE_*
+        # attestation already owns it, leave it. Only a CRM-derived row may be
+        # re-derived in place below (the PE-3 slice-enrichment case). A col-N
+        # rule_8b NA row must survive a later CRM marking the control
+        # inherited/provider — the workbook attestation is authoritative.
+        if existing is not None and not _is_crm_derived(existing):
             skipped_existing += 1
             continue
 
