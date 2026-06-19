@@ -228,3 +228,42 @@ def test_8a_text_narrative_quotes_trigger(make_row):
     result = rules.classify_row(row)
     assert '"automatically compliant"' in (result.narrative or "")
     assert "col K" in (result.narrative or "") or "Assessment Procedures" in (result.narrative or "")
+
+
+# ---------------------------------------------------------------------------
+# Column-L flex-slice resolver (pie-slice model)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_col_l_flex_named_source_is_inherited():
+    assert (
+        rules.resolve_col_l_flex_status("DoW Enterprise")
+        is rules.ColLFlexOutcome.INHERITED
+    )
+    assert (
+        rules.resolve_col_l_flex_status("SDA Enterprise Service")
+        is rules.ColLFlexOutcome.INHERITED
+    )
+
+
+def test_resolve_col_l_flex_local_blank_no_are_assess():
+    for v in ("Local", "local", "", None, "No", "n/a", "not inherited"):
+        assert (
+            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ASSESS
+        ), f"{v!r} should be ASSESS"
+
+
+def test_resolve_col_l_flex_bare_yes_is_escalate():
+    for v in ("Yes", "yes", "inherited", "true"):
+        assert (
+            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ESCALATE
+        ), f"{v!r} should be ESCALATE"
+
+
+def test_resolve_col_l_flex_named_csp_is_assess():
+    # A col-L value naming a CSP is an 8b structural hint but can't auto-N/A
+    # without K/J triggers — resolver defers to assessment, never auto-pass.
+    for v in ("AWS GovCloud", "Azure", "inherited from CSP"):
+        assert (
+            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ASSESS
+        ), f"{v!r} should be ASSESS (CSP-named)"

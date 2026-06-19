@@ -43,7 +43,12 @@ from ..excel.ccis_reader import (
 from ..baselines.scope_labels import ON_PREM_LABEL, is_on_prem
 from ..models import ComplianceStatus, NarrativeClass, VerdictSource
 from . import decision_cache, rules, supersession, validator
-from .crm_context import CrmContext, CrmEntry, ImplementationSlice
+from .crm_context import (
+    CrmContext,
+    CrmEntry,
+    ImplementationSlice,
+    is_physical_family,
+)
 from .evidence_bundle import EvidenceBlock
 from .evidence_ranker import OVERFLOW_ESCALATE
 from .measurement import (
@@ -332,6 +337,20 @@ class Decision:
     # to the canonical ``narrative``. JSON-native, so it round-trips through
     # DecisionCache via asdict/Decision(**raw) with no special handling.
     narratives_by_scope: dict[str, str] = field(default_factory=dict)
+    # Per-scope STATUS map (parallel to narratives_by_scope), scope_label ->
+    # ComplianceStatus.value ("Compliant"/"Non-Compliant"/"Not Applicable").
+    # Most decisions leave this empty: a customer/hybrid slice inherits the
+    # single ``status`` and inheritable slices get their status from the CRM
+    # responsibility mapping. It's populated only when per-scope verdicts
+    # genuinely DIVERGE in a way the responsibility mapping can't express —
+    # e.g. a PE-family control inherited (Compliant) on every cloud but
+    # Non-Compliant on the synthesized On-Premises facility (no CSP can cover
+    # an on-prem data center). ``plan_implementations`` reads it so the per-
+    # scope impl rows carry distinct statuses, and persist re-derives the
+    # SAME mixed verdict from crm_context slices + this map (no clobber).
+    # String values (not the enum) so it round-trips through DecisionCache
+    # via asdict/Decision(**raw) like narratives_by_scope.
+    statuses_by_scope: dict[str, str] = field(default_factory=dict)
     retries: int = 0
     rejection_log: list[ValidatorRejection] = field(default_factory=list)
     supersession_log: list[SupersessionHit] = field(default_factory=list)
@@ -532,6 +551,10 @@ _BOUNDARY_PHRASE_RE = re.compile(
 # is in this set — a mixed verdict (e.g. cloud=provider, on-prem=customer)
 # still requires the LLM to assess the customer-owned half.
 _CRM_SHORT_CIRCUIT_SET = frozenset({"provider", "inherited", "not_applicable"})
+
+# Physical-family detection lives in crm_context (the lower-level module the
+# synthesis logic uses); re-exported here for the kernel's own checks.
+_is_physical_family = is_physical_family
 
 
 def _boundary_conflict(
@@ -737,9 +760,43 @@ def plan_implementations(
     """
     plans: list[ImplementationPlan] = []
     by_scope = decision.narratives_by_scope or {}
+    status_by_scope = decision.statuses_by_scope or {}
+
+    def _scope_status(label: str) -> ComplianceStatus | None:
+        """Per-scope status override, if the Decision declared one for *label*."""
+        raw = status_by_scope.get(label)
+        if raw is None:
+            return None
+        try:
+            return ComplianceStatus(raw)
+        except ValueError:
+            return None
 
     for sl in slices:
         resp = sl.responsibility
+        # An explicit per-scope status overrides the responsibility-derived
+        # default for ANY slice — this is how a PE control inherited on the
+        # clouds (Compliant) carries a Non-Compliant On-Premises facility scope
+        # (the responsibility mapping alone could never produce that split).
+        forced = _scope_status(sl.scope_label)
+        if forced is not None:
+            plan_narr = (
+                by_scope.get(sl.scope_label)
+                or (sl.narrative or "").strip()
+                or decision.narrative
+                or _fallback_inheritance_narrative(sl)
+            )
+            plans.append(
+                ImplementationPlan(
+                    scope_label=sl.scope_label,
+                    responsibility=resp,
+                    status=forced,
+                    narrative=plan_narr,
+                    evidence_refs=None,
+                    source_baseline_id=sl.source_baseline_id,
+                )
+            )
+            continue
         if resp in _INHERITABLE_RESPONSIBILITIES:
             narrative = (sl.narrative or "").strip() or _fallback_inheritance_narrative(sl)
             plans.append(
@@ -1254,14 +1311,33 @@ class Assessor:
     ) -> Decision:
         cci = row.cci_id or row.control_id
 
+        # Resolve the per-scope CRM slices up front — needed BOTH for the
+        # rule-8a scope-down gate below and for the Step 1.5 CRM logic. A
+        # control with cloud CRM slices is multi-slice (pie-slice model): col L
+        # then governs only the flex (On-Premises / workbook) slice, not the
+        # whole control.
+        cloud_slices_present = bool(self._lookup_crm_slices(row, crm_context))
+
         # ---- Step 1: deterministic rule #8 -----------------------------
         auto = rules.classify_row(row)
         if auto.verdict == rules.AutoStatusVerdict.COMPLIANT_8A:
-            return self._finalize_rule_decision(
-                row, cci, auto, source="rule_8a", outcome=outcome,
-                workbook_id=workbook_id,
-            )
-        if auto.verdict == rules.AutoStatusVerdict.NOT_APPLICABLE_8B:
+            # Rule-8a SCOPE-DOWN (pie-slice model). Rule 8a fires on a Column-L
+            # named inheritance source. When the control has NO cloud CRM
+            # slices it is single-boundary, so col L legitimately decides the
+            # WHOLE control → short-circuit Compliant as before (no regression
+            # for non-CRM workbooks). But when cloud CRM slices ARE present,
+            # col L is the authority for the FLEX slice only — short-circuiting
+            # the whole control here would mask customer-owned cloud work (the
+            # material 3PAO defect). In that case we DON'T short-circuit; we
+            # fall through to Step 1.5, where the flex slice picks up its
+            # col-L-derived Compliant status (rules.resolve_col_l_flex_status →
+            # INHERITED) and the cloud slices are assessed independently.
+            if not cloud_slices_present:
+                return self._finalize_rule_decision(
+                    row, cci, auto, source="rule_8a", outcome=outcome,
+                    workbook_id=workbook_id,
+                )
+        elif auto.verdict == rules.AutoStatusVerdict.NOT_APPLICABLE_8B:
             return self._finalize_rule_decision(
                 row, cci, auto, source="rule_8b", outcome=outcome,
                 workbook_id=workbook_id,
@@ -1285,6 +1361,12 @@ class Assessor:
         # narratives onto the actual customer-owned scope labels (e.g.
         # "AWS GovCloud" + On-Premises) rather than a generic two-slot split.
         crm_slices = self._lookup_crm_slices(row, crm_context)
+        # Flex-slice resolution state — initialized OUTSIDE the crm_entry block
+        # so the LLM-accept path (which runs for no-CRM rows too) can always
+        # read them. synth_onprem is the synthesized flex slice (or None);
+        # flex_outcome is the col-L resolution for it (or None when absent).
+        synth_onprem: ImplementationSlice | None = None
+        flex_outcome: rules.ColLFlexOutcome | None = None
         if crm_entry is not None:
             cloud_r = crm_entry.responsibility
             onprem_r = crm_entry.responsibility_onprem
@@ -1307,9 +1389,61 @@ class Assessor:
             # carry distinct verdicts/narratives. Precision over recall:
             # never let "inherited" on the latest attach silently drop the
             # customer half of an earlier-attached scope.
-            slice_has_customer_work = any(
+            # Customer-side work on the CLOUD slices (real CRM-authored
+            # customer/hybrid). The synthesized flex slice is handled
+            # separately below via col L — its "customer" LABEL must NOT by
+            # itself force the LLM path, or a col-L-inherited flex slice could
+            # never let the control short-circuit Compliant.
+            cloud_slice_has_customer_work = any(
                 sl.responsibility in _CUSTOMER_OWNED_RESPONSIBILITIES
                 for sl in crm_slices
+                if not (
+                    sl.scope_label == ON_PREM_LABEL
+                    and sl.source_baseline_id is None
+                )
+            )
+            # Flex (On-Premises / workbook) slice resolution — pie-slice model.
+            # The synthesized flex slice (source_baseline_id is None) takes its
+            # STATUS from the workbook's Column L (the single authority), NOT
+            # from the CRM responsibility. resolve_col_l_flex_status maps col L
+            # to one of: INHERITED (Compliant), ASSESS (assess; NC if no
+            # evidence), ESCALATE (bare "Yes" → needs_review). The CRM's
+            # responsibility_onprem stays as the slice LABEL only; narrative_onprem
+            # stays as the slice narrative. ``synth_onprem`` is the slice object
+            # (or None when the control already has an explicit on-prem slice or
+            # has no slices at all).
+            synth_onprem = next(
+                (
+                    sl
+                    for sl in crm_slices
+                    if sl.scope_label == ON_PREM_LABEL
+                    and sl.source_baseline_id is None
+                ),
+                None,
+            )
+            flex_outcome = (
+                rules.resolve_col_l_flex_status(row.inherited)
+                if synth_onprem is not None
+                else None
+            )
+            # Are all the CLOUD slices inheritable (provider/inherited/NA)?
+            # When True, no cloud scope needs the LLM, so the flex slice's
+            # col-L status fully determines whether the control can resolve
+            # deterministically.
+            clouds_all_inheritable = bool(crm_slices) and all(
+                sl.responsibility in _CRM_SHORT_CIRCUIT_SET
+                for sl in crm_slices
+                if sl.scope_label != ON_PREM_LABEL
+            )
+            # The flex slice needs assessment when col L says ASSESS (Local/No/
+            # blank/external-CSP). col L INHERITED → flex is Compliant (no
+            # assessment); ESCALATE → handled as needs_review below.
+            flex_needs_assessment = flex_outcome is rules.ColLFlexOutcome.ASSESS
+            # Combined "real work remains" signal that drives the short-circuit
+            # suppression: either a cloud slice is customer/hybrid, or the flex
+            # slice must be assessed per col L.
+            slice_has_customer_work = (
+                cloud_slice_has_customer_work or flex_needs_assessment
             )
             # Empty-slices masking guard. In a multi-tenant workbook (2+ CRM
             # baselines) a control with NO per-scope slices means scope
@@ -1371,7 +1505,73 @@ class Assessor:
                 or slice_has_customer_work
                 or multi_tenant_unattributed
             )
-            if not force_llm and all_inheritable and not suppress_short_circuit:
+            # ===== Deterministic dispatch =====================================
+            # Two modes:
+            #   PIE-SLICE MODE (synth_onprem is not None — i.e. cloud CRM slices
+            #     exist and we synthesized a flex slice): Column L is the SINGLE
+            #     authority for the flex slice's status; the CRM's onprem_r is a
+            #     LABEL only and is IGNORED for routing (Conflict 1: col L wins
+            #     outright). Resolution depends on whether the clouds are all
+            #     inheritable and on flex_outcome.
+            #   LEGACY MODE (synth_onprem is None — no cloud slices, or the CRM
+            #     authored an explicit on-prem slice): unchanged dual-scope CRM
+            #     behavior driven by all_inheritable + suppress_short_circuit.
+            if synth_onprem is not None:
+                if not force_llm and clouds_all_inheritable:
+                    if flex_outcome is rules.ColLFlexOutcome.INHERITED:
+                        # col L INHERITED → flex Compliant; clouds inheritable →
+                        # whole control Compliant. Force the flex slice's
+                        # Compliant status via statuses_by_scope so the
+                        # synthesized customer slice isn't dropped by the
+                        # phantom-scope guard.
+                        return self._finalize_crm_decision(
+                            row, cci, crm_entry, outcome=outcome,
+                            workbook_id=workbook_id,
+                            slices=crm_slices,
+                            flex_statuses={
+                                ON_PREM_LABEL: ComplianceStatus.COMPLIANT.value
+                            },
+                        )
+                    if (
+                        flex_outcome is rules.ColLFlexOutcome.ASSESS
+                        and not evidence_present
+                    ):
+                        # col L ASSESS + no flex evidence → deterministic mixed
+                        # verdict (clouds Compliant, flex Non-Compliant, parent
+                        # NC). Owner decision: blank narrative under forced-assess
+                        # → NC.
+                        return self._finalize_physical_onprem_gap_decision(
+                            row, cci, crm_entry, crm_slices, outcome=outcome,
+                        )
+                    if (
+                        flex_outcome is rules.ColLFlexOutcome.ESCALATE
+                        and not evidence_present
+                    ):
+                        # col L bare "Yes" (inherited, source unnamed) + no
+                        # evidence → escalate (8c): can't tell internal from
+                        # external, nothing to send the LLM.
+                        return self._abstain(
+                            row, cci,
+                            'col-L-escalate: flex slice marked inherited ("Yes") '
+                            "but names no source — cannot distinguish internal "
+                            "inheritance from external CSP; escalated for reviewer.",
+                            outcome=outcome,
+                            rule="8c",
+                            notes=[
+                                "Flex (On-Premises/workbook) slice: Column L is a "
+                                "bare inherited flag with no named source; clouds "
+                                "inheritable, no flex evidence. Escalated.",
+                            ],
+                        )
+                    # else (ASSESS/ESCALATE WITH evidence) → fall through to LLM.
+                # clouds NOT all inheritable (a cloud slice is customer/hybrid) OR
+                # flex needs the LLM with evidence → LLM path (hybrid block below).
+            elif (
+                not force_llm
+                and all_inheritable
+                and not suppress_short_circuit
+            ):
+                # LEGACY MODE short-circuit (no synthesized flex slice).
                 return self._finalize_crm_decision(
                     row, cci, crm_entry, outcome=outcome,
                     workbook_id=workbook_id,
@@ -2132,6 +2332,31 @@ class Assessor:
                     if val not in seen_flags:
                         seen_flags.add(val)
                         dual_flag_values.append(val)
+                # Flex-slice col-L override on the LLM path (pie-slice model).
+                # The control reached the LLM because a CLOUD slice needed
+                # assessment (customer/hybrid) OR the flex slice itself had
+                # evidence. Either way, when col L marks the flex slice INHERITED
+                # its status is authoritative and must NOT be the LLM's call —
+                # force Compliant via statuses_by_scope so plan_implementations
+                # gives the flex slice Compliant regardless of the LLM verdict on
+                # the cloud halves. col L ASSESS → let the LLM's verdict stand
+                # for the flex slice (it had evidence). ESCALATE with evidence →
+                # likewise assessed by the LLM.
+                llm_flex_statuses: dict[str, str] = {}
+                if (
+                    synth_onprem is not None
+                    and flex_outcome is rules.ColLFlexOutcome.INHERITED
+                ):
+                    llm_flex_statuses[ON_PREM_LABEL] = (
+                        ComplianceStatus.COMPLIANT.value
+                    )
+                    if not (proposal_by_scope.get(ON_PREM_LABEL) or "").strip():
+                        proposal_by_scope[ON_PREM_LABEL] = (
+                            "On-premises/workbook scope is inherited per the "
+                            f'eMASS workbook (Column L = "{(row.inherited or "").strip()}"); '
+                            "confirmed via the workbook to cover this control "
+                            "objective for the on-premises/workbook scope."
+                        )
                 decision = Decision(
                     cci_id=cci,
                     excel_row=row.excel_row,
@@ -2151,6 +2376,7 @@ class Assessor:
                     narrative_on_prem=proposal_on_prem,
                     narrative_cloud=proposal_cloud,
                     narratives_by_scope=proposal_by_scope,
+                    statuses_by_scope=llm_flex_statuses,
                     dual_narrative_flags=dual_flag_values,
                     # Audit v1 — the trace blobs that justify this verdict
                     # ride along on the Decision so the route layer
@@ -2642,6 +2868,7 @@ class Assessor:
         outcome,
         workbook_id: int | None = None,
         slices: list[ImplementationSlice] | None = None,
+        flex_statuses: dict[str, str] | None = None,
     ) -> Decision:
         """Build a Decision for a CRM row whose every specified scope is inheritable.
 
@@ -2718,6 +2945,16 @@ class Assessor:
 
         cloud_r = entry.responsibility
         onprem_r = entry.responsibility_onprem
+        # Pie-slice mode: when the caller passed flex_statuses, the flex
+        # (On-Premises/workbook) slice is owned by Column L and handled below
+        # via statuses_by_scope + a col-L narrative. The CRM's
+        # ``responsibility_onprem`` is then a LABEL only and must NOT drive the
+        # dual-scope cloud+onprem narrative machinery here (that path assumes an
+        # inheritable on-prem responsibility and KeyErrors on "customer"/"hybrid").
+        # Null it locally so this method composes the CLOUD verdict only; the
+        # flex slice's status/narrative are applied at the Decision build.
+        if flex_statuses:
+            onprem_r = None
 
         # Per-scope narratives — CRM-supplied text wins; otherwise the
         # default template, scope-labeled so a reviewer can tell where
@@ -2930,6 +3167,26 @@ class Assessor:
             if text:
                 per_scope[sl.scope_label] = text
 
+        # Flex-slice status override (pie-slice model). When col L resolved the
+        # synthesized flex (On-Premises/workbook) slice to a concrete status
+        # (e.g. INHERITED → Compliant), carry it on statuses_by_scope so
+        # plan_implementations forces that per-scope status — otherwise the
+        # synthesized customer-labeled slice with no CRM narrative would hit the
+        # phantom-scope guard and abstain. Also give the flex slice a col-L
+        # inheritance narrative when the CRM supplied none, so its impl row and
+        # the rolled column-Q read cleanly.
+        statuses_by_scope: dict[str, str] = dict(flex_statuses or {})
+        if (
+            statuses_by_scope.get(ON_PREM_LABEL) == ComplianceStatus.COMPLIANT.value
+            and not (per_scope.get(ON_PREM_LABEL) or "").strip()
+        ):
+            per_scope[ON_PREM_LABEL] = (
+                "On-premises/workbook scope is inherited per the eMASS workbook "
+                f'(Column L = "{(row.inherited or "").strip()}"); the inheriting '
+                "authorization is confirmed via the workbook to cover this "
+                "control objective for the on-premises/workbook scope."
+            )
+
         return Decision(
             cci_id=cci,
             excel_row=row.excel_row,
@@ -2950,7 +3207,81 @@ class Assessor:
             narrative_on_prem=narrative_on_prem_out,
             narrative_cloud=narrative_cloud_out,
             narratives_by_scope=per_scope,
+            statuses_by_scope=statuses_by_scope,
         )
+
+    def _finalize_physical_onprem_gap_decision(
+        self,
+        row: CcisRow,
+        cci: str,
+        entry: CrmEntry,
+        slices: list[ImplementationSlice],
+        *,
+        outcome,
+    ) -> Decision:
+        """Deterministic mixed verdict for ANY control inherited on every
+        cloud scope with a synthesized customer On-Premises slice and NO
+        on-prem evidence (family-agnostic — generalized from the original
+        PE-3 case).
+
+        Cloud scopes stay Compliant-by-inheritance; the On-Premises scope is
+        Non-Compliant (no evidence — CSP inheritance covers only the cloud
+        enclaves, not the customer-operated on-premises footprint). The
+        per-scope statuses ride on the Decision via ``statuses_by_scope`` +
+        ``narratives_by_scope`` so ``plan_implementations`` reproduces the
+        split and ``persist_assessment_with_impls`` re-derives the SAME mixed
+        verdict from the same crm_context slices — no clobber. Parent status is
+        the worst-of rollup (NON_COMPLIANT). No LLM call: a missing on-prem
+        artifact is a known finding, not a judgment call.
+        """
+        statuses_by_scope: dict[str, str] = {}
+        narratives_by_scope: dict[str, str] = {}
+        for sl in slices:
+            if sl.scope_label == ON_PREM_LABEL:
+                statuses_by_scope[sl.scope_label] = ComplianceStatus.NON_COMPLIANT.value
+                narratives_by_scope[sl.scope_label] = (
+                    "No on-premises evidence was located for this control "
+                    "objective. The cloud enclaves inherit this control from the "
+                    "provider(s), but that inheritance does not cover the "
+                    "customer-operated on-premises footprint, and no artifact "
+                    "substantiates the on-premises implementation. Non-Compliant; "
+                    "POA&M opened pending on-premises implementation evidence."
+                )
+            else:
+                statuses_by_scope[sl.scope_label] = ComplianceStatus.COMPLIANT.value
+                narratives_by_scope[sl.scope_label] = (
+                    (sl.narrative or "").strip()
+                    or _fallback_inheritance_narrative(sl)
+                )
+
+        # Build the per-scope plans now ONLY to compute the rollup + canonical
+        # narrative; persist re-derives the identical plans from crm_context.
+        decision_stub = Decision(
+            cci_id=cci, excel_row=row.excel_row, accepted=True,
+            status=ComplianceStatus.NON_COMPLIANT, narrative="",
+            narrative_class=NarrativeClass.GAP_DESCRIBING,
+            source="crm_physical_onprem_gap", rule=None,
+            narratives_by_scope=narratives_by_scope,
+            statuses_by_scope=statuses_by_scope,
+        )
+        plans = plan_implementations(decision_stub, slices)
+        rolled = compute_rollup_status([p.status for p in plans])
+        narrative = compose_rolled_narrative(plans)
+
+        if outcome is not None:
+            outcome.accepted = True
+            outcome.retries_before_accept = 0
+
+        decision_stub.status = rolled if rolled is not None else ComplianceStatus.NON_COMPLIANT
+        decision_stub.narrative = narrative
+        decision_stub.notes = [
+            "Control inherited on every cloud scope but no on-premises "
+            "evidence located; CSP inheritance cannot cover the customer-"
+            "operated on-premises footprint. Deterministic Non-Compliant on "
+            "the On-Premises scope; clouds remain Compliant-by-inheritance. "
+            f"baseline_id={entry.source_baseline_id}.",
+        ]
+        return decision_stub
 
     def _render_hybrid_block(
         self, entry: CrmEntry, *, onprem_implicit_customer: bool = False

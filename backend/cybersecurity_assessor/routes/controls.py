@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -175,6 +176,30 @@ def _coerce_abstain_persistence_fields(
                 break
         narrative = f"[Needs review — {prefix_reason}]\n\n{narrative}"
     return status, narrative
+
+
+# Matches the abstain prefix that ``_coerce_abstain_persistence_fields`` writes:
+# ``[Needs review — <reason>]\n\n<narrative>``. The em dash is U+2014; the reason
+# runs to the closing bracket. Used to STRIP the marker when a reviewer accepts
+# the row (needs_review -> False), so a now-trusted verdict's column Q does not
+# carry a stale "[Needs review …]" header into the workbook.
+_ABSTAIN_PREFIX_RE = re.compile(r"^\[Needs review — [^\]]*\]\n\n")
+
+
+def _strip_abstain_prefix(narrative: str | None) -> str | None:
+    """Remove a leading ``[Needs review — …]`` marker from a narrative.
+
+    The kernel coerces a hard-abstain row's column Q to
+    ``[Needs review — llm-abstain]\n\n<text>`` so the reviewer queue shows why.
+    When the reviewer ACCEPTS the row, the marker is stale — they have done the
+    review — but the upsert previously persisted ``body.narrative_q`` verbatim,
+    leaving the contradiction "needs_review=False but the narrative still says
+    [Needs review …]" (it then wrote that into the workbook). Strip exactly one
+    leading marker; no-op for narratives that never carried one.
+    """
+    if not narrative:
+        return narrative
+    return _ABSTAIN_PREFIX_RE.sub("", narrative, count=1)
 
 
 # Verdict-source mapping moved to the engine layer (engine/assessor.py
@@ -726,6 +751,13 @@ def get_control(
     # ControlDetail count inflates — e.g. AC-2 shows 32/32 instead of 25/25.
     # Mirrors the in_workbook logic in catalog.list_objectives. When no
     # workbook is given (CSV export, raw drill-down) we keep every objective.
+    # Column-L (inherited) values per CCI for the flex-slice chip. Col L lives
+    # only on the workbook row (CcisRow.inherited), never persisted to the DB,
+    # so when a workbook is in play we re-read it (read_workbook_index is
+    # process-cached by path/mtime/size, so this is cheap after warm-up) and
+    # build a CCI → inherited map. Best-effort: any read failure / missing row
+    # leaves the value None and the UI simply omits the chip.
+    inherited_by_cci: dict[str, str | None] = {}
     if workbook_id is not None:
         wb = s.get(Workbook, workbook_id)
         if wb is not None and wb.baseline_id is not None:
@@ -743,6 +775,17 @@ def get_control(
                 objs = [o for o in objs if o.id in in_workbook_ids]
             else:
                 objs = []
+        if wb is not None and wb.path:
+            try:
+                _idx = read_workbook_index(Path(wb.path))
+                _by_cci = _idx.by_cci()
+                for o in objs:
+                    _r = _by_cci.get(o.objective_id)
+                    if _r is not None:
+                        inherited_by_cci[o.objective_id] = _r.inherited
+            except (ValueError, FileNotFoundError, OSError):
+                # Workbook moved / unreadable — skip the chip, don't 500 the page.
+                inherited_by_cci = {}
     # Resolve ODP placeholders ({$37$}, ac-02_odp.03, etc.) against the
     # framework-scoped odp_assignment table at render time. Templates
     # never carry program-specific values in the catalog — see
@@ -776,7 +819,15 @@ def get_control(
         "statement": rendered_statement,
         "unresolved_odps": unresolved,
         "objectives": [
-            {"id": o.id, "objective_id": o.objective_id, "source": o.source, "text": o.text}
+            {
+                "id": o.id,
+                "objective_id": o.objective_id,
+                "source": o.source,
+                "text": o.text,
+                # Workbook Column L (inherited) for the flex-slice chip; None
+                # when no workbook is in play or the row couldn't be re-read.
+                "inherited": inherited_by_cci.get(o.objective_id),
+            }
             for o in objs
         ],
     }
@@ -991,10 +1042,16 @@ def upsert_assessment(
         )
     ).first()
     when = body.date_tested or datetime.now(timezone.utc)
+    # A manual upsert is the reviewer accepting/trusting this verdict
+    # (needs_review is forced False below). If the row was an abstain, its
+    # column Q still carries the coerced "[Needs review — …]" marker; strip it
+    # so the now-trusted narrative doesn't write that stale header into the
+    # workbook. No-op for narratives that never had the marker.
+    narrative_q = _strip_abstain_prefix(body.narrative_q)
     if existing:
         existing.status = body.status
         existing.tester = body.tester
-        existing.narrative_q = body.narrative_q
+        existing.narrative_q = narrative_q
         # Only overwrite dual-narrative fields when the request explicitly
         # supplies them — manual edits to column Q alone should leave the
         # per-side breakdown untouched.
@@ -1021,7 +1078,7 @@ def upsert_assessment(
             excel_row=excel_row,
             status=body.status,
             tester=body.tester,
-            narrative_q=body.narrative_q,
+            narrative_q=narrative_q,
             narrative_on_prem=body.narrative_on_prem,
             narrative_cloud=body.narrative_cloud,
             narrative_class=body.narrative_class,
