@@ -36,11 +36,13 @@ from ..models import (
     AssessmentRun,
     AssessmentTrace,
     Asset,
+    AutomationSchedule,
     Baseline,
     BaselineControl,
     BaselineSourceType,
     BoundarySegment,
     ComplianceStatus,
+    Component,
     Control,
     CrmCorpusFeatures,
     CrmShortCircuitEvent,
@@ -48,8 +50,10 @@ from ..models import (
     Evidence,
     EvidenceAsset,
     EvidenceBoundary,
+    EvidenceRetentionEvent,
     Framework,
     Objective,
+    OverrideEpoch,
     Poam,
     PoamEvidence,
     PoamMilestone,
@@ -594,6 +598,31 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
     counts["overlay_attachments"] = getattr(r, "rowcount", 0) or 0
     r = s.exec(delete(WorkbookSyncEvent).where(WorkbookSyncEvent.workbook_id == workbook_id))
     counts["sync_events"] = getattr(r, "rowcount", 0) or 0
+
+    # --- Remaining workbook-owned tables with NOT-NULL workbook FKs ------------
+    # These four carry a NOT-NULL ``workbook_id`` FK and were previously omitted
+    # from the cascade. With ``PRAGMA foreign_keys=ON`` (db.py), a workbook that
+    # had ANY of these rows raised a FOREIGN KEY constraint failure on
+    # ``s.delete(wb)`` below → HTTP 500 → the UI delete silently failed and the
+    # workbook stayed. All are per-workbook state meaningless without it:
+    #   * Component        — parsed system components (routes/scope.py)
+    #   * OverrideEpoch    — per-(workbook,objective) override generation counter
+    #   * EvidenceRetentionEvent — per-workbook evidence-eviction ledger
+    #   * AutomationSchedule     — per-workbook sync schedules
+    r = s.exec(delete(Component).where(Component.workbook_id == workbook_id))
+    counts["components"] = getattr(r, "rowcount", 0) or 0
+    r = s.exec(delete(OverrideEpoch).where(OverrideEpoch.workbook_id == workbook_id))
+    counts["override_epochs"] = getattr(r, "rowcount", 0) or 0
+    r = s.exec(
+        delete(EvidenceRetentionEvent).where(
+            EvidenceRetentionEvent.workbook_id == workbook_id
+        )
+    )
+    counts["evidence_retention_events"] = getattr(r, "rowcount", 0) or 0
+    r = s.exec(
+        delete(AutomationSchedule).where(AutomationSchedule.workbook_id == workbook_id)
+    )
+    counts["automation_schedules"] = getattr(r, "rowcount", 0) or 0
 
     # --- Shared artifacts: NULL workbook_id (do NOT delete) -------------------
     # Evidence is a global artifact pool — other workbooks may reference these
