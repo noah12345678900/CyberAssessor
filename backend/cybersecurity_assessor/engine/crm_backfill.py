@@ -22,7 +22,11 @@ from pathlib import Path
 
 from sqlmodel import Session, delete, select
 
-from ..excel.ccis_reader import read_workbook_index
+from ..excel.ccis_reader import (
+    _ccis_to_oscal_control_id,
+    _normalize_control,
+    read_workbook_index,
+)
 from ..models import (
     Assessment,
     AssessmentImplementation,
@@ -96,6 +100,39 @@ def _is_crm_derived(assessment: Assessment) -> bool:
     if assessment.tester and assessment.tester != _SYSTEM_TESTER:
         return False
     return True
+
+
+def _is_healable(assessment: Assessment) -> bool:
+    """True when the CRM self-heal may delete/re-derive this row.
+
+    Broader than :func:`_is_crm_derived` by exactly one case — a stale
+    whole-control RULE_8A verdict:
+
+    * RULE_8A (col-L/M whole-control inheritance, e.g. SC-7 "Yes" + col M
+      named) is written by backfill_workbook_rules ONLY because, at workbook
+      open, there were no cloud CRM slices — so the whole control could
+      short-circuit Compliant. The moment a CRM attach makes the control
+      hybrid/customer, that whole-control Compliant is STALE and masks the
+      cloud slices that now need assessment. The self-heal MUST be able to
+      delete it so the control re-evaluates. (SC-7 bug: it survived a hybrid
+      CRM attach and stayed a spurious Compliant.)
+    * RULE_8B (col-N Not Applicable) is a workbook scope-EXCLUSION attestation
+      — the control doesn't apply at all, regardless of CRM coverage. It must
+      NEVER be healed (PE-10 bug: it was wrongly deleted on CRM attach).
+    * CRM-derived rows are healable as before (stale inheritance / slice
+      growth).
+    * User/LLM rows (human tester, or LLM_ACCEPT/ABSTAIN source) are NEVER
+      healed — the tester gate below protects them, including a row that
+      happens to carry a RULE_8A source but a human tester.
+
+    So: healable == (CRM-derived) OR (RULE_8A) — with the system-tester gate
+    applied to BOTH arms.
+    """
+    if assessment.tester and assessment.tester != _SYSTEM_TESTER:
+        return False
+    if _is_crm_derived(assessment):
+        return True
+    return assessment.verdict_source == VerdictSource.RULE_8A
 
 
 def _is_system_written(assessment: Assessment) -> bool:
@@ -351,14 +388,17 @@ def backfill_workbook_crm(
             # LLM-authored row. This is the AC-17 fix (Azure attached first →
             # deterministic row; AWS attached second → now customer/hybrid).
             #
-            # GUARD (PE-10 fix): only delete CRM-DERIVED rows. A RULE_8A/8B
-            # verdict is a workbook attestation (col-N Not Applicable / col-M
-            # named inheritance), NOT a CRM guess — a CRM attach must never
-            # delete it. Before this guard the predicate was _is_system_written,
-            # which includes RULE_*, so attaching a CRM whose flex slice
-            # resolved col-L ASSESS judged the control non-deterministic and
-            # deleted the valid rule_8b NA row (PE-10 vanished from the count).
-            if existing is not None and _is_crm_derived(existing):
+            # GUARD (_is_healable): delete CRM-derived rows AND a stale
+            # whole-control RULE_8A inheritance (SC-7 fix) — but NEVER a RULE_8B
+            # col-N Not Applicable attestation (PE-10 fix) or a user/LLM row.
+            # RULE_8A is only valid while the control has no cloud slices; once
+            # a CRM makes it hybrid/customer the whole-control Compliant is
+            # stale and masks the cloud slices, so it must be deleted to defer
+            # the control to assessment. RULE_8B is a scope exclusion that holds
+            # regardless of CRM coverage. Before this, the predicate was
+            # _is_crm_derived, which spared ALL rule_* rows — so SC-7's stale
+            # rule_8a Compliant survived a hybrid CRM attach.
+            if existing is not None and _is_healable(existing):
                 session.exec(
                     delete(AssessmentImplementation).where(
                         AssessmentImplementation.assessment_id == existing.id
@@ -368,18 +408,20 @@ def backfill_workbook_crm(
                 existing_by_obj.pop(obj.id, None)
                 healed_deleted += 1
             else:
-                # Either a user/LLM row OR a workbook RULE_* attestation — both
-                # are preserved. The control still defers to the LLM at assess
-                # time, but the existing authoritative row stays put.
+                # A user/LLM row OR a RULE_8B col-N attestation — preserved. The
+                # control still defers to the LLM at assess time, but the
+                # existing authoritative row stays put.
                 skipped_non_det += 1
             continue
 
-        # Deterministic control. If a user/LLM row OR a workbook RULE_*
-        # attestation already owns it, leave it. Only a CRM-derived row may be
-        # re-derived in place below (the PE-3 slice-enrichment case). A col-N
-        # rule_8b NA row must survive a later CRM marking the control
-        # inherited/provider — the workbook attestation is authoritative.
-        if existing is not None and not _is_crm_derived(existing):
+        # Deterministic control. If a user/LLM row OR a RULE_8B col-N
+        # attestation already owns it, leave it. A CRM-derived row (PE-3
+        # slice-enrichment) OR a stale RULE_8A whole-control inheritance may be
+        # re-derived/replaced below: with a now-deterministic CRM picture the
+        # RULE_8A Compliant should yield to the CRM verdict. RULE_8B must
+        # survive a later CRM marking the control inherited/provider — the
+        # scope-exclusion attestation is authoritative.
+        if existing is not None and not _is_healable(existing):
             skipped_existing += 1
             continue
 
@@ -562,6 +604,32 @@ def backfill_workbook_rules(
         ).all()
     )
 
+    # CRM coverage map (SC-7 resurrection fix). A whole-control RULE_8A verdict
+    # (col-L/M inheritance → Compliant) is only valid when the control has NO
+    # cloud CRM slices. If a CRM has since made the control hybrid/customer, the
+    # CRM self-heal deletes any stale rule_8a row on attach — but on the NEXT
+    # workbook open this rule-backfill would RE-CREATE it (classify_row is
+    # CRM-unaware), resurrecting the spurious Compliant. So we must NOT write a
+    # rule_8a row for a control whose CRM picture is non-deterministic. We build
+    # the CRM context once and mark every control whose cloud slices are not all
+    # inheritable. RULE_8B (col-N Not Applicable) is a scope exclusion that holds
+    # regardless of CRM coverage, so it is NEVER suppressed here.
+    crm_ctx = build_crm_context(workbook_id, session)
+    nondeterministic_crm_controls: set[str] = set()
+    for oscal, sls in crm_ctx.by_control_impls.items():
+        cloud_resps = [
+            sl.responsibility
+            for sl in sls
+            if sl.responsibility
+            and not (sl.scope_label == ON_PREM_LABEL and sl.source_baseline_id is None)
+        ]
+        # Non-deterministic ⟺ there is at least one cloud slice and not all of
+        # them are inheritable (provider/inherited/not_applicable). A hybrid or
+        # customer cloud slice means the control needs assessment, so a stale
+        # whole-control rule_8a Compliant must not be (re)written.
+        if cloud_resps and not all(r in _DETERMINISTIC for r in cloud_resps):
+            nondeterministic_crm_controls.add(oscal)
+
     # Empty CRM context: this path writes parent-only rows (no per-scope slices).
     empty_crm = CrmContext.empty()
     assessor = Assessor(llm=None)
@@ -589,6 +657,17 @@ def backfill_workbook_rules(
         if auto.verdict not in _DETERMINISTIC_RULE_VERDICTS:
             skipped_no_rule += 1
             continue
+
+        # SC-7 resurrection guard: do NOT (re)write a whole-control RULE_8A
+        # Compliant for a control the CRM has made hybrid/customer — that verdict
+        # is only valid with no cloud slices, and writing it here would resurrect
+        # the stale Compliant the CRM self-heal just deleted. RULE_8B (col-N Not
+        # Applicable) is a scope exclusion and is always written.
+        if auto.verdict == rules.AutoStatusVerdict.COMPLIANT_8A:
+            oscal = _ccis_to_oscal_control_id(_normalize_control(row.control_id))
+            if oscal in nondeterministic_crm_controls:
+                skipped_no_rule += 1
+                continue
 
         source = "rule_8a" if auto.verdict == rules.AutoStatusVerdict.COMPLIANT_8A else "rule_8b"
         decision = assessor._finalize_rule_decision(

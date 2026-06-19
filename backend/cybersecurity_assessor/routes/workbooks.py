@@ -335,7 +335,11 @@ def attach_workbook_overlay(
     backfill: dict[str, int] | None = None
     if bl.source_type == BaselineSourceType.CRM:
         result = backfill_workbook_crm(workbook_id, s)
-        if result.applied > 0:
+        # Commit on applied OR healed_deleted: a pure self-heal (e.g. a CRM
+        # attach that makes a control hybrid, deleting its stale rule_8a /
+        # CRM-inherited row) has applied==0 but healed_deleted>0 and MUST be
+        # persisted — otherwise the stale Compliant survives the attach (SC-7).
+        if result.applied > 0 or result.healed_deleted > 0:
             s.commit()
         backfill = result.as_dict()
         # Auto-trigger adversarial-CRM scoring on attach (Gap B). Without
