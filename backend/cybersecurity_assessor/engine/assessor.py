@@ -871,11 +871,28 @@ def plan_implementations(
             # CRM-derived customer scope (source_baseline_id set) is unaffected;
             # the synthesized slice with a genuine per-scope narrative is also
             # unaffected (it was assessed). Precision over recall.
+            #
+            # GATED ON COMPLIANT ONLY (PE-10 fix). The masking risk this guard
+            # defends against exists *only* when the control verdict is
+            # COMPLIANT — that is the one case where an evidenced cloud could
+            # rubber-stamp an unassessed on-prem footprint. For a control the
+            # owner attested NOT_APPLICABLE (col-N / rule 8b) or that came back
+            # NON_COMPLIANT, the synthesized on-prem slice must MIRROR that
+            # verdict (NA stays NA, NC stays NC) — falling through to the
+            # status=decision.status path below. Before this gate the guard
+            # fired for any non-None status and stamped a phantom None (rendered
+            # "Non-Compliant" by the UI's null-coercion) onto NA controls like
+            # PE-10, so a control that doesn't apply anywhere showed a spurious
+            # unassessed on-prem scope and the parent rolled up confusingly.
             per_scope_narrative = by_scope.get(sl.scope_label)
             is_synthesized_onprem = (
                 sl.source_baseline_id is None and is_on_prem(sl.scope_label)
             )
-            if is_synthesized_onprem and not per_scope_narrative:
+            if (
+                is_synthesized_onprem
+                and not per_scope_narrative
+                and decision.status is ComplianceStatus.COMPLIANT
+            ):
                 plans.append(
                     ImplementationPlan(
                         scope_label=sl.scope_label,

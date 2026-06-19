@@ -362,8 +362,6 @@ export function ControlDetail() {
             objectiveInScope={selectedObjectiveInScope}
             workbookId={workbookId}
             existingNarrative={currentAssessment?.narrative_q ?? ""}
-            existingNarrativeOnPrem={currentAssessment?.narrative_on_prem ?? null}
-            existingNarrativeCloud={currentAssessment?.narrative_cloud ?? null}
             existingStatus={currentAssessment?.status}
             existingClass={currentAssessment?.narrative_class}
             existingNeedsReview={currentAssessment?.needs_review ?? false}
@@ -1101,47 +1099,6 @@ function FlexInheritanceChip({
   );
 }
 
-/**
- * Collapsible read-only narrative card used for the dual-narrative split
- * (on-prem / cloud) the LLM populates alongside the canonical column-Q
- * narrative. Pattern mirrors ResponsibilityChip — compact by default with a
- * one-tap expand so dense control detail pages aren't dominated by long
- * implementation prose the assessor rarely needs to re-read once column Q is
- * finalized. Body is non-editable: the column-Q Monaco editor is the only
- * write surface; these halves are LLM output preserved for audit.
- */
-function DualNarrativeSection({
-  label,
-  narrative,
-}: {
-  label: string;
-  narrative: string;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded-md bg-muted/40 p-2 text-xs space-y-1.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-muted-foreground">Narrative:</span>
-        <Badge variant="subtle" className="text-[10px]">
-          {label}
-        </Badge>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="ml-auto text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-        >
-          {open ? "Hide" : "Show"}
-        </button>
-      </div>
-      {open && (
-        <div className="whitespace-pre-wrap rounded-sm border bg-background/60 p-2 text-[11px] leading-relaxed">
-          {narrative}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StatusPill({
   status,
   needsReview = false,
@@ -1399,8 +1356,6 @@ function AssessmentPanel({
   existingConfidence,
   existingRewriteRequested,
   existingRewriteRequestedRefs,
-  existingNarrativeOnPrem,
-  existingNarrativeCloud,
   implementations,
 }: {
   objectiveId?: number;
@@ -1424,13 +1379,6 @@ function AssessmentPanel({
   // Cleared on Save the same way needs_review is.
   existingRewriteRequested: boolean;
   existingRewriteRequestedRefs: string | null;
-  // v0.2 dual-narrative (hybrid systems): collapsible read-only sections
-  // rendered below the canonical column-Q editor. On-prem is always shown
-  // when populated; cloud is hidden when null/empty (the LLM only fills
-  // cloud for hybrid/provider/inherited rows — pure-customer controls have
-  // no cloud half to render). Column Q remains the single CCIS export slot.
-  existingNarrativeOnPrem: string | null;
-  existingNarrativeCloud: string | null;
   // v0.2 multi-implementation: when non-empty the panel swaps the single
   // narrative editor for an N-row impl table — one row per scope (AWS
   // GovCloud / Azure Government / On-Premises / …). Pre-migration rows
@@ -1847,30 +1795,6 @@ function AssessmentPanel({
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* v0.2 dual-narrative (hybrid systems). Read-only auxiliary views the
-            LLM populates alongside column Q. Column Q remains canonical for
-            CCIS export; these split halves are UI-fidelity only and round-trip
-            through the bundle but never reach the eMASS workbook. On-prem is
-            always shown when populated; cloud is hidden when null/empty so
-            pure-customer controls (no provider half) don't render an empty
-            placeholder. */}
-        {(existingNarrativeOnPrem || existingNarrativeCloud) && (
-          <div className="space-y-2">
-            {existingNarrativeOnPrem && (
-              <DualNarrativeSection
-                label="On-Prem implementation"
-                narrative={existingNarrativeOnPrem}
-              />
-            )}
-            {existingNarrativeCloud && (
-              <DualNarrativeSection
-                label="Cloud implementation"
-                narrative={existingNarrativeCloud}
-              />
-            )}
           </div>
         )}
 

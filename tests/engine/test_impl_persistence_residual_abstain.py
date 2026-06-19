@@ -144,3 +144,155 @@ def test_persist_residual_onprem_abstain_does_not_raise(session):
     # to None — compute_rollup_status worst-of ignores the None contributor).
     parent = session.get(Assessment, pk)
     assert parent.status is ComplianceStatus.COMPLIANT
+
+
+def _decision_na() -> Decision:
+    # A NOT_APPLICABLE control (e.g. PE-10 / CCI-000813 attested N/A in col N).
+    # The synthesized On-Premises slice must MIRROR the NA verdict, not get a
+    # phantom status=None — the phantom guard is gated to COMPLIANT only.
+    return Decision(
+        cci_id="CCI-000813",
+        excel_row=99,
+        accepted=True,
+        status=ComplianceStatus.NOT_APPLICABLE,
+        narrative="Control not applicable to this system; no datacenter role.",
+        narrative_class=NarrativeClass.NA_JUSTIFYING,
+        source="rule_8b",
+        rule=None,
+        narratives_by_scope={},
+    )
+
+
+def _crm_na_clouds_plus_synthesized_onprem() -> CrmContext:
+    # Both clouds Not Applicable + the synthesized On-Premises residual slice
+    # (no baseline, no per-scope narrative) — the PE-10 shape.
+    return CrmContext(
+        by_control_impls={
+            "pe-10": [
+                ImplementationSlice(
+                    scope_label="AWS GovCloud",
+                    responsibility="not_applicable",
+                    narrative="Not applicable to customer.",
+                    source_baseline_id=1,
+                ),
+                ImplementationSlice(
+                    scope_label="Azure Government",
+                    responsibility="not_applicable",
+                    narrative="Not applicable to customer.",
+                    source_baseline_id=2,
+                ),
+                ImplementationSlice(
+                    scope_label="On-Premises",
+                    responsibility="customer",
+                    narrative=None,
+                    source_baseline_id=None,
+                ),
+            ]
+        }
+    )
+
+
+def test_na_control_onprem_slice_mirrors_na_not_phantom_none(session):
+    """PE-10 fix: on an NA control the synthesized on-prem slice is NA, not None.
+
+    The phantom-scope guard (which emits status=None for an unassessed
+    customer on-prem slice) is gated to COMPLIANT controls only — that is the
+    sole case where an evidenced cloud could mask an evidence-less on-prem
+    footprint. For a NOT_APPLICABLE control the on-prem slice must mirror the
+    NA verdict so all three slices read NA and the parent rolls up NA. Before
+    the fix the on-prem slice got status=None (rendered "Non-Compliant" by the
+    UI's null-coercion), so a control that doesn't apply anywhere showed a
+    spurious unassessed on-prem scope.
+    """
+    decision = _decision_na()
+    crm = _crm_na_clouds_plus_synthesized_onprem()
+    assessment = Assessment(
+        workbook_id=1,
+        objective_id=20,
+        excel_row=99,
+        status=ComplianceStatus.NOT_APPLICABLE,
+        tester="t",
+        date_tested=datetime.now(timezone.utc),
+        narrative_q="Control not applicable to this system.",
+        narrative_class=NarrativeClass.NA_JUSTIFYING,
+    )
+
+    pk = persist_assessment_with_impls(
+        session,
+        assessment=assessment,
+        decision=decision,
+        crm_context=crm,
+        control_id="PE-10",
+        is_new=True,
+    )
+    session.commit()
+
+    impls = session.exec(
+        select(AssessmentImplementation).where(
+            AssessmentImplementation.assessment_id == pk
+        )
+    ).all()
+    by_scope = {i.scope_label: i for i in impls}
+
+    onprem = by_scope["On-Premises"]
+    assert onprem.status is ComplianceStatus.NOT_APPLICABLE, (
+        "on an NA control the synthesized on-prem slice mirrors NA, not None"
+    )
+    assert by_scope["AWS GovCloud"].status is ComplianceStatus.NOT_APPLICABLE
+    assert by_scope["Azure Government"].status is ComplianceStatus.NOT_APPLICABLE
+
+    # All three slices NA → parent rolls up NA (worst-of with no NC/COMPLIANT).
+    parent = session.get(Assessment, pk)
+    assert parent.status is ComplianceStatus.NOT_APPLICABLE
+
+
+def test_non_compliant_control_onprem_slice_mirrors_nc(session):
+    """Companion: on an NC control the synthesized on-prem slice mirrors NC.
+
+    The phantom guard is COMPLIANT-only, so an NC control's residual on-prem
+    slice takes the control verdict (NC). Any-one-NC keeps the parent NC.
+    """
+    decision = Decision(
+        cci_id="CCI-000130",
+        excel_row=43,
+        accepted=True,
+        status=ComplianceStatus.NON_COMPLIANT,
+        narrative="No evidence located for this control objective.",
+        narrative_class=NarrativeClass.GAP_DESCRIBING,
+        source="llm",
+        rule=None,
+        narratives_by_scope={},
+    )
+    crm = _crm_with_synthesized_onprem()  # AWS customer + synthesized on-prem
+    assessment = Assessment(
+        workbook_id=1,
+        objective_id=30,
+        excel_row=43,
+        status=ComplianceStatus.NON_COMPLIANT,
+        tester="t",
+        date_tested=datetime.now(timezone.utc),
+        narrative_q="No evidence located for this control objective.",
+        narrative_class=NarrativeClass.GAP_DESCRIBING,
+    )
+
+    pk = persist_assessment_with_impls(
+        session,
+        assessment=assessment,
+        decision=decision,
+        crm_context=crm,
+        control_id="AC-2",
+        is_new=True,
+    )
+    session.commit()
+
+    impls = session.exec(
+        select(AssessmentImplementation).where(
+            AssessmentImplementation.assessment_id == pk
+        )
+    ).all()
+    by_scope = {i.scope_label: i for i in impls}
+    assert by_scope["On-Premises"].status is ComplianceStatus.NON_COMPLIANT, (
+        "on an NC control the synthesized on-prem slice mirrors NC, not None"
+    )
+    parent = session.get(Assessment, pk)
+    assert parent.status is ComplianceStatus.NON_COMPLIANT
