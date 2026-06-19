@@ -1050,6 +1050,68 @@ def workbook_control_status(
     return out
 
 
+@router.get("/{workbook_id}/col-l-status")
+def workbook_col_l_status(
+    workbook_id: int, s: Session = Depends(get_session)
+) -> list[dict]:
+    """Per-control Column-L (flex/on-prem inheritance) rollup for the grid.
+
+    Column L (CcisRow.inherited) is the eMASS workbook's per-CCI inheritance
+    attestation and the authority for the flex (On-Premises/workbook) slice's
+    status (pie-slice model). The grid renders one row per CONTROL, while col L
+    is per-CCI, so we re-read the workbook and aggregate each control's CCIs
+    worst-of: ASSESS (must assess) > ESCALATE (bare "Yes", unnamed source) >
+    INHERITED (named source → Compliant). A control whose CCIs are all
+    INHERITED rolls up INHERITED; any ASSESS CCI makes the whole control ASSESS.
+
+    Returns one entry per control that has at least one workbook CCI:
+      ``control_id``  — OSCAL canonical id (matches the grid's Control.control_id)
+      ``outcome``     — "inherited" | "assess" | "escalate"
+      ``value``       — a representative raw col-L cell (the one that drove the
+                        rollup), for the chip tooltip/label.
+    Empty list when the workbook can't be read (chip simply omitted).
+    """
+    from ..engine import rules
+    from ..excel.ccis_reader import (
+        _ccis_to_oscal_control_id,
+        _normalize_control,
+        read_workbook_index,
+    )
+
+    wb = s.get(Workbook, workbook_id)
+    if not wb:
+        raise HTTPException(status_code=404, detail="Workbook not found")
+    if not wb.path:
+        return []
+    try:
+        index = read_workbook_index(Path(wb.path))
+    except (ValueError, FileNotFoundError, OSError):
+        return []
+
+    # Worst-of precedence: higher number wins when aggregating a control's CCIs.
+    _RANK = {
+        rules.ColLFlexOutcome.INHERITED: 1,
+        rules.ColLFlexOutcome.ESCALATE: 2,
+        rules.ColLFlexOutcome.ASSESS: 3,
+    }
+    # control_id -> (rank, outcome, representative_raw_value)
+    agg: dict[str, tuple[int, rules.ColLFlexOutcome, str]] = {}
+    for cci_row in index.by_cci().values():
+        if not cci_row.control_id:
+            continue
+        oscal = _ccis_to_oscal_control_id(_normalize_control(cci_row.control_id))
+        outcome = rules.resolve_col_l_flex_status(cci_row.inherited)
+        rank = _RANK[outcome]
+        prev = agg.get(oscal)
+        if prev is None or rank > prev[0]:
+            agg[oscal] = (rank, outcome, (cci_row.inherited or "").strip())
+
+    return [
+        {"control_id": oscal, "outcome": outcome.value, "value": value}
+        for oscal, (_rank, outcome, value) in agg.items()
+    ]
+
+
 @router.get("/{workbook_id}/review-queue")
 def workbook_review_queue(
     workbook_id: int, s: Session = Depends(get_session)

@@ -570,6 +570,18 @@ export interface ControlStatusRollup {
   total_assessed: number;
 }
 
+/** Per-control Column-L (flex/on-prem inheritance) rollup for the Controls grid
+ * — GET /api/workbooks/{id}/col-l-status. Column L is per-CCI; the backend
+ * aggregates each control's CCIs worst-of (assess > escalate > inherited).
+ * `control_id` is the OSCAL canonical id matching Control.control_id.
+ */
+export interface ColLStatusRollup {
+  control_id: string;
+  outcome: "inherited" | "assess" | "escalate";
+  /** Representative raw col-L cell that drove the rollup (for the chip label). */
+  value: string;
+}
+
 /**
  * Summary block returned alongside a freshly-opened workbook.
  *
@@ -3679,6 +3691,8 @@ export const api = {
     request<WorkbookSummary>(`/api/workbooks/${id}/summary`),
   workbookControlStatus: (id: number) =>
     request<ControlStatusRollup[]>(`/api/workbooks/${id}/control-status`),
+  workbookColLStatus: (id: number) =>
+    request<ColLStatusRollup[]>(`/api/workbooks/${id}/col-l-status`),
   /**
    * v0.2 Review Queue — every abstained Assessment in the workbook joined to
    * Control + Objective metadata, pre-sorted by `review_reason` category.

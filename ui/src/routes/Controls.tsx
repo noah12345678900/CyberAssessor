@@ -71,6 +71,7 @@ import {
   useImportControlsNarratives,
   useFrameworks,
   useObjectives,
+  useWorkbookColLStatus,
   useWorkbookControlStatus,
   useWorkbookOverlayMembership,
   useWorkbooks,
@@ -79,6 +80,7 @@ import { api, hasNativeBridge } from "@/lib/api";
 import type {
   Assessment,
   BaselineControlRow,
+  ColLStatusRollup,
   Control,
   ControlStatusRollup,
   Objective,
@@ -265,6 +267,7 @@ export function Controls() {
   const baselineId = selectedWorkbook?.baseline_id ?? undefined;
   const baselineControls = useBaselineControls(baselineId, false);
   const controlStatus = useWorkbookControlStatus(workbookId);
+  const colLStatus = useWorkbookColLStatus(workbookId);
   const overlayMembership = useWorkbookOverlayMembership(workbookId);
 
   // CRM overlay baselines attached to this workbook. The CRM loader writes
@@ -534,6 +537,15 @@ export function Controls() {
     }
     return m;
   }, [baselineControls.data]);
+
+  // OSCAL control_id (e.g. "ac-2.1") -> Column-L flex rollup. Drives the
+  // "On-Prem (Col L)" grid column. Keyed on the same control_id the Control
+  // rows carry; absent controls render "—".
+  const colLByControl = useMemo(() => {
+    const m = new Map<string, ColLStatusRollup>();
+    for (const r of colLStatus.data ?? []) m.set(r.control_id, r);
+    return m;
+  }, [colLStatus.data]);
 
   // baseline_id -> (control_code -> CRM responsibility + narrative per
   // deployment scope). One inner map per attached CRM overlay so each CRM
@@ -1313,6 +1325,46 @@ export function Controls() {
             } as ColumnDef<ControlRow>,
           ]
         : []),
+      // Flex (On-Premises / workbook) slice status from the eMASS workbook's
+      // Column L — the pie-slice authority for that slice. Per-CCI col L is
+      // aggregated worst-of to the control (assess > escalate > inherited).
+      // Shown only when a workbook is open.
+      ...(workbookId
+        ? [
+            {
+              id: "col_l_flex",
+              header: "On-Prem (Col L)",
+              cell: (ctx) => {
+                const r = colLByControl.get(ctx.row.original.control_id);
+                if (!r)
+                  return (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  );
+                const labelMap: Record<string, string> = {
+                  inherited: "Inherited",
+                  assess: "Assess",
+                  escalate: "Escalate",
+                };
+                const chipClass =
+                  r.outcome === "inherited"
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    : r.outcome === "escalate"
+                      ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                      : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
+                const raw = r.value.trim() === "" ? "(blank)" : r.value.trim();
+                return (
+                  <Badge
+                    variant="outline"
+                    className={chipClass}
+                    title={`Workbook Column L: ${raw} — flex slice ${labelMap[r.outcome] ?? r.outcome}`}
+                  >
+                    {labelMap[r.outcome] ?? r.outcome}
+                  </Badge>
+                );
+              },
+            } as ColumnDef<ControlRow>,
+          ]
+        : []),
       {
         accessorKey: "status",
         header: "Status",
@@ -1375,6 +1427,7 @@ export function Controls() {
       overlayMembership.data,
       visibleOverlays,
       crmOverlays,
+      colLByControl,
     ],
   );
 
