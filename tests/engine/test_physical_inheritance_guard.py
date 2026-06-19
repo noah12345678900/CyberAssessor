@@ -29,11 +29,12 @@ from cybersecurity_assessor.excel.ccis_reader import CcisRow
 from cybersecurity_assessor.models import ComplianceStatus
 
 
-def _row(control_id: str, col_l: str = "Local") -> CcisRow:
+def _row(control_id: str, col_l: str = "Local", col_m: str | None = None) -> CcisRow:
     # col_l drives the FLEX (On-Premises/workbook) slice status under the
-    # pie-slice model. Default "Local" → ASSESS (customer-owned flex slice;
-    # NC when no evidence). Pass a named source ("DoW Enterprise") for the
-    # INHERITED path, or "Yes" for the ESCALATE (bare-inherited) path.
+    # pie-slice model. Owner convention: col L is a FLAG only —
+    #   "Local"/"No"/blank → ASSESS (customer-owned; NC when no evidence),
+    #   "Remote"/"Yes" + a named source in col M (col_m) → INHERITED,
+    #   "Remote"/"Yes" with blank col M → ESCALATE (inherited-but-unnamed).
     return CcisRow(
         excel_row=5,
         required=True,
@@ -47,7 +48,7 @@ def _row(control_id: str, col_l: str = "Local") -> CcisRow:
         guidance=None,
         procedures=None,
         inherited=col_l,
-        remote_inheritance=None,
+        remote_inheritance=col_m,
         status=None,
         date_tested=None,
         tester=None,
@@ -108,7 +109,7 @@ def test_col_l_named_source_clouds_inherited_short_circuits_compliant():
     short-circuits Compliant; the flex slice carries Compliant via col L (no
     LLM, no NC). This is the col-L INHERITED path."""
     d = Assessor(llm=None).assess(
-        _row("PE-3", col_l="DoW Enterprise"),
+        _row("PE-3", col_l="Remote", col_m="DoW Enterprise"),
         crm_context=_both_clouds_inherited("pe-3", synth_onprem=True),
     )
     assert d.source == "crm_inherited"
@@ -123,7 +124,7 @@ def test_col_l_wins_outright_over_crm_onprem_label_conflict1():
     Compliant-by-inheritance and the CRM "customer" label does NOT force an
     assessment. No KeyError from the dual-scope narrative machinery."""
     d = Assessor(llm=None).assess(
-        _row("PE-3", col_l="DoW Enterprise"),
+        _row("PE-3", col_l="Remote", col_m="DoW Enterprise"),
         crm_context=_both_clouds_inherited(
             "pe-3", synth_onprem=True, onprem_resp="customer"
         ),
@@ -418,7 +419,7 @@ def test_no_crm_col_l_named_source_whole_control_8a_no_regression():
     applies when cloud CRM slices are present). No regression for the common
     eMASS-only workbook."""
     d = Assessor(llm=None).assess(
-        _row("PE-3", col_l="DoW Enterprise"),
+        _row("PE-3", col_l="Remote", col_m="DoW Enterprise"),
         crm_context=CrmContext.empty(),
     )
     assert d.source == "rule_8a"
@@ -525,3 +526,63 @@ def test_gap_finalizer_honors_per_cloud_na_status():
     assert by_status["AWS GovCloud"] is ComplianceStatus.NOT_APPLICABLE
     assert by_status["Azure Government"] is ComplianceStatus.COMPLIANT
     assert by_status["On-Premises"] is ComplianceStatus.NON_COMPLIANT
+
+
+def test_abstain_keeps_per_scope_narratives_not_generic_stub():
+    """SC-13 regression: when a multi-scope control ABSTAINS (self-signal /
+    parse error), each customer/hybrid cloud slice must still carry its OWN
+    per-scope narrative (e.g. the AWS evidence text) for review — NOT the
+    generic 'Pending reviewer assessment' stub. The abstain path builds the
+    per-scope narrative map before returning."""
+    from cybersecurity_assessor.engine.assessor import (
+        Assessor, LlmProposal, plan_implementations,
+    )
+    from cybersecurity_assessor.engine.evidence_bundle import EvidenceBlock
+
+    class _AbstainStub:
+        _audit_citations = False
+
+        def propose(self, **_k):
+            return LlmProposal(
+                status=ComplianceStatus.NON_COMPLIANT,
+                narrative="Evidence is contradictory; cannot determine a verdict.",
+                confidence=0.4,
+                abstain=True,
+                narratives_by_scope={
+                    "AWS GovCloud": (
+                        "On AWS GovCloud, examined the STIG result "
+                        "SV-257812r925363_rule = not_a_finding; FIPS mode "
+                        "enforced for the customer-owned workload."
+                    ),
+                },
+            )
+
+        def propose_twice(self, **k):
+            p = self.propose(**k)
+            return (p, p)
+
+    ev = EvidenceBlock(
+        text="## evidence_bundle\n- STIG", has_artifacts=True, has_coverage=False,
+        has_findings=False, has_hosts=False, has_nonscan_artifact=True,
+    )
+    slices = [
+        ImplementationSlice("AWS GovCloud", "hybrid", "aws shared", 1),
+        ImplementationSlice("Azure Government", "inherited", "azure inh", 2),
+        ImplementationSlice("On-Premises", "customer", None, None),
+    ]
+    entry = CrmEntry(
+        control_id="sc-13", responsibility="hybrid", narrative="aws shared",
+        source_baseline_id=1, responsibility_onprem=None, narrative_onprem=None,
+    )
+    crm = CrmContext(
+        by_control={"sc-13": entry}, by_control_impls={"sc-13": slices}
+    )
+    d = Assessor(llm=_AbstainStub()).assess(
+        _row("SC-13", col_l="No"), crm_context=crm,
+        tagged_evidence=ev.text, evidence_block=ev,
+    )
+    assert d.needs_review is True
+    # The AWS slice narrative is the real evidence text, NOT the generic stub.
+    by_narr = {p.scope_label: p.narrative for p in plan_implementations(d, slices)}
+    assert "SV-257812r925363_rule" in by_narr["AWS GovCloud"]
+    assert "Pending reviewer assessment" not in by_narr["AWS GovCloud"]

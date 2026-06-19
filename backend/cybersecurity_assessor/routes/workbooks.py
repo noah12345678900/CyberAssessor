@@ -1138,7 +1138,9 @@ def workbook_col_l_status(
         col_n_na_all[oscal] = is_na if oscal not in col_n_na_all else (
             col_n_na_all[oscal] and is_na
         )
-        outcome = rules.resolve_col_l_flex_status(cci_row.inherited)
+        outcome = rules.resolve_col_l_flex_status(
+            cci_row.inherited, cci_row.remote_inheritance
+        )
         rank = _RANK[outcome]
         prev = agg.get(oscal)
         if prev is None or rank > prev[0]:

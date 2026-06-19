@@ -214,29 +214,31 @@ def test_col_k_precedence_over_col_j_for_same_trigger(
 
 
 @given(
-    col_l_source=st.sampled_from(
+    col_m_source=st.sampled_from(
         ["DoW Enterprise", "Parent System", "DoD-level", "SDA Common Services"]
     ),
+    col_l_flag=st.sampled_from(["Remote", "Yes"]),
 )
-def test_col_l_names_internal_source_routes_to_8a_structural(
-    col_l_source: str,
+def test_col_l_remote_with_col_m_source_routes_to_8a_structural(
+    col_m_source: str, col_l_flag: str,
 ) -> None:
-    """Col L with a non-Local, non-CSP value fires structural 8a.
-
-    Guards the rules.py:188-199 branch. Uses neutral guidance/procedures
-    so no K/J trigger fires first (which would override the L verdict).
+    """Owner convention: Column L is a FLAG (Remote/Yes) and the inheritance
+    SOURCE lives in Column M. Remote/Yes + a named Column M fires structural 8a
+    Compliant, triggered on Column M. Uses neutral guidance/procedures so no
+    K/J trigger fires first (which would override the L/M verdict).
     """
     row = _row(
         guidance=_NEUTRAL_GUIDANCE,
         procedures=_NEUTRAL_PROCEDURES,
-        inherited=col_l_source,
+        inherited=col_l_flag,
+        remote_inheritance=col_m_source,
     )
     result = classify_row(row)
     assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
     assert result.status is ComplianceStatus.COMPLIANT
     assert result.rule == "8a"
-    assert result.trigger_column == "L"
-    assert result.trigger_phrase == col_l_source
+    assert result.trigger_column == "M"
+    assert result.trigger_phrase == col_m_source
 
 
 @given(local_variant=st.sampled_from(["Local", "local", "LOCAL", " Local ", "Local "]))

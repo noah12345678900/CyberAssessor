@@ -335,7 +335,7 @@ NIST_800_53 = FrameworkDemo(
             "physical-access plane is inherited.",
             status="",
             results="",
-            cci="CCI-000919", inherited="DoW Enterprise",
+            cci="CCI-000919", inherited="Remote", remote="DoW Enterprise",
         ),
         # 11th control — the ABSTAIN showcase. AU-4 (Audit Log Storage Capacity)
         # is in-scope and left UNASSESSED. Its ONLY evidence

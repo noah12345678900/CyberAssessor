@@ -62,6 +62,7 @@ def _row(
     guidance: str | None = None,
     procedures: str | None = None,
     inherited: str | None = None,
+    remote_inheritance: str | None = None,
     narrative: str | None = None,
     results: str | None = None,
     previous_results: str | None = None,
@@ -89,7 +90,7 @@ def _row(
         guidance=guidance,
         procedures=procedures,
         inherited=inherited,
-        remote_inheritance=None,
+        remote_inheritance=remote_inheritance,
         status=status,
         date_tested=None,
         tester=None,
@@ -269,18 +270,20 @@ def test_8a_qualified_inheritance_internal():
     assert result.trigger_phrase == "inherited from the enterprise"
 
 
-def test_8a_structural_col_l_internal():
-    """Col L = 'DoW Enterprise' (not Local, not a CSP) → 8a structural, col='L'."""
-    row = _row(inherited="DoW Enterprise")
+def test_8a_structural_col_l_remote_with_col_m_source():
+    """Owner convention: Column L is a flag (Remote/Yes => inherited); the
+    source is named in Column M. Remote + Column M='DoW Enterprise' → 8a
+    structural, triggered on Column M."""
+    row = _row(inherited="Remote", remote_inheritance="DoW Enterprise")
 
     result = classify_row(row)
 
     assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
     assert result.rule == "8a"
-    assert result.trigger_column == "L"
+    assert result.trigger_column == "M"
     assert result.trigger_phrase == "DoW Enterprise"
-    # Structural narrative names col L verbatim.
-    assert 'col L = "DoW Enterprise"' in result.narrative
+    # Structural narrative names the inheritance source.
+    assert "DoW Enterprise" in result.narrative
 
 
 def test_8a_structural_skipped_when_col_l_is_local():
@@ -293,16 +296,13 @@ def test_8a_structural_skipped_when_col_l_is_local():
     assert result.rule is None
 
 
-def test_8a_structural_skipped_when_col_l_names_csp():
-    """Col L naming a CSP (e.g. 'AWS') without an 8b text trigger falls through to 8c."""
-    # Force a bare 'inherited from' so the 8c branch fires; otherwise the test
-    # would land on NO_AUTO_RULE which doesn't distinguish 'skipped col L' from
-    # 'nothing at all'.
-    row = _row(inherited="AWS GovCloud", procedures="Per inheritance — inherited from upstream service.")
+def test_8c_escalates_when_col_l_remote_but_col_m_blank():
+    """Remote/Yes flag with NO source in Column M → can't tell internal vs
+    external → escalate (8c)."""
+    row = _row(inherited="Remote", remote_inheritance=None)
 
     result = classify_row(row)
 
-    # Must NOT be 8a structural even though col L is populated.
     assert result.verdict is AutoStatusVerdict.UNCLEAR_8C
     assert result.rule == "8c"
 

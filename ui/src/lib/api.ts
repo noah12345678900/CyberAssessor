@@ -197,6 +197,13 @@ export interface Objective {
    * workbook row is readable; null/undefined otherwise (chip omitted).
    */
   inherited?: string | null;
+  /**
+   * Workbook Column M (Remote Inheritance Instance) — the inheritance SOURCE
+   * name (e.g. "DoW Enterprise") when col L is Remote/Yes. Pairs with
+   * ``inherited`` (col L flag) to resolve the flex slice: Remote/Yes + a named
+   * col M → inherited; Remote/Yes + blank col M → escalate.
+   */
+  remote_inheritance?: string | null;
 }
 
 export interface RequirementMapping {
@@ -1045,7 +1052,9 @@ export interface AssessmentImplementation {
   scope_label: string;
   source_baseline_id: number | null;
   responsibility: string | null;
-  status: ComplianceStatus;
+  /** Null when the control abstained and this scope is awaiting reviewer
+   * adjudication — every scope is still surfaced so the reviewer can set it. */
+  status: ComplianceStatus | null;
   narrative: string;
   evidence_refs: string | null;
 }

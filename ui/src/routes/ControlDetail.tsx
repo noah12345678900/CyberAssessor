@@ -242,6 +242,9 @@ export function ControlDetail() {
     selectedObjective?.inherited === undefined || selectedObjective?.inherited === null
       ? null
       : selectedObjective.inherited;
+  // Column M (Remote Inheritance Instance) — the inheritance source name,
+  // paired with col L so the flex chip resolves Remote/Yes correctly.
+  const colMRemote = selectedObjective?.remote_inheritance ?? null;
 
   return (
     <div className="p-8 space-y-6">
@@ -326,6 +329,7 @@ export function ControlDetail() {
         baselineRow={baselineRow}
         workbookSelected={workbookId !== undefined}
         colLInherited={colLInherited}
+        colMRemote={colMRemote}
       />
 
       <ProgramControlsCard
@@ -547,6 +551,7 @@ function ContextCard({
   baselineRow,
   workbookSelected,
   colLInherited,
+  colMRemote,
 }: {
   controlId: string;
   family: string;
@@ -569,6 +574,9 @@ function ContextCard({
   // Workbook Column L (inherited) for the SELECTED CCI — drives the flex-slice
   // chip. null when no workbook is in play or the row couldn't be re-read.
   colLInherited: string | null;
+  // Workbook Column M (Remote Inheritance Instance) — the source name; pairs
+  // with col L so the chip resolves Remote/Yes correctly.
+  colMRemote: string | null;
 }) {
   // Tally CCI statuses for this control in the selected workbook so the
   // tester can see "5/8 CCIs assessed — 3C / 1NC / 1NA" at a glance,
@@ -670,7 +678,9 @@ function ContextCard({
           />
         )}
 
-        {colLInherited !== null && <FlexInheritanceChip colL={colLInherited} />}
+        {colLInherited !== null && (
+          <FlexInheritanceChip colL={colLInherited} colM={colMRemote} />
+        )}
 
         {odpEntries.length > 0 && (
           <div className="text-xs space-y-1">
@@ -1014,53 +1024,44 @@ function ResponsibilityChip({
 
 /**
  * Mirror of the backend ``rules.resolve_col_l_flex_status``: classify the
- * workbook's Column L value into the flex (On-Premises/workbook) slice outcome
- * so the chip shows the same status the engine will assign. Display-only — the
- * authoritative resolution still happens server-side.
+ * workbook's inheritance columns into the flex (On-Premises/workbook) slice
+ * outcome. Owner convention: Column L is a FLAG only (Local/No/blank →
+ * locally owned; Remote/Yes → inherited), and the inheritance SOURCE is named
+ * in Column M (Remote Inheritance Instance). Display-only — the authoritative
+ * resolution happens server-side (the grid chip passes both columns).
  */
-function flexInheritanceMeta(colL: string): {
+function flexInheritanceMeta(
+  colL: string,
+  colM?: string | null,
+): {
   label: string;
   variant: "brand" | "warning" | "outline" | "subtle";
   blurb: string;
 } {
   const v = colL.trim().toLowerCase();
-  const NOT_INHERITED = new Set([
-    "no",
-    "n",
-    "false",
-    "not inherited",
-    "none",
-    "n/a",
-    "na",
-  ]);
-  const INHERITED_UNNAMED = new Set(["yes", "y", "true", "inherited"]);
-  const EXTERNAL_HINTS = ["aws", "azure", "gcp", "csp", "cloud service provider"];
-  if (v === "" || v === "local" || NOT_INHERITED.has(v))
-    return {
-      label: "Assess (local)",
-      variant: "subtle",
-      blurb:
-        "Workbook Col L says locally owned — flex slice is assessed (Non-Compliant if no evidence).",
-    };
-  if (INHERITED_UNNAMED.has(v))
+  const REMOTE = new Set(["remote", "yes", "y", "true", "inherited"]);
+  const m = (colM ?? "").trim();
+  if (REMOTE.has(v)) {
+    // Inherited flag — the source must be named in Column M.
+    if (m)
+      return {
+        label: "Inherited",
+        variant: "brand",
+        blurb: `Inherited per the workbook (source: ${m}) — flex slice is Compliant-by-inheritance.`,
+      };
     return {
       label: "Escalate",
       variant: "warning",
       blurb:
-        'Col L is a bare "inherited" flag with no named source — escalated for reviewer (8c).',
+        "Column L marks this inherited but Column M names no source — escalated for reviewer (8c).",
     };
-  if (EXTERNAL_HINTS.some((h) => v.includes(h)))
-    return {
-      label: "Assess (CSP-named)",
-      variant: "subtle",
-      blurb:
-        "Col L names a cloud provider — assessed locally (8b needs K/J triggers to auto-N/A).",
-    };
+  }
+  // Local / No / blank → locally owned → assess.
   return {
-    label: "Inherited",
-    variant: "brand",
+    label: "Assess (local)",
+    variant: "subtle",
     blurb:
-      "Col L names an inheritance source — flex slice is Compliant-by-inheritance per the workbook.",
+      "Workbook Column L says locally owned — flex slice is assessed (Non-Compliant if no evidence).",
   };
 }
 
@@ -1070,8 +1071,14 @@ function flexInheritanceMeta(colL: string): {
  * Sits next to the two CRM cloud-responsibility chips. Renders only when the
  * selected CCI's Column L value is known (workbook in play + row readable).
  */
-function FlexInheritanceChip({ colL }: { colL: string }) {
-  const meta = flexInheritanceMeta(colL);
+function FlexInheritanceChip({
+  colL,
+  colM,
+}: {
+  colL: string;
+  colM?: string | null;
+}) {
+  const meta = flexInheritanceMeta(colL, colM);
   const shown = colL.trim() === "" ? "(blank)" : colL.trim();
   return (
     <div className="rounded-md bg-muted/40 p-2 text-xs space-y-1.5">
@@ -1502,7 +1509,15 @@ function AssessmentPanel({
   useEffect(() => {
     const next = new Map<number, { status: ComplianceStatus; narrative: string }>();
     for (const i of implementations) {
-      next.set(i.id, { status: i.status, narrative: i.narrative });
+      // A null per-scope status means the control abstained and this scope is
+      // awaiting reviewer adjudication. Seed the Select with a concrete default
+      // ("Non-Compliant" — the conservative triage default, since every NC is
+      // reviewed) so the dropdown is controlled and the reviewer explicitly
+      // confirms or changes it before Save.
+      next.set(i.id, {
+        status: i.status ?? "Non-Compliant",
+        narrative: i.narrative,
+      });
     }
     setImplEdits(next);
   }, [implementations, objectiveId]);
@@ -1780,7 +1795,7 @@ function AssessmentPanel({
             </div>
             {implementations.map((impl) => {
               const edit = implEdits.get(impl.id) ?? {
-                status: impl.status,
+                status: impl.status ?? "Non-Compliant",
                 narrative: impl.narrative,
               };
               return (

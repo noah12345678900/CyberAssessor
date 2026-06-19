@@ -1,6 +1,6 @@
 {
   "name": "abstain_low_confidence",
-  "description": "Low-confidence NO LONGER abstains (owner decision 2026-06-19): the implicit-abstain gate that demoted a validator-approved verdict when the LLM self-reported confidence below CONFIDENCE_THRESHOLD was REMOVED — self-reported confidence is uncalibrated and demoting an otherwise-valid verdict on it 'murks the waters'. This case pins the NEW behavior: a validator-approved Compliant narrative with confidence=0.2 SHIPS as Compliant (accepted, not needs_review). The validator + the abstain contract (genuine contradiction / no authoritative standard) remain the precision gates; a passing verdict is no longer second-guessed on a confidence number. proposal.confidence is still recorded for telemetry.",
+  "description": "Implicit-abstain gate at engine/assessor.py:1075-1094 \u2014 even a validator-approved Compliant verdict is demoted to needs_review when the LLM self-reports confidence below CONFIDENCE_THRESHOLD (0.35 as of 2026-06-06, see engine/assessor.py:374). The case sets confidence=0.2, well under the floor. Narrative must pass the validator first (use 'examined' / 'confirmed via' / 'documented in' affirming phrases) so we exercise the post-validation abstain gate, not the pre-validation classification path. Expected per Fix 3 (KERNEL_VERSION 0.5.0): status is coerced to None on hard-abstain (so the reviewer cannot accidentally ship an unverified verdict), and the LLM's intended Compliant guess is preserved on proposed_status for the reviewer UI / calibration export. Pinning the threshold here means a future lowering of CONFIDENCE_THRESHOLD past 0.2 would silently flip this case to a Compliant verdict \u2014 the failure is the desired signal.",
   "ccis_row": {
     "control_id": "AC-2",
     "ap_acronym": "AC-2.1",
@@ -11,7 +11,7 @@
     "narrative": null,
     "definition": null
   },
-  "tagged_evidence": "## Tagged evidence\n- USD00077777 Example System Access Control Plan Rev A — mentions group membership in passing; does not enumerate conditions or approvers.\n",
+  "tagged_evidence": "## Tagged evidence\n- USD00077777 Example System Access Control Plan Rev A \u2014 mentions group membership in passing; does not enumerate conditions or approvers.\n",
   "llm_stub_proposals": [
     {
       "status": "Compliant",
@@ -20,9 +20,11 @@
     }
   ],
   "expected": {
-    "status": "Compliant",
-    "source_in": ["llm", "llm_after_retry"],
-    "needs_review": false,
-    "accepted": true
+    "status": null,
+    "proposed_status": "Compliant",
+    "source_in": ["abstain"],
+    "needs_review": true,
+    "accepted": true,
+    "review_reason_contains_regex": "low-confidence"
   }
 }

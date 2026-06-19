@@ -116,17 +116,34 @@ def test_8a_fires_on_qualified_inherited_from_dod(make_row):
     assert result.rule == "8a"
 
 
-def test_8a_structural_fires_when_col_l_is_non_local_non_csp(make_row):
+def test_8a_structural_fires_when_col_l_remote_with_named_source_in_col_m(make_row):
+    # Owner convention: Column L is a flag (Remote/Yes => inherited); the source
+    # name lives in Column M (remote_inheritance). Remote + named M => 8a Compliant.
     row = make_row(
         procedures="Examine artifacts and confirm implementation.",
         guidance="Implementation guidance only.",
-        inherited="Parent System",  # not "Local", not a CSP
+        inherited="Remote",
+        remote_inheritance="Parent System",
     )
     result = rules.classify_row(row)
     assert result.verdict == rules.AutoStatusVerdict.COMPLIANT_8A
-    assert result.trigger_column == "L"
+    assert result.trigger_column == "M"
     assert result.trigger_phrase == "Parent System"
-    assert 'col L = "Parent System"' in (result.narrative or "")
+    assert "Parent System" in (result.narrative or "")
+
+
+def test_8c_escalates_when_col_l_remote_but_col_m_blank(make_row):
+    # Remote/Yes flag but no source named in Column M => can't tell internal vs
+    # external => escalate (8c).
+    row = make_row(
+        procedures="Examine artifacts and confirm implementation.",
+        guidance="Implementation guidance only.",
+        inherited="Remote",
+        remote_inheritance=None,
+    )
+    result = rules.classify_row(row)
+    assert result.verdict == rules.AutoStatusVerdict.UNCLEAR_8C
+    assert result.trigger_column == "L"
 
 
 def test_8a_structural_does_not_fire_for_local(make_row):
@@ -235,35 +252,32 @@ def test_8a_text_narrative_quotes_trigger(make_row):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_col_l_flex_named_source_is_inherited():
-    assert (
-        rules.resolve_col_l_flex_status("DoW Enterprise")
-        is rules.ColLFlexOutcome.INHERITED
-    )
-    assert (
-        rules.resolve_col_l_flex_status("SDA Enterprise Service")
-        is rules.ColLFlexOutcome.INHERITED
-    )
+# Owner convention (2026-06-19): Column L is ONLY a flag (Local/No/blank =>
+# assess; Remote/Yes => inherited). The inheritance SOURCE is in Column M.
 
 
-def test_resolve_col_l_flex_local_blank_no_are_assess():
-    for v in ("Local", "local", "", None, "No", "n/a", "not inherited"):
+def test_resolve_col_l_remote_with_named_col_m_is_inherited():
+    for flag in ("Remote", "remote", "Yes", "yes", "inherited", "true"):
         assert (
-            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ASSESS
+            rules.resolve_col_l_flex_status(flag, "DoW Enterprise")
+            is rules.ColLFlexOutcome.INHERITED
+        ), f"{flag!r}+named-M should be INHERITED"
+
+
+def test_resolve_col_l_local_blank_no_are_assess():
+    # Local/No/blank => assess regardless of Column M.
+    for v in ("Local", "local", "", None, "No", "n", "false"):
+        assert (
+            rules.resolve_col_l_flex_status(v, "ignored source") is rules.ColLFlexOutcome.ASSESS
         ), f"{v!r} should be ASSESS"
 
 
-def test_resolve_col_l_flex_bare_yes_is_escalate():
-    for v in ("Yes", "yes", "inherited", "true"):
+def test_resolve_col_l_remote_without_col_m_is_escalate():
+    # Remote/Yes flag but Column M blank => inherited-but-unnamed => escalate.
+    for flag in ("Remote", "Yes", "inherited", "true"):
         assert (
-            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ESCALATE
-        ), f"{v!r} should be ESCALATE"
-
-
-def test_resolve_col_l_flex_named_csp_is_assess():
-    # A col-L value naming a CSP is an 8b structural hint but can't auto-N/A
-    # without K/J triggers — resolver defers to assessment, never auto-pass.
-    for v in ("AWS GovCloud", "Azure", "inherited from CSP"):
+            rules.resolve_col_l_flex_status(flag, None) is rules.ColLFlexOutcome.ESCALATE
+        ), f"{flag!r}+blank-M should be ESCALATE"
         assert (
-            rules.resolve_col_l_flex_status(v) is rules.ColLFlexOutcome.ASSESS
-        ), f"{v!r} should be ASSESS (CSP-named)"
+            rules.resolve_col_l_flex_status(flag, "") is rules.ColLFlexOutcome.ESCALATE
+        ), f"{flag!r}+empty-M should be ESCALATE"

@@ -1,23 +1,24 @@
 {
   "name": "rule_8a_structural_l",
-  "description": "Rule 8a structural short-circuit \u2014 col L (Inheritance) is non-empty, not 'Local', and does not name an external CSP (engine/rules.py:189-199). The orchestrator returns Compliant via the structural branch of classify_row without examining cols J/K text triggers and without consulting the LLM. Pins the third 8a path (after explicit-text and qualified-inherited-from); a regression in _value_names_external_csp's hint list, or in the 'Local'-case-insensitive comparison, would surface here as a wrong source string. Trigger column = 'L', narrative formatter is _format_8a_structural_narrative which embeds the col L value in quotes.",
+  "description": "Rule 8a structural short-circuit (owner convention 2026-06-19): Column L is a FLAG (Remote/Yes => inherited) and the inheritance SOURCE is named in Column M (Remote Inheritance Instance). Column L=Remote + Column M='Enterprise' fires the structural 8a branch of classify_row, returning Compliant without examining J/K text triggers and without consulting the LLM. Trigger column = 'M'; narrative formatter is _format_8a_structural_narrative which embeds the Column M source in quotes.",
   "ccis_row": {
     "control_id": "PE-3",
     "ap_acronym": "PE-3.1",
     "cci_id": "CCI-000919",
     "guidance": "The organization enforces physical access authorizations at organization-defined entry/exit points to the facility where the information system resides.",
     "procedures": "Examine physical access authorization records.",
-    "inherited": "Enterprise",
+    "inherited": "Remote",
+    "remote_inheritance": "Enterprise",
     "narrative": null,
     "definition": null
   },
-  "tagged_evidence": "## Tagged evidence\n- placeholder \u2014 rule 8a structural should fire before this is examined.\n",
+  "tagged_evidence": "## Tagged evidence\n- placeholder — rule 8a structural should fire before this is examined.\n",
   "llm_stub_proposals": [],
   "expected": {
     "status": "Compliant",
     "source_in": ["rule_8a"],
     "needs_review": false,
     "llm_calls": 0,
-    "narrative_contains_regex": "Inheritance \\(col L = \"Enterprise\"\\)"
+    "narrative_contains_regex": "source: \"Enterprise\""
   }
 }
