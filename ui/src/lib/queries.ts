@@ -34,6 +34,7 @@ import {
   type Control,
   type ControlDetail,
   type ControlStatusRollup,
+  type ColLStatusRollup,
   type CreatePoamRequest,
   type CrmLoadResult,
   type CrossCheckResult,
@@ -160,6 +161,7 @@ export const qk = {
   workbooks: ["workbooks"] as const,
   workbookSummary: (id: number) => ["workbook", id, "summary"] as const,
   workbookControlStatus: (id: number) => ["workbook", id, "control-status"] as const,
+  workbookColLStatus: (id: number) => ["workbook", id, "col-l-status"] as const,
   workbookReviewQueue: (id: number) => ["workbook", id, "review-queue"] as const,
   workbookOverlays: (id: number) => ["workbook", id, "overlays"] as const,
   workbookOverlayMembership: (id: number) =>
@@ -396,6 +398,13 @@ export const useWorkbookControlStatus = (id: number | undefined) =>
   useQuery<ControlStatusRollup[]>({
     queryKey: id ? qk.workbookControlStatus(id) : ["workbook", "none", "control-status"],
     queryFn: () => api.workbookControlStatus(id!),
+    enabled: !!id,
+  });
+
+export const useWorkbookColLStatus = (id: number | undefined) =>
+  useQuery<ColLStatusRollup[]>({
+    queryKey: id ? qk.workbookColLStatus(id) : ["workbook", "none", "col-l-status"],
+    queryFn: () => api.workbookColLStatus(id!),
     enabled: !!id,
   });
 

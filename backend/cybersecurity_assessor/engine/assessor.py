@@ -2332,31 +2332,75 @@ class Assessor:
                     if val not in seen_flags:
                         seen_flags.add(val)
                         dual_flag_values.append(val)
-                # Flex-slice col-L override on the LLM path (pie-slice model).
+                # Flex-slice col-L resolution on the LLM path (pie-slice model).
                 # The control reached the LLM because a CLOUD slice needed
-                # assessment (customer/hybrid) OR the flex slice itself had
-                # evidence. Either way, when col L marks the flex slice INHERITED
-                # its status is authoritative and must NOT be the LLM's call —
-                # force Compliant via statuses_by_scope so plan_implementations
-                # gives the flex slice Compliant regardless of the LLM verdict on
-                # the cloud halves. col L ASSESS → let the LLM's verdict stand
-                # for the flex slice (it had evidence). ESCALATE with evidence →
-                # likewise assessed by the LLM.
+                # assessment (customer/hybrid). The flex (On-Premises/workbook)
+                # slice is NOT the LLM's call — Column L is its sole authority, so
+                # we resolve it deterministically here for EVERY outcome (not just
+                # INHERITED). This prevents the synthesized flex slice from
+                # falling into plan_implementations' phantom-scope guard (which
+                # would emit the generic "residual on-premises responsibility…"
+                # stub). The LLM verdict governs only the cloud halves.
+                #   INHERITED → Compliant + col-L narrative
+                #   ASSESS    → Non-Compliant + col-L "no on-prem evidence"
+                #               narrative (owner decision: blank flex narrative
+                #               under forced-assess → NC)
+                #   ESCALATE  → leave to the phantom guard (needs_review), but
+                #               give a col-L escalate narrative so the stub text
+                #               isn't shown.
                 llm_flex_statuses: dict[str, str] = {}
-                if (
-                    synth_onprem is not None
-                    and flex_outcome is rules.ColLFlexOutcome.INHERITED
-                ):
-                    llm_flex_statuses[ON_PREM_LABEL] = (
-                        ComplianceStatus.COMPLIANT.value
-                    )
-                    if not (proposal_by_scope.get(ON_PREM_LABEL) or "").strip():
+                if synth_onprem is not None:
+                    col_l_val = (row.inherited or "").strip()
+                    if flex_outcome is rules.ColLFlexOutcome.INHERITED:
+                        llm_flex_statuses[ON_PREM_LABEL] = (
+                            ComplianceStatus.COMPLIANT.value
+                        )
                         proposal_by_scope[ON_PREM_LABEL] = (
                             "On-premises/workbook scope is inherited per the "
-                            f'eMASS workbook (Column L = "{(row.inherited or "").strip()}"); '
-                            "confirmed via the workbook to cover this control "
-                            "objective for the on-premises/workbook scope."
+                            f'eMASS workbook (Column L = "{col_l_val}"). The '
+                            "inheriting authorization is confirmed via the "
+                            "workbook to cover this control objective for the "
+                            "on-premises/workbook scope."
                         )
+                    elif flex_outcome is rules.ColLFlexOutcome.ASSESS:
+                        llm_flex_statuses[ON_PREM_LABEL] = (
+                            ComplianceStatus.NON_COMPLIANT.value
+                        )
+                        proposal_by_scope[ON_PREM_LABEL] = (
+                            "No on-premises evidence was located for this control "
+                            "objective. The workbook (Column L = "
+                            f'"{col_l_val or "blank"}") indicates the on-premises/'
+                            "workbook scope is locally owned, but no artifact "
+                            "substantiates the on-premises implementation. "
+                            "Non-Compliant; POA&M opened pending on-premises "
+                            "implementation evidence."
+                        )
+                    else:  # ESCALATE — bare inherited flag, source unnamed
+                        proposal_by_scope[ON_PREM_LABEL] = (
+                            "On-premises/workbook scope is marked inherited "
+                            f'(Column L = "{col_l_val}") but names no inheritance '
+                            "source — cannot distinguish internal inheritance "
+                            "from an external provider. Flagged for reviewer."
+                        )
+                    # When the flex slice forces a status, ALSO pin each cloud
+                    # customer/hybrid slice to the LLM verdict (proposal.status)
+                    # via statuses_by_scope. Otherwise plan_implementations falls
+                    # back to decision.status for those slices — and once the
+                    # parent is widened to the worst-of rollup below, the cloud
+                    # slices would wrongly inherit that worse status at plan AND
+                    # persist time. Inheritable cloud slices (provider/inherited/
+                    # NA) are NOT pinned: they carry their own deterministic
+                    # status from the responsibility mapping.
+                    if llm_flex_statuses and proposal.status is not None:
+                        for _sl in crm_slices:
+                            if (
+                                _sl.scope_label != ON_PREM_LABEL
+                                and _sl.responsibility
+                                in _CUSTOMER_OWNED_RESPONSIBILITIES
+                            ):
+                                llm_flex_statuses.setdefault(
+                                    _sl.scope_label, proposal.status.value
+                                )
                 decision = Decision(
                     cci_id=cci,
                     excel_row=row.excel_row,
@@ -2388,6 +2432,20 @@ class Assessor:
                     trace_payload=trace_payload,
                     evidence_shown=evidence_shown_list,
                 )
+                # Reconcile the parent status with the per-scope rollup when the
+                # flex slice forced a divergent status (pie-slice model). Every
+                # slice now carries an explicit forced status in statuses_by_scope
+                # (flex from Column L + each cloud customer/hybrid pinned to the
+                # LLM verdict; inheritable clouds get theirs from the mapping), so
+                # plan_implementations + compute_rollup_status reproduce EXACTLY
+                # what persist re-derives — in-memory and saved agree. Only widen
+                # to a real status; never coerce to None or relax a verdict.
+                if llm_flex_statuses and crm_slices:
+                    _plans = plan_implementations(decision, crm_slices)
+                    if _plans:
+                        _rolled = compute_rollup_status([p.status for p in _plans])
+                        if _rolled is not None:
+                            decision.status = _rolled
                 # Cache LLM-accepted Decisions. Abstain rows are
                 # deliberately re-evaluated on the next run (per the
                 # decision_cache module docstring) so the cache write
@@ -3163,28 +3221,32 @@ class Assessor:
         # falls back to the scope-named inheritance stub.
         per_scope: dict[str, str] = {}
         for sl in slices or []:
+            # The synthesized flex (On-Premises/workbook) slice is NEVER narrated
+            # from the CRM — its status AND narrative come from Column L (pie-
+            # slice authority). Applying _fallback_inheritance_narrative to it
+            # produced the nonsensical "customer inherits this control from the
+            # provider per the attached CRM (customer)" line AND attributed the
+            # inheritance to the CRM instead of the workbook — defeating
+            # "local (Column L) wins". Skip it here; the col-L block below owns it.
+            if sl.scope_label == ON_PREM_LABEL and sl.source_baseline_id is None:
+                continue
             text = (sl.narrative or "").strip() or _fallback_inheritance_narrative(sl)
             if text:
                 per_scope[sl.scope_label] = text
 
-        # Flex-slice status override (pie-slice model). When col L resolved the
-        # synthesized flex (On-Premises/workbook) slice to a concrete status
-        # (e.g. INHERITED → Compliant), carry it on statuses_by_scope so
-        # plan_implementations forces that per-scope status — otherwise the
-        # synthesized customer-labeled slice with no CRM narrative would hit the
-        # phantom-scope guard and abstain. Also give the flex slice a col-L
-        # inheritance narrative when the CRM supplied none, so its impl row and
-        # the rolled column-Q read cleanly.
+        # Flex-slice status + narrative from Column L (pie-slice authority). This
+        # method only handles the col-L INHERITED short-circuit (flex_statuses
+        # carries On-Prem=Compliant); the ASSESS/ESCALATE cases are routed to the
+        # gap/abstain finalizers upstream. The narrative is authored from Column L
+        # (NOT the CRM) so "local wins" holds and the flex card reads correctly.
         statuses_by_scope: dict[str, str] = dict(flex_statuses or {})
-        if (
-            statuses_by_scope.get(ON_PREM_LABEL) == ComplianceStatus.COMPLIANT.value
-            and not (per_scope.get(ON_PREM_LABEL) or "").strip()
-        ):
+        if statuses_by_scope.get(ON_PREM_LABEL) == ComplianceStatus.COMPLIANT.value:
+            col_l_val = (row.inherited or "").strip()
             per_scope[ON_PREM_LABEL] = (
                 "On-premises/workbook scope is inherited per the eMASS workbook "
-                f'(Column L = "{(row.inherited or "").strip()}"); the inheriting '
-                "authorization is confirmed via the workbook to cover this "
-                "control objective for the on-premises/workbook scope."
+                f'(Column L = "{col_l_val}"). The inheriting authorization is '
+                "confirmed via the workbook to cover this control objective for "
+                "the on-premises/workbook scope."
             )
 
         return Decision(
