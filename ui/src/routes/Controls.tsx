@@ -1377,7 +1377,28 @@ export function Controls() {
         header: "Status",
         cell: (ctx) => {
           const s = ctx.row.original.status;
-          if (!s) return <span className="text-xs text-muted-foreground">—</span>;
+          if (!s) {
+            // Unassessed control. A wholly-Column-N Not Applicable control
+            // (rule 8b — every CCI marked N/A in the workbook) has a known
+            // verdict before any kernel run: N/A. The col-L endpoint already
+            // computes this (outcome === "na"), so surface "Not Applicable"
+            // here instead of "—" rather than waiting for an Assess pass. This
+            // mirrors the live On-Prem (Col L) chip, which already reads N/A
+            // for the same control. Any non-NA control with no persisted
+            // assessment still shows "—" (genuinely unassessed).
+            const flex = colLByControl.get(ctx.row.original.control_id);
+            if (flex?.outcome === "na") {
+              return (
+                <Badge
+                  variant="outline"
+                  title="Wholly Not Applicable per workbook Column N (rule 8b) — no assessment required"
+                >
+                  Not Applicable
+                </Badge>
+              );
+            }
+            return <span className="text-xs text-muted-foreground">—</span>;
+          }
           const counts = ctx.row.original.status_counts;
           // v0.2: needs_review rows roll up into a "Needs Review" bucket
           // (see backend/routes/workbooks.py::workbook_control_status). The
