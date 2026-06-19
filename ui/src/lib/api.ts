@@ -577,7 +577,9 @@ export interface ControlStatusRollup {
  */
 export interface ColLStatusRollup {
   control_id: string;
-  outcome: "inherited" | "assess" | "escalate";
+  /** "na" is emitted when the control's Column N is wholly Not Applicable
+   * (rule 8b) — the flex slice has nothing to assess. */
+  outcome: "inherited" | "assess" | "escalate" | "na";
   /** Representative raw col-L cell that drove the rollup (for the chip label). */
   value: string;
 }

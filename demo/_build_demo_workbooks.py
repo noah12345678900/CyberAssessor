@@ -251,6 +251,58 @@ NIST_800_53 = FrameworkDemo(
             "AC-18 does not apply to this system.",
             cci="CCI-001438", inherited="No",
         ),
+        # N/A-SLICE showcase #1 — ALL-SLICES-N/A rollup. PE-10 (Emergency
+        # Shutoff) is "Not Applicable" on BOTH cloud CRMs (datacenter emergency
+        # shutoff is a provider-internal facility control) AND column N is
+        # prefilled "Not Applicable" so the flex (On-Premises/workbook) slice is
+        # N/A too. Every slice is N/A → the control rolls up NOT APPLICABLE (the
+        # "N/A only if ALL slices N/A" rule). The flex chip reads "N/A". Left
+        # with a deterministic col-N N/A so it short-circuits via rule 8b.
+        Req(
+            "PE-10", "Emergency Shutoff",
+            "PE", "Emergency power shutoff for the Example System Demo is a "
+            "provider-internal datacenter facility control on every cloud "
+            "enclave; the system has no customer-operated facility requiring an "
+            "emergency power-shutoff capability.",
+            "The organization provides the capability to shut off power to the "
+            "information system or individual system components in emergencies.",
+            "If a customer-operated facility exists, provide the emergency "
+            "power-shutoff procedure; otherwise document the scope exclusion.",
+            "Confirm emergency shutoff is provider-internal on every cloud and "
+            "that no customer facility requires a local capability.",
+            status="Not Applicable",
+            results="Not Applicable — datacenter emergency power shutoff is a "
+            "provider-internal facility control on every cloud enclave (AWS "
+            "GovCloud, Azure Government) and the system operates no customer "
+            "facility requiring an equivalent capability. PE-10 does not apply "
+            "to any slice of this system.",
+            cci="CCI-000813", inherited="No",
+        ),
+        # N/A-SLICE showcase #2 — PER-CLOUD N/A (mixed rollup). MP-6 (Media
+        # Sanitization) is "Not Applicable" on the AWS GovCloud CRM (AWS performs
+        # cryptographic erasure of customer-managed media on its own) but
+        # "Inherited" on the Azure Government CRM. Column L = "No" so the flex
+        # slice is customer-assessed. With both CRMs attached the grid shows an
+        # AWS "N/A" chip beside an Azure "Inherited" chip — exercising a single
+        # N/A slice inside a mixed worst-of rollup (one N/A + one Compliant +
+        # the flex slice). Left UNASSESSED so it flows to the assessor.
+        Req(
+            "MP-6", "Media Sanitization",
+            "MP", "Media sanitization for the Example System Demo differs by "
+            "cloud: the AWS GovCloud enclave treats it as not applicable "
+            "(provider performs cryptographic erasure of customer-managed media), "
+            "while the Azure Government enclave inherits the control from the "
+            "provider's media-sanitization plane.",
+            "The organization sanitizes information system media prior to "
+            "disposal, release, or reuse.",
+            "Provide the media-sanitization procedure or the provider "
+            "attestation per cloud enclave; document any scope exclusion.",
+            "Examine media sanitization per scope: confirm the AWS N/A exclusion "
+            "and the Azure inherited coverage; assess the flex scope locally.",
+            status="",
+            results="",
+            cci="CCI-001028", inherited="No",
+        ),
         # 10th control — the PIE-SLICE FULLY-INHERITED showcase. PE-3 (Physical
         # Access Control) is marked "Inherited" by BOTH demo CRMs (AWS GovCloud +
         # Azure Government own datacenter physical security), AND the workbook's

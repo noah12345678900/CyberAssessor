@@ -470,12 +470,14 @@ DEFAULT_MAX_RETRIES = 2
 # catch ratio actually improves. Until that replay exists, default stays
 # OFF; do NOT flip it on intuition. (See feedback_model_choice_needs_eval
 # — same eval-before-tuning discipline.)
-# CONFIDENCE_THRESHOLD: proposals with self-reported confidence below
-# this number are treated as implicit abstains even if abstain=False.
-# Lowered from 0.6 → 0.35 so only genuinely sketchy verdicts (model
-# self-reports near-coin-flip) get demoted. The prompt's abstain contract
-# (conflicting evidence, true coin-flip) is the primary precision gate;
-# this floor is the safety net, not the first line of defense.
+# CONFIDENCE_THRESHOLD: RETAINED as a recorded config constant (it feeds the
+# KernelConfig signature → decision-cache fingerprint, and calibration.py
+# references it), but it NO LONGER GATES anything. The low-confidence
+# implicit-abstain gate it used to drive was REMOVED (owner decision
+# 2026-06-19): self-reported confidence is uncalibrated, and demoting an
+# otherwise validator-approved verdict on it "murks the waters". The prompt's
+# abstain contract (genuine contradiction / no authoritative standard) + the
+# validator are the precision gates; a passing verdict ships on its merits.
 DUAL_PASS_ENABLED = False
 CONFIDENCE_THRESHOLD = 0.35
 
@@ -2132,29 +2134,16 @@ class Assessor:
                 continue
 
             if result.ok:
-                # Implicit-abstain gate: even a validator-approved verdict
-                # is treated as needs_review when the LLM's self-reported
-                # confidence is below the precision-over-recall threshold.
-                if (
-                    proposal.confidence is not None
-                    and proposal.confidence < CONFIDENCE_THRESHOLD
-                ):
-                    return self._abstain(
-                        row, cci,
-                        f"low-confidence: {proposal.confidence:.2f} < {CONFIDENCE_THRESHOLD:.2f}",
-                        outcome=outcome,
-                        status=proposal.status,
-                        narrative=narrative,
-                        narrative_class=result.classified_as,
-                        confidence=proposal.confidence,
-                        rule=auto.rule,
-                        retries=attempt_no,
-                        rejection_log=rejection_log,
-                        supersession_log=supersession_log,
-                        notes=notes,
-                        trace_payload=trace_payload,
-                        evidence_shown=evidence_shown_list,
-                    )
+                # NOTE: the low-confidence implicit-abstain gate (demote a
+                # validator-approved verdict to needs_review when the LLM's
+                # self-reported confidence fell below CONFIDENCE_THRESHOLD) was
+                # REMOVED (owner decision 2026-06-19): self-reported confidence
+                # is uncalibrated and demoting an otherwise-valid verdict on it
+                # "murks the waters" — the validator gate + the abstain contract
+                # (genuine contradiction / no authoritative standard) are the
+                # real precision guards. A verdict that passes validation now
+                # ships on its merits; it is not second-guessed on a confidence
+                # number. (proposal.confidence is still recorded for telemetry.)
 
                 # ----------------------------------------------------------
                 # Mechanism 5 — boundary gate.
@@ -2382,24 +2371,58 @@ class Assessor:
                             "source — cannot distinguish internal inheritance "
                             "from an external provider. Flagged for reviewer."
                         )
-                    # When the flex slice forces a status, ALSO pin each cloud
-                    # customer/hybrid slice to the LLM verdict (proposal.status)
-                    # via statuses_by_scope. Otherwise plan_implementations falls
-                    # back to decision.status for those slices — and once the
-                    # parent is widened to the worst-of rollup below, the cloud
-                    # slices would wrongly inherit that worse status at plan AND
-                    # persist time. Inheritable cloud slices (provider/inherited/
-                    # NA) are NOT pinned: they carry their own deterministic
-                    # status from the responsibility mapping.
-                    if llm_flex_statuses and proposal.status is not None:
+                    # When the flex slice forces a status, each customer/hybrid
+                    # CLOUD slice must ALSO carry an explicit per-scope status —
+                    # otherwise plan_implementations falls back to decision.status,
+                    # and once the parent is widened to the worst-of rollup below,
+                    # a compliant cloud slice would wrongly inherit that worse
+                    # status (the SC-13 / AC-17 bug: AWS slice showed Non-Compliant
+                    # while its own narrative described a passing STIG / configured
+                    # VPN). The LLM emits ONE whole-control proposal.status, which
+                    # cannot represent "AWS compliant, on-prem NC" — so copying
+                    # proposal.status onto AWS is wrong. Instead derive each cloud
+                    # slice's status from ITS OWN per-scope narrative: classify the
+                    # slice narrative and map the class to its implied status. This
+                    # keeps every slice's status consistent with its narrative
+                    # (the contradiction the per-scope validator gate now also
+                    # enforces). Fall back to proposal.status only when the slice
+                    # has no usable per-scope narrative to classify. Inheritable
+                    # slices (provider/inherited/NA) are left alone — they get
+                    # their deterministic status from the responsibility mapping.
+                    if llm_flex_statuses:
                         for _sl in crm_slices:
                             if (
-                                _sl.scope_label != ON_PREM_LABEL
-                                and _sl.responsibility
-                                in _CUSTOMER_OWNED_RESPONSIBILITIES
+                                _sl.scope_label == ON_PREM_LABEL
+                                or _sl.responsibility
+                                not in _CUSTOMER_OWNED_RESPONSIBILITIES
                             ):
+                                continue
+                            _scope_narr = (
+                                proposal_by_scope.get(_sl.scope_label) or ""
+                            ).strip()
+                            _scope_status: ComplianceStatus | None = None
+                            if _scope_narr:
+                                _klass = validator.classify_narrative(_scope_narr)
+                                _scope_status = validator._expected_status_for_class(
+                                    _klass
+                                )
+                            # Owner decision (2026-06-19): when a cloud slice's
+                            # narrative is AMBIGUOUS (classify → None), fall back to
+                            # the whole-control proposal.status (NC by worst-of).
+                            # This is deliberate — an unclassifiable slice is NOT
+                            # given a pass; the conservative whole-control verdict
+                            # stands until a clearer per-scope narrative resolves
+                            # it. (Gemini suggested needs-review/Option B; the owner
+                            # explicitly chose NC. See memory: ambiguous-slice-falls-
+                            # back-to-nc.) The confident classes (affirming/gap/NA)
+                            # still drive their own per-scope status as before, so a
+                            # clearly-compliant AWS narrative stays Compliant — the
+                            # SC-13/AC-17 fix holds for the per-scope-map path.
+                            if _scope_status is None:
+                                _scope_status = proposal.status
+                            if _scope_status is not None:
                                 llm_flex_statuses.setdefault(
-                                    _sl.scope_label, proposal.status.value
+                                    _sl.scope_label, _scope_status.value
                                 )
                 decision = Decision(
                     cci_id=cci,
@@ -3242,12 +3265,21 @@ class Assessor:
         statuses_by_scope: dict[str, str] = dict(flex_statuses or {})
         if statuses_by_scope.get(ON_PREM_LABEL) == ComplianceStatus.COMPLIANT.value:
             col_l_val = (row.inherited or "").strip()
-            per_scope[ON_PREM_LABEL] = (
+            flex_narrative = (
                 "On-premises/workbook scope is inherited per the eMASS workbook "
                 f'(Column L = "{col_l_val}"). The inheriting authorization is '
                 "confirmed via the workbook to cover this control objective for "
                 "the on-premises/workbook scope."
             )
+            per_scope[ON_PREM_LABEL] = flex_narrative
+            # Also populate the legacy two-slot on-prem narrative field so the
+            # detail page's "On-Prem implementation" narrative section renders
+            # (it reads narrative_on_prem, separate from the per-scope impl
+            # cards). Without this the flex slice shows in the per-scope card
+            # but the bottom dual-narrative chip is missing. Only set when blank
+            # so a CRM-authored on-prem narrative (rare with flex) still wins.
+            if not (narrative_on_prem_out or "").strip():
+                narrative_on_prem_out = flex_narrative
 
         return Decision(
             cci_id=cci,
@@ -3303,14 +3335,24 @@ class Assessor:
                 statuses_by_scope[sl.scope_label] = ComplianceStatus.NON_COMPLIANT.value
                 narratives_by_scope[sl.scope_label] = (
                     "No on-premises evidence was located for this control "
-                    "objective. The cloud enclaves inherit this control from the "
-                    "provider(s), but that inheritance does not cover the "
+                    "objective. The cloud enclaves cover this control via the "
+                    "provider(s), but that coverage does not extend to the "
                     "customer-operated on-premises footprint, and no artifact "
                     "substantiates the on-premises implementation. Non-Compliant; "
                     "POA&M opened pending on-premises implementation evidence."
                 )
             else:
-                statuses_by_scope[sl.scope_label] = ComplianceStatus.COMPLIANT.value
+                # Honor the cloud slice's ACTUAL responsibility — this path only
+                # fires when every cloud is inheritable (provider/inherited/NA),
+                # but those map to DIFFERENT statuses: inherited → Compliant,
+                # provider / not_applicable → Not Applicable. The old blanket
+                # Compliant mislabeled an N/A cloud slice (MP-6: AWS
+                # not_applicable showed Compliant). Use the same mapping
+                # plan_implementations uses so the slice + rollup agree.
+                if sl.responsibility == "not_applicable" or sl.responsibility == "provider":
+                    statuses_by_scope[sl.scope_label] = ComplianceStatus.NOT_APPLICABLE.value
+                else:  # inherited (the only other inheritable value here)
+                    statuses_by_scope[sl.scope_label] = ComplianceStatus.COMPLIANT.value
                 narratives_by_scope[sl.scope_label] = (
                     (sl.narrative or "").strip()
                     or _fallback_inheritance_narrative(sl)

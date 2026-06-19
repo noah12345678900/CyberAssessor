@@ -1080,7 +1080,7 @@ function FlexInheritanceChip({ colL }: { colL: string }) {
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-muted-foreground" aria-label="On-premises / workbook scope">
-          <span aria-hidden="true">🏢</span> Flex:
+          Flex:
         </span>
         <Badge variant={meta.variant} className="text-[10px]">
           {meta.label}

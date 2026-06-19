@@ -1,7 +1,7 @@
 {
   "ground_truth": true,
   "name": "ground_truth_ir4_incident_handling_ambiguous",
-  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for IR-4 incident handling. Simulates a scenario where an incident response plan exists but has not been exercised \u2014 the assessor cannot confirm the implementation matches the documented procedures without test results. LLM signals abstain directly with confidence 0.2. Tests the confidence-floor abstain gate with an IR-family control where implementation evidence is characteristically harder to obtain on an IATT (no incidents have occurred yet).",
+  "description": "Ground-truth fixture for IR-4 incident handling where the IRP exists but is a DRAFT pending a tabletop exercise and no incidents have been handled under the IATT \u2014 implementation-vs-procedure conformance cannot be corroborated. The LLM SELF-SIGNALS abstain (abstain:true) \u2014 the legitimate 'I can't tell' path now that the low-confidence gate is removed (owner decision 2026-06-19). The narrative names what is missing (no tabletop records, draft IRP) so the investigator can request exercise evidence and fall back to NC if it isn't provided. review_reason carries 'llm-abstain'.",
   "ccis_row": {
     "control_id": "IR-4",
     "ap_acronym": "IR-4.1",
@@ -16,18 +16,17 @@
   "llm_stub_proposals": [
     {
       "status": "Compliant",
-      "narrative": "Examined incident response plan; confirmed via the documented IRP that preparation, detection and analysis, containment, eradication, and recovery phases are defined. Tabletop exercise records were unavailable for review under the current IATT, so implementation-vs-procedure conformance could not be independently corroborated.",
-      "confidence": 0.2
+      "narrative": "Examined the incident response plan: it defines preparation, detection and analysis, containment, eradication, and recovery phases, but it is marked DRAFT pending a tabletop exercise and no incidents have been handled under the IATT. With no exercise records, implementation-vs-procedure conformance cannot be corroborated from the artifacts alone — tabletop / exercise evidence must be provided before a verdict can be reached.",
+      "confidence": 0.2,
+      "abstain": true
     }
   ],
   "expected": {
-    "status": null,
-    "proposed_status": "Compliant",
     "source_in": [
       "abstain"
     ],
     "needs_review": true,
     "accepted": true,
-    "review_reason_contains_regex": "low-confidence"
+    "review_reason_contains_regex": "llm-abstain"
   }
 }
