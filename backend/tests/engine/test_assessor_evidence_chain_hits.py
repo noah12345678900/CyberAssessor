@@ -204,12 +204,12 @@ def test_llm_accept_path_records_evidence_chain_hit(session):
 
 
 def test_rule_8a_structural_records_evidence_chain_hit(session):
-    """Col-L names a now-superseded internal source; auto-narrative quotes it.
+    """Col-M names a now-superseded internal source; auto-narrative quotes it.
 
-    ``rules._format_8a_structural_narrative`` produces:
-        'Automatically compliant per Inheritance (col L = "<value>").'
-    The rewriter scans that templated text and rewrites the col-L value
-    to the chain head's doc_number.
+    Owner convention: Column L is the Remote/Yes flag; the inheritance SOURCE
+    is in Column M. ``rules._format_8a_structural_narrative`` embeds that
+    Column-M source, and the rewriter scans the templated text and rewrites the
+    source to the chain head's doc_number.
     """
     _stage_chain(
         session,
@@ -217,10 +217,12 @@ def test_rule_8a_structural_records_evidence_chain_hit(session):
         current_doc_number="USD00099992",
     )
 
-    # col-L value is the legacy title verbatim. Long enough (clears 12-char
-    # floor), no external-CSP hint (aws/azure/gcp/csp/cloud), not "local"
-    # → rule_8a structural fires.
-    row = _row(inherited="Example System Account Management Procedure Manual")
+    # Column L = Remote (flag); Column M = the legacy source title verbatim.
+    # → rule_8a structural fires (triggered on Column M).
+    row = _row(
+        inherited="Remote",
+        remote_inheritance="Example System Account Management Procedure Manual",
+    )
     stub = StubLlmClient([])  # rule_8a → LLM must not be called
     assessor = Assessor(llm=stub, cache_session=session)
 
@@ -309,7 +311,10 @@ def test_session_free_assessor_is_noop_for_evidence_chain(session):
         current_doc_number="USD00099995",
     )
 
-    row = _row(inherited="Example System Account Management Procedure Manual")
+    row = _row(
+        inherited="Remote",
+        remote_inheritance="Example System Account Management Procedure Manual",
+    )
     stub = StubLlmClient([])
     # NOTE: no cache_session=
     assessor = Assessor(llm=stub)

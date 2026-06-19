@@ -1,7 +1,7 @@
 {
   "ground_truth": true,
   "name": "ground_truth_cp9_backup_frequency_ambiguous",
-  "description": "Ground-truth fixture for CP-9 backup frequency where the documentation is INCONCLUSIVE: backups are running but the contingency plan does not state the required frequency / RTO / RPO, so alignment cannot be confirmed. The LLM SELF-SIGNALS abstain (abstain:true) \u2014 the legitimate 'I can't tell' path now that the low-confidence gate is removed (owner decision 2026-06-19). The narrative names what is missing (no stated frequency / RTO / RPO) so the investigator can request it and fall back to NC if it isn't provided. review_reason carries 'llm-abstain'.",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for CP-9 backup frequency. Simulates a scenario where backup documentation exists but frequency requirements are not explicitly stated \u2014 the assessor can't determine if the backup schedule meets the organization-defined RTO/RPO without additional information. LLM returns Compliant with confidence 0.25 (well under 0.35 threshold), triggering confidence-floor abstain. Tests the abstain gate with a different control family (CP) and backup-specific evidence.",
   "ccis_row": {
     "control_id": "CP-9",
     "ap_acronym": "CP-9.1",
@@ -16,17 +16,18 @@
   "llm_stub_proposals": [
     {
       "status": "Compliant",
-      "narrative": "Examined the contingency plan and backup job logs; user-level backups are being conducted, but the contingency plan states no required backup frequency or RTO/RPO targets, so alignment with the organization-defined frequency cannot be confirmed from the artifacts alone. The required frequency / RTO / RPO must be provided before a verdict can be reached.",
-      "confidence": 0.25,
-      "abstain": true
+      "narrative": "Examined contingency plan and backup job logs; confirmed that user-level backups are being conducted, though frequency alignment with RTO/RPO targets could not be fully verified from available documentation.",
+      "confidence": 0.25
     }
   ],
   "expected": {
+    "status": null,
+    "proposed_status": "Compliant",
     "source_in": [
       "abstain"
     ],
     "needs_review": true,
     "accepted": true,
-    "review_reason_contains_regex": "llm-abstain"
+    "review_reason_contains_regex": "low-confidence"
   }
 }

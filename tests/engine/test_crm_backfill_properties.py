@@ -631,11 +631,13 @@ def test_all_counters_are_non_negative_ints(
 
 
 def _setup_flex_control(
-    session, workbook_file, monkeypatch, *, col_l: str
+    session, workbook_file, monkeypatch, *, col_l: str, col_m: str | None = None
 ):
     """One control inherited on TWO scope-labeled cloud CRMs (AWS + Azure),
-    with the given Column-L value on the workbook row. Scope-labeled CRMs
-    cause build_crm_context to synthesize the On-Premises flex slice."""
+    with the given Column-L flag (+ optional Column-M source) on the workbook
+    row. Scope-labeled CRMs cause build_crm_context to synthesize the
+    On-Premises flex slice. Owner convention: col L is a flag (Remote/Yes =>
+    inherited, source in col M); col M names the source."""
     _wipe(session)
     fw = Framework(name="NIST SP 800-53", version="Rev 5")
     session.add(fw); session.commit(); session.refresh(fw)
@@ -670,7 +672,8 @@ def _setup_flex_control(
         session.commit()
 
     row = _make_row(excel_row=100, control_id="PE-3", cci_id="CCI-000919")
-    row.inherited = col_l  # Column L
+    row.inherited = col_l  # Column L (flag)
+    row.remote_inheritance = col_m  # Column M (source)
     fake_index = CcisIndex(workbook_path=Path("unused.xlsx"),
                            sheet_name="WORKING SHEET", rows=[row])
     monkeypatch.setattr(crm_backfill, "read_workbook_index", lambda _p: fake_index)
@@ -682,7 +685,7 @@ def test_flex_col_l_inherited_backfills_compliant(session, workbook_file, monkey
     ("DoW Enterprise" → INHERITED) → backfill auto-writes COMPLIANT with all
     three scopes Compliant. (Regression: previously deferred → "—".)"""
     wb_id, obj_id = _setup_flex_control(
-        session, workbook_file, monkeypatch, col_l="DoW Enterprise"
+        session, workbook_file, monkeypatch, col_l="Remote", col_m="DoW Enterprise"
     )
     result = backfill_workbook_crm(wb_id, session)
     session.commit()

@@ -183,6 +183,9 @@ def _format_row_for_prompt(
         parts.append(f"ap_acronym: {row.ap_acronym}")
     if row.inherited:
         parts.append(f"inherited (col L): {row.inherited}")
+    if row.remote_inheritance:
+        # Column M names the inheritance SOURCE when col L is Remote/Yes.
+        parts.append(f"remote inheritance instance (col M): {row.remote_inheritance}")
     if row.implementation_status:
         parts.append(f"implementation_status (col D): {row.implementation_status}")
     if row.designation:

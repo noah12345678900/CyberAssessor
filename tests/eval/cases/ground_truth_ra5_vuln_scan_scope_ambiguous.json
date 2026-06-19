@@ -1,7 +1,7 @@
 {
   "ground_truth": true,
   "name": "ground_truth_ra5_vuln_scan_scope_ambiguous",
-  "description": "Ground-truth fixture for RA-5 vulnerability scanning with PARTIAL scan coverage: scans cover 12 of 19 in-boundary hosts; 7 are unscanned. This is genuinely inconclusive, so the LLM SELF-SIGNALS abstain (abstain:true) \u2014 the legitimate 'I can't tell' path now that the low-confidence gate is removed (owner decision 2026-06-19). The narrative names exactly what is missing ('12 of 19', '7 unscanned') so the investigator can chase the gap and, if the missing scans aren't provided, mark NC themselves. review_reason carries 'llm-abstain'.",
+  "description": "Ground-truth fixture modeled on the Example System IATT assessment pattern for RA-5 vulnerability scanning. Simulates a scenario where vulnerability scans exist but their boundary scope is questionable \u2014 scans cover some hosts but the scan target list doesn't match the current asset inventory. LLM returns Non-Compliant with confidence 0.3, triggering confidence-floor abstain. Tests the abstain gate with a scan-derived finding where boundary attribution is uncertain.",
   "ccis_row": {
     "control_id": "RA-5",
     "ap_acronym": "RA-5.8",
@@ -16,17 +16,18 @@
   "llm_stub_proposals": [
     {
       "status": "Non-Compliant",
-      "narrative": "Vulnerability scan report covers only 12 of 19 in-boundary hosts; 7 hosts are unscanned. POA&M lists 3 open vulnerability items but none reference the 7 unscanned hosts. Scan coverage is incomplete relative to the asset inventory, so the control state cannot be confirmed from the artifacts alone \u2014 the 7 unscanned hosts must be scanned (or their exclusion justified) before a verdict can be reached.",
-      "confidence": 0.3,
-      "abstain": true
+      "narrative": "Vulnerability scan report covers only 12 of 19 in-boundary hosts; 7 hosts are missing from the scan scope. POA&M lists 3 open vulnerability items but none reference the unscanned hosts \u2014 gap identified between scan scope and the current asset inventory.",
+      "confidence": 0.3
     }
   ],
   "expected": {
+    "status": null,
+    "proposed_status": "Non-Compliant",
     "source_in": [
       "abstain"
     ],
     "needs_review": true,
     "accepted": true,
-    "review_reason_contains_regex": "llm-abstain"
+    "review_reason_contains_regex": "low-confidence"
   }
 }

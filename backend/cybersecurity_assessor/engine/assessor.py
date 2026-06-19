@@ -470,14 +470,14 @@ DEFAULT_MAX_RETRIES = 2
 # catch ratio actually improves. Until that replay exists, default stays
 # OFF; do NOT flip it on intuition. (See feedback_model_choice_needs_eval
 # — same eval-before-tuning discipline.)
-# CONFIDENCE_THRESHOLD: RETAINED as a recorded config constant (it feeds the
-# KernelConfig signature → decision-cache fingerprint, and calibration.py
-# references it), but it NO LONGER GATES anything. The low-confidence
-# implicit-abstain gate it used to drive was REMOVED (owner decision
-# 2026-06-19): self-reported confidence is uncalibrated, and demoting an
-# otherwise validator-approved verdict on it "murks the waters". The prompt's
-# abstain contract (genuine contradiction / no authoritative standard) + the
-# validator are the precision gates; a passing verdict ships on its merits.
+# CONFIDENCE_THRESHOLD: proposals with self-reported confidence below this
+# number are treated as implicit abstains even if abstain=False — the
+# precision-over-recall safety net for near-coin-flip verdicts. 0.35 so only
+# genuinely sketchy verdicts (model self-reports near-coin-flip) get demoted;
+# the prompt's abstain contract (conflicting evidence, true coin-flip) is the
+# primary gate, this floor is the backstop. (Briefly removed 2026-06-19 then
+# RESTORED same day once its purpose was clarified.) Also feeds the
+# KernelConfig signature → decision-cache fingerprint + calibration.py.
 DUAL_PASS_ENABLED = False
 CONFIDENCE_THRESHOLD = 0.35
 
@@ -829,13 +829,34 @@ def plan_implementations(
 
         if resp in _CUSTOMER_OWNED_RESPONSIBILITIES or resp == "customer":
             # Customer-owned (customer / hybrid): mirror the Decision.
-            # Hard abstain (status is None) drops the slice so the
-            # reviewer-flagged parent doesn't gain falsely-promoted
-            # children. The per-scope narrative wins when the LLM
-            # populated narratives_by_scope; otherwise fall back to the
-            # canonical decision.narrative so callers that don't set the
-            # per-scope map still produce non-empty impl rows.
+            # Hard abstain (status is None): EMIT the slice with status=None
+            # (surfaced for review) rather than dropping it. Dropping customer
+            # slices on abstain was wrong — it left the reviewer with only the
+            # inheritable scopes (AC-17 showed just the Azure inherited card,
+            # no AWS/On-Prem) or zero per-scope cards (AU-9), so they couldn't
+            # see or adjudicate the customer-side scopes that actually need
+            # review. Every slice now persists; the reviewer sets each scope's
+            # status on the detail page and Save rolls up worst-of + clears the
+            # abstain. The parent stays reviewer-gated via needs_review; an
+            # all-None impl set rolls up to None (no falsely-promoted children).
             if decision.status is None:
+                per_scope_narrative = by_scope.get(sl.scope_label)
+                plans.append(
+                    ImplementationPlan(
+                        scope_label=sl.scope_label,
+                        responsibility=resp,
+                        status=None,
+                        narrative=(
+                            per_scope_narrative
+                            or (sl.narrative or "").strip()
+                            or decision.narrative
+                            or "Pending reviewer assessment for this scope "
+                            "(assessor abstained on the control)."
+                        ),
+                        evidence_refs=None,
+                        source_baseline_id=sl.source_baseline_id,
+                    )
+                )
                 continue
             # Phantom-scope guard. The synthesized On-Premises slice
             # (crm_context appends it whenever any cloud scope is customer-
@@ -888,15 +909,23 @@ def plan_implementations(
         # Unknown responsibility (defensive): treat as customer-owned so
         # the auditor sees the row; pin loudly with the raw responsibility
         # value so a future CRM responsibility vocabulary expansion shows
-        # up in tests rather than silently dropping rows.
-        if decision.status is None:
-            continue
+        # up in tests rather than silently dropping rows. On hard abstain,
+        # emit with status=None (surfaced for review) rather than dropping —
+        # same reviewer-visibility fix as the customer/hybrid branch above.
         plans.append(
             ImplementationPlan(
                 scope_label=sl.scope_label,
                 responsibility=resp or "customer",
                 status=decision.status,
-                narrative=decision.narrative or "",
+                narrative=(
+                    decision.narrative
+                    or (
+                        "Pending reviewer assessment for this scope "
+                        "(assessor abstained on the control)."
+                        if decision.status is None
+                        else ""
+                    )
+                ),
                 evidence_refs=None,
                 source_baseline_id=sl.source_baseline_id,
             )
@@ -1424,7 +1453,7 @@ class Assessor:
                 None,
             )
             flex_outcome = (
-                rules.resolve_col_l_flex_status(row.inherited)
+                rules.resolve_col_l_flex_status(row.inherited, row.remote_inheritance)
                 if synth_onprem is not None
                 else None
             )
@@ -2009,6 +2038,19 @@ class Assessor:
                         if proposal.narrative.startswith("[parse_error]")
                         else "llm-abstain"
                     )
+                    # Build the per-scope narrative map BEFORE returning so an
+                    # abstained MULTI-SCOPE control still carries each slice's
+                    # real narrative (SC-13: the AWS evidence narrative) for
+                    # review — otherwise plan_implementations falls back to a
+                    # generic "pending reviewer assessment" stub for every
+                    # customer/hybrid slice (the regression). Mirrors the
+                    # accepted-path build at the proposal_by_scope site below.
+                    abstain_by_scope = narratives_by_scope_from_proposal(
+                        slices=crm_slices,
+                        narrative_on_prem=proposal.narrative_on_prem,
+                        narrative_cloud=proposal.narrative_cloud,
+                        llm_by_scope=proposal.narratives_by_scope,
+                    )
                     return self._abstain(
                         row, cci,
                         # Short triage label for the reason; full text on
@@ -2026,6 +2068,7 @@ class Assessor:
                         notes=notes,
                         trace_payload=trace_payload,
                         evidence_shown=evidence_shown_list,
+                        narratives_by_scope=abstain_by_scope,
                     )
 
             # Supersession rewrite happens BEFORE validation so the
@@ -2134,16 +2177,46 @@ class Assessor:
                 continue
 
             if result.ok:
-                # NOTE: the low-confidence implicit-abstain gate (demote a
-                # validator-approved verdict to needs_review when the LLM's
-                # self-reported confidence fell below CONFIDENCE_THRESHOLD) was
-                # REMOVED (owner decision 2026-06-19): self-reported confidence
-                # is uncalibrated and demoting an otherwise-valid verdict on it
-                # "murks the waters" — the validator gate + the abstain contract
-                # (genuine contradiction / no authoritative standard) are the
-                # real precision guards. A verdict that passes validation now
-                # ships on its merits; it is not second-guessed on a confidence
-                # number. (proposal.confidence is still recorded for telemetry.)
+                # Low-confidence implicit-abstain gate (RESTORED 2026-06-19 —
+                # owner reinstated after clarifying its purpose). Even a
+                # validator-approved verdict is demoted to needs_review when the
+                # LLM's self-reported confidence is below CONFIDENCE_THRESHOLD.
+                # This is the precision-over-recall safety net: a near-coin-flip
+                # verdict the model itself is unsure about is held for human
+                # review rather than shipped. The status is coerced to None on
+                # the abstain; proposal.status is preserved as the LLM's guess.
+                if (
+                    proposal.confidence is not None
+                    and proposal.confidence < CONFIDENCE_THRESHOLD
+                ):
+                    # Build the per-scope narrative map so a low-confidence
+                    # abstain on a MULTI-SCOPE control still carries each
+                    # slice's real narrative for review — same fix as the
+                    # self-abstain site; without it plan_implementations falls
+                    # back to the generic "pending reviewer assessment" stub.
+                    lowconf_by_scope = narratives_by_scope_from_proposal(
+                        slices=crm_slices,
+                        narrative_on_prem=proposal.narrative_on_prem,
+                        narrative_cloud=proposal.narrative_cloud,
+                        llm_by_scope=proposal.narratives_by_scope,
+                    )
+                    return self._abstain(
+                        row, cci,
+                        f"low-confidence: {proposal.confidence:.2f} < {CONFIDENCE_THRESHOLD:.2f}",
+                        outcome=outcome,
+                        status=proposal.status,
+                        narrative=narrative,
+                        narrative_class=result.classified_as,
+                        confidence=proposal.confidence,
+                        rule=auto.rule,
+                        retries=attempt_no,
+                        rejection_log=rejection_log,
+                        supersession_log=supersession_log,
+                        notes=notes,
+                        trace_payload=trace_payload,
+                        evidence_shown=evidence_shown_list,
+                        narratives_by_scope=lowconf_by_scope,
+                    )
 
                 # ----------------------------------------------------------
                 # Mechanism 5 — boundary gate.
@@ -2164,6 +2237,12 @@ class Assessor:
 
                 boundary = _boundary_conflict(narrative, proposal.status)
                 if boundary is not None:
+                    boundary_by_scope = narratives_by_scope_from_proposal(
+                        slices=crm_slices,
+                        narrative_on_prem=proposal.narrative_on_prem,
+                        narrative_cloud=proposal.narrative_cloud,
+                        llm_by_scope=proposal.narratives_by_scope,
+                    )
                     return self._abstain(
                         row, cci,
                         f"boundary-conflict: {boundary}",
@@ -2179,6 +2258,7 @@ class Assessor:
                         notes=notes,
                         trace_payload=trace_payload,
                         evidence_shown=evidence_shown_list,
+                        narratives_by_scope=boundary_by_scope,
                     )
 
                 source = "llm" if attempt_no == 0 else "llm_after_retry"
@@ -2340,13 +2420,17 @@ class Assessor:
                 llm_flex_statuses: dict[str, str] = {}
                 if synth_onprem is not None:
                     col_l_val = (row.inherited or "").strip()
+                    # The inheritance SOURCE is in Column M (Remote Inheritance
+                    # Instance), not Column L (which is just the Remote/Yes flag).
+                    col_m_src = (row.remote_inheritance or "").strip()
                     if flex_outcome is rules.ColLFlexOutcome.INHERITED:
                         llm_flex_statuses[ON_PREM_LABEL] = (
                             ComplianceStatus.COMPLIANT.value
                         )
                         proposal_by_scope[ON_PREM_LABEL] = (
                             "On-premises/workbook scope is inherited per the "
-                            f'eMASS workbook (Column L = "{col_l_val}"). The '
+                            f'eMASS workbook (inherited from "{col_m_src}", '
+                            "Remote Inheritance Instance / Column M). The "
                             "inheriting authorization is confirmed via the "
                             "workbook to cover this control objective for the "
                             "on-premises/workbook scope."
@@ -2828,6 +2912,7 @@ class Assessor:
         notes: list[str] | None = None,
         trace_payload: list[TracePayload] | None = None,
         evidence_shown: list[EvidenceShownPayload] | None = None,
+        narratives_by_scope: dict[str, str] | None = None,
     ) -> Decision:
         """Mint a ``needs_review=True`` Decision for the abstain paths.
 
@@ -2892,6 +2977,12 @@ class Assessor:
             needs_review=True,
             review_reason=reason,
             confidence=confidence,
+            # Per-scope narratives carried onto the abstain Decision so an
+            # abstained MULTI-SCOPE control still shows each slice's real
+            # narrative for review (SC-13: AWS evidence narrative) instead of a
+            # generic "pending reviewer assessment" stub. Empty for
+            # single-boundary / no-LLM / rule-routed abstains.
+            narratives_by_scope=narratives_by_scope or {},
             # Audit v1 — abstain rows still carry the trace + chunks that
             # informed the abstain decision. Empty defaults cover the
             # no-LLM-client and rule-routed abstains (they never made a
@@ -3264,12 +3355,13 @@ class Assessor:
         # (NOT the CRM) so "local wins" holds and the flex card reads correctly.
         statuses_by_scope: dict[str, str] = dict(flex_statuses or {})
         if statuses_by_scope.get(ON_PREM_LABEL) == ComplianceStatus.COMPLIANT.value:
-            col_l_val = (row.inherited or "").strip()
+            col_m_src = (row.remote_inheritance or "").strip()
             flex_narrative = (
                 "On-premises/workbook scope is inherited per the eMASS workbook "
-                f'(Column L = "{col_l_val}"). The inheriting authorization is '
-                "confirmed via the workbook to cover this control objective for "
-                "the on-premises/workbook scope."
+                f'(inherited from "{col_m_src}", Remote Inheritance Instance / '
+                "Column M). The inheriting authorization is confirmed via the "
+                "workbook to cover this control objective for the "
+                "on-premises/workbook scope."
             )
             per_scope[ON_PREM_LABEL] = flex_narrative
             # Also populate the legacy two-slot on-prem narrative field so the

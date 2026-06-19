@@ -262,7 +262,9 @@ def backfill_workbook_crm(
         )
         flex_statuses: dict[str, str] | None = None
         if flex_slice is not None:
-            flex_outcome = rules.resolve_col_l_flex_status(row.inherited)
+            flex_outcome = rules.resolve_col_l_flex_status(
+                row.inherited, row.remote_inheritance
+            )
             if flex_outcome is rules.ColLFlexOutcome.INHERITED:
                 flex_statuses = {ON_PREM_LABEL: ComplianceStatus.COMPLIANT.value}
         if slices:

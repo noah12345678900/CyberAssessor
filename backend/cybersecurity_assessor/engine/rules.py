@@ -138,28 +138,14 @@ _BARE_INHERITED_FROM = re.compile(r"\binherited from\b", re.IGNORECASE)
 # names an external CSP (rare in practice).
 _COL_L_EXTERNAL_HINTS: tuple[str, ...] = ("aws", "azure", "gcp", "csp", "cloud service provider")
 
-# Column L has two real-world conventions and we must handle both:
-#   (a) a SOURCE NAME ("SDA Enterprise Service", "Local") — the convention the
-#       structural 8a rule was written for; and
-#   (b) a YES/NO flag answering "Is this control inherited?" — the common eMASS
-#       form. In convention (b), "No" means NOT inherited (the control DOES need
-#       testing/evidence) and MUST NOT be read as a source named "No". Adopting
-#       a bare "No" as an inheritance source silently short-circuited rows to
-#       Compliant — the bug this guards against.
-#
-# So before the structural-source rule fires, normalize these boolean tokens:
-#   - NOT-inherited tokens → no auto-rule (fall through to a normal assessment).
-#   - inherited-but-source-UNNAMED tokens ("Yes") → ambiguous: a plain "Yes"
-#     names no source, so we can't tell internal (8a→Compliant) from external
-#     CSP (8b→NA). Treat like a bare "inherited from" → UNCLEAR_8C (ask).
-# "Local" keeps its own meaning (we own it → fall through) and is handled
-# separately below, NOT in these sets.
-_COL_L_NOT_INHERITED: frozenset[str] = frozenset(
-    {"no", "n", "false", "not inherited", "none", "n/a", "na"}
-)
-_COL_L_INHERITED_UNNAMED: frozenset[str] = frozenset(
-    {"yes", "y", "true", "inherited"}
-)
+# Column L is ONLY ever an inheritance FLAG (owner-confirmed 2026-06-19), never
+# a source name. The inheritance SOURCE is named in Column M (Remote Inheritance
+# Instance). Valid L values:
+#   * Local / No / blank  → locally owned → assess (no auto-rule).
+#   * Remote / Yes        → inherited; the source must be named in Column M.
+#                           Source named → 8a Compliant; M blank → 8c escalate.
+# ``_COL_L_REMOTE_TOKENS`` (defined below, by the resolver) is the single set of
+# "inherited" flag tokens; everything else in L means locally owned.
 
 
 # ---------------------------------------------------------------------------
@@ -179,43 +165,50 @@ _COL_L_INHERITED_UNNAMED: frozenset[str] = frozenset(
 
 
 class ColLFlexOutcome(str, Enum):
-    """Outcome of resolving Column L for the workbook/flex slice's status."""
+    """Outcome of resolving the workbook's inheritance columns for the flex slice."""
 
-    INHERITED = "inherited"  # col L names an internal inheritance source → Compliant
-    ASSESS = "assess"        # "Local"/"No"/blank → customer-owned, must be assessed
-    ESCALATE = "escalate"    # bare "Yes" (inherited, source unnamed) → 8c escalate
+    INHERITED = "inherited"  # L=Remote/Yes AND M names a source → Compliant
+    ASSESS = "assess"        # L=Local/No/blank → customer-owned, must be assessed
+    ESCALATE = "escalate"    # L=Remote/Yes but M blank → inherited-but-unnamed → abstain
 
 
-def resolve_col_l_flex_status(col_l_value: str | None) -> ColLFlexOutcome:
-    """Classify Column L into the flex-slice STATUS outcome.
+# Column-L tokens that mean "inherited / remote" (the source then lives in
+# Column M). Workbooks use either "Remote" or "Yes" for this; "Local"/"No"/
+# blank mean locally owned. Kept distinct from the CSP-external hints — an
+# inherited control's source is named in M, not inferred from L.
+_COL_L_REMOTE_TOKENS: frozenset[str] = frozenset({"remote", "yes", "y", "true", "inherited"})
 
-    Mirrors the rule-8a structural branch in ``classify_row`` (the
-    ``_COL_L_*`` sets + the named-source / external-CSP logic) so the
-    per-slice resolver and the whole-control rule never diverge:
 
-      * a real inheritance source name (not "local", not a yes/no token, and
-        not an external-CSP name) → INHERITED (Compliant).
-      * "Local" / "No" / blank / other NOT-inherited tokens → ASSESS.
-      * bare "Yes" / "inherited" (inherited but source UNNAMED) → ESCALATE.
-      * a value that names an external CSP → ASSESS (col L alone can't make
-        the 8b NA call without the K/J text triggers; defer to assessment
-        rather than auto-pass — precision over recall).
+def resolve_col_l_flex_status(
+    col_l_value: str | None, col_m_value: str | None = None
+) -> ColLFlexOutcome:
+    """Classify the workbook's inheritance columns into the flex-slice STATUS.
 
-    Note this is STATUS only; the responsibility LABEL and narrative for the
-    flex slice come from the CRM's ``responsibility_onprem`` / ``narrative_onprem``
-    when present (the kernel composes them). Column L carries no prose.
+    Workbook convention (owner-confirmed 2026-06-19) — Column L is ONLY ever a
+    flag, never a source name:
+      * **Column L** ∈ {``Local``, ``No``, blank} → locally owned;
+        {``Remote``, ``Yes``} → inherited.
+      * **Column M** (Remote Inheritance Instance) names the inheritance SOURCE
+        (e.g. "DoW Enterprise") when L is Remote/Yes; blank when L is Local/No.
+
+    Mapping:
+      * L = Local / No / blank                  → ASSESS.
+      * L = Remote / Yes  AND  M names a source → INHERITED (Compliant).
+      * L = Remote / Yes  but  M is blank       → ESCALATE (inherited but the
+        source is unnamed — okay to abstain so the reviewer chases the source).
+
+    STATUS only; the responsibility LABEL and narrative for the flex slice come
+    from the CRM's ``responsibility_onprem`` / ``narrative_onprem`` when present.
     """
-    col_l = (col_l_value or "").strip()
-    col_l_lower = col_l.lower()
-    if not col_l or col_l_lower == "local" or col_l_lower in _COL_L_NOT_INHERITED:
-        return ColLFlexOutcome.ASSESS
-    if col_l_lower in _COL_L_INHERITED_UNNAMED:
-        return ColLFlexOutcome.ESCALATE
-    if _value_names_external_csp(col_l):
-        # Named CSP in col L is an 8b structural *hint* but the plugin requires
-        # K/J text triggers to fire 8b; without those, don't auto-NA — assess.
-        return ColLFlexOutcome.ASSESS
-    return ColLFlexOutcome.INHERITED
+    col_l_lower = (col_l_value or "").strip().lower()
+    col_m = (col_m_value or "").strip()
+
+    # Column L is ONLY ever a flag (owner-confirmed): Local / No / blank →
+    # locally owned → ASSESS. It NEVER carries a source name.
+    if col_l_lower in _COL_L_REMOTE_TOKENS:
+        # Remote / Yes → inherited; the source lives in Column M.
+        return ColLFlexOutcome.INHERITED if col_m else ColLFlexOutcome.ESCALATE
+    return ColLFlexOutcome.ASSESS
 
 
 # ---------------------------------------------------------------------------
@@ -362,36 +355,28 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
                 trigger_column=col_name,
             )
 
-    # --- 4. Rule 8a structural — col L names an internal inheritance source
+    # --- 4. Rule 8a structural — inheritance from Column L (flag) + Column M
+    # (source). Owner-confirmed convention: Column L is ONLY a flag
+    # (Local/No/blank → locally owned; Remote/Yes → inherited); the inheritance
+    # SOURCE is named in Column M (Remote Inheritance Instance), never in L.
     col_l = (row.inherited or "").strip()
     col_l_lower = col_l.lower()
-    # "Local" → we own it locally; no auto-rule (normal assessment).
-    # A yes/no FLAG must be interpreted, not treated as a source name:
-    #   "No" → NOT inherited → needs testing → fall through (no auto-rule).
-    #   "Yes" → inherited but source unnamed → ambiguous → UNCLEAR_8C below.
-    # Only a real source name (not Local, not a bare boolean, not a CSP) fires
-    # the structural 8a Compliant rule.
-    if (
-        col_l
-        and col_l_lower != "local"
-        and col_l_lower not in _COL_L_NOT_INHERITED
-        and col_l_lower not in _COL_L_INHERITED_UNNAMED
-    ):
-        if not _value_names_external_csp(col_l):
+    col_m = (row.remote_inheritance or "").strip()
+    if col_l_lower in _COL_L_REMOTE_TOKENS:
+        if col_m:
+            # Remote/Yes + a named source in Column M → internally inherited →
+            # Compliant (applicable, met by the inheriting authorization).
             return AutoStatusResult(
                 verdict=AutoStatusVerdict.COMPLIANT_8A,
                 status=ComplianceStatus.COMPLIANT,
-                narrative=_format_8a_structural_narrative(col_l),
+                narrative=_format_8a_structural_narrative(col_m),
                 rule="8a",
-                trigger_phrase=col_l,
-                trigger_column="L",
+                trigger_phrase=col_m,
+                trigger_column="M",
             )
-        # Col L names a CSP-ish source — that's an 8b structural signal, but
-        # the plugin requires text triggers in K/J for 8b; if we got here
-        # without one, fall through to 8c.
-    elif col_l_lower in _COL_L_INHERITED_UNNAMED:
-        # "Yes" with no named source — can't tell internal (8a→Compliant)
-        # from external CSP (8b→NA). Escalate, mirroring bare "inherited from".
+        # Remote/Yes but Column M is blank — inherited but the source is
+        # unnamed. Can't distinguish internal (8a→Compliant) from external
+        # CSP (8b→NA). Escalate to the assessor.
         return AutoStatusResult(
             verdict=AutoStatusVerdict.UNCLEAR_8C,
             status=None,
@@ -400,11 +385,13 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
             trigger_phrase=col_l,
             trigger_column="L",
             reason=(
-                'Col L is marked inherited ("Yes") but names no source. '
-                "Cannot distinguish internal (8a → Compliant) from external "
-                "CSP (8b → Not Applicable). Escalate to assessor."
+                f'Column L is marked inherited ("{col_l}") but Column M names '
+                "no inheritance source. Cannot distinguish internal "
+                "(8a → Compliant) from external CSP (8b → Not Applicable). "
+                "Escalate to assessor."
             ),
         )
+    # Local / No / blank → locally owned; no auto-rule (normal assessment).
 
     # --- 5. Rule 8c — bare "inherited from" w/ no qualifier -------------
     for col_name, text in (("K", row.procedures), ("J", row.guidance)):
@@ -468,8 +455,16 @@ def _format_8a_text_narrative(
     return f'Automatically compliant per {col_label}: "{quoted}".'
 
 
-def _format_8a_structural_narrative(col_l_value: str) -> str:
-    return f'Automatically compliant per Inheritance (col L = "{col_l_value}").'
+def _format_8a_structural_narrative(source: str) -> str:
+    # ``source`` is the Column M (Remote Inheritance Instance) value under the
+    # current convention (Column L is just the Remote/Yes flag). Keep the
+    # "Automatically compliant per Inheritance" lead-in — it classifies as
+    # COMPLIANCE_AFFIRMING in the validator (a different phrasing read as
+    # NA-justifying and rejected the Compliant verdict). Name the col-M source.
+    return (
+        f'Automatically compliant per Inheritance (source: "{source}", '
+        "Remote Inheritance Instance / Column M)."
+    )
 
 
 def _format_na_scope_narrative(

@@ -758,6 +758,9 @@ def get_control(
     # build a CCI → inherited map. Best-effort: any read failure / missing row
     # leaves the value None and the UI simply omits the chip.
     inherited_by_cci: dict[str, str | None] = {}
+    # Column M (Remote Inheritance Instance) — the inheritance SOURCE name. The
+    # flex chip needs both: col L is the flag, col M is the source.
+    remote_by_cci: dict[str, str | None] = {}
     if workbook_id is not None:
         wb = s.get(Workbook, workbook_id)
         if wb is not None and wb.baseline_id is not None:
@@ -783,9 +786,11 @@ def get_control(
                     _r = _by_cci.get(o.objective_id)
                     if _r is not None:
                         inherited_by_cci[o.objective_id] = _r.inherited
+                        remote_by_cci[o.objective_id] = _r.remote_inheritance
             except (ValueError, FileNotFoundError, OSError):
                 # Workbook moved / unreadable — skip the chip, don't 500 the page.
                 inherited_by_cci = {}
+                remote_by_cci = {}
     # Resolve ODP placeholders ({$37$}, ac-02_odp.03, etc.) against the
     # framework-scoped odp_assignment table at render time. Templates
     # never carry program-specific values in the catalog — see
@@ -827,6 +832,7 @@ def get_control(
                 # Workbook Column L (inherited) for the flex-slice chip; None
                 # when no workbook is in play or the row couldn't be re-read.
                 "inherited": inherited_by_cci.get(o.objective_id),
+                "remote_inheritance": remote_by_cci.get(o.objective_id),
             }
             for o in objs
         ],
