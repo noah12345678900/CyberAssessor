@@ -47,6 +47,7 @@ from ..models import (
     Control,
     CrmAnomalyModel,
     CrmCorpusFeatures,
+    CrmShortCircuitEvent,
     CrmSuspicionLog,
     Evidence,
     EvidenceTag,
@@ -479,6 +480,25 @@ def delete_baseline(
         s.exec(delete(BaselineControl).where(BaselineControl.baseline_id == baseline_id))
         s.exec(delete(BaselineObjective).where(BaselineObjective.baseline_id == baseline_id))
         s.exec(delete(WorkbookOverlay).where(WorkbookOverlay.baseline_id == baseline_id))
+        # CrmShortCircuitEvent.suspicion_log_id FKs to CrmSuspicionLog. Under
+        # PRAGMA foreign_keys=ON, deleting the suspicion logs while a
+        # short-circuit event still references one raises a FK constraint
+        # failure → the baseline delete 500s. Delete the events that point at
+        # THIS baseline's suspicion logs first. (CrmShortCircuitEvent has no
+        # crm_baseline_id column, so we filter via the suspicion-log ids.)
+        susp_log_ids = [
+            row for row in s.exec(
+                select(CrmSuspicionLog.id).where(
+                    CrmSuspicionLog.crm_baseline_id == baseline_id
+                )
+            ).all()
+        ]
+        if susp_log_ids:
+            s.exec(
+                delete(CrmShortCircuitEvent).where(
+                    CrmShortCircuitEvent.suspicion_log_id.in_(susp_log_ids)
+                )
+            )
         s.exec(delete(CrmSuspicionLog).where(CrmSuspicionLog.crm_baseline_id == baseline_id))
         s.exec(delete(CrmCorpusFeatures).where(CrmCorpusFeatures.crm_baseline_id == baseline_id))
         s.exec(
