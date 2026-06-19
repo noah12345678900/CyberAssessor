@@ -76,6 +76,17 @@ ROWS = [
      "personnel are not granted physical access to AWS datacenter facilities "
      "and have no compensating-control responsibility.",
      "Implemented"),
+    ("PE-8",  "Visitor Access Records",
+     "Inherited",
+     "AWS maintains visitor access records for all AWS datacenter facilities, "
+     "capturing visitor identity, escort, purpose, and entry/exit timestamps. "
+     "Records are retained and reviewed per AWS facility-security procedures.",
+     "Customer fully inherits AWS datacenter visitor access records. Customer "
+     "personnel are not granted physical access to AWS GovCloud datacenters, so "
+     "there is no customer-side cloud visitor log. The customer remains "
+     "responsible for visitor access records at any customer-operated on-premises "
+     "facility hosting the system's flex footprint.",
+     "Implemented"),
     ("PE-6",  "Monitoring Physical Access",
      "Inherited",
      "AWS monitors physical access to AWS datacenter facilities via (1) CCTV "

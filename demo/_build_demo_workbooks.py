@@ -337,6 +337,43 @@ NIST_800_53 = FrameworkDemo(
             results="",
             cci="CCI-000919", inherited="Remote", remote="DoW Enterprise",
         ),
+        # PIE-SLICE PHYSICAL-GAP showcase — the deterministic clouds-Compliant +
+        # on-prem-NC mixed verdict (crm_physical_onprem_gap, NO LLM call). PE-8
+        # (Visitor Access Records) is "Inherited" on BOTH demo CRMs (the cloud
+        # providers log visitor access to their own datacenters) so the two cloud
+        # slices short-circuit Compliant-by-inheritance. But Column L = "No"
+        # (flex slice = ASSESS, NOT inherited) AND there is NO on-premises
+        # evidence tagged to CCI-000174 — so the synthesized flex (On-Premises)
+        # slice falls into the physical on-prem GAP: clouds Compliant, on-prem
+        # Non-Compliant (no evidence of a customer-maintained visitor-access log
+        # for the on-prem footprint), parent rolls up Non-Compliant. This is the
+        # deterministic mixed-NC branch (source="crm_physical_onprem_gap") that
+        # PE-3 (fully inherited via Column M) and PE-10 (wholly N/A via Column N)
+        # do NOT exercise. Left UNASSESSED (blank status/results) so it flows to
+        # the kernel; the gap is resolved deterministically WITHOUT an LLM call
+        # because Column L = ASSESS + clouds all inheritable + no on-prem
+        # evidence. CRITICAL: do NOT add any demo evidence artifact mentioning
+        # CCI-000174 / PE-8 — the empty on-prem evidence block is what triggers
+        # the gap rather than the customer-owned LLM path.
+        Req(
+            "PE-8", "Visitor Access Records",
+            "PE", "Visitor access records for the Example System Demo are inherited "
+            "on the cloud enclaves — AWS GovCloud and Azure Government maintain "
+            "visitor access logs for their own datacenters — but the on-premises/"
+            "workbook footprint is a customer responsibility (Column L = local "
+            "assessment) and the program has not yet produced a visitor-access "
+            "log for the on-prem facility.",
+            "The organization maintains visitor access records to the facility "
+            "where the information system resides.",
+            "Cite the provider CRM for each cloud enclave; for the on-premises "
+            "footprint provide the visitor-access log and its retention/review "
+            "procedure, or document the scope exclusion.",
+            "Examine provider CRM inheritance for each cloud enclave and assess "
+            "the on-premises visitor-access records for the flex scope.",
+            status="",
+            results="",
+            cci="CCI-000174", inherited="No",
+        ),
         # 11th control — the ABSTAIN showcase. AU-4 (Audit Log Storage Capacity)
         # is in-scope and left UNASSESSED. Its ONLY evidence
         # (Audit_Log_Storage_Capacity_Memo_USD20240623.docx) internally
