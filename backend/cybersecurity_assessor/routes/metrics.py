@@ -181,6 +181,22 @@ def _aggregate(rows: list[AssessmentRun], s: Session | None = None) -> dict[str,
     total_supersession = sum(r.supersession_hits for r in rows)
     total_dual_pass = sum(getattr(r, "dual_pass_disagreements", 0) or 0 for r in rows)
 
+    # Latest-run view of the run-history counters. These are cumulative across
+    # ALL runs by default, which confused users: "Validator rejects: 10" on a
+    # 14-control workbook looked like 10 failed controls, when it was the
+    # lifetime sum of validator COMPLAINT events (multiple per retry) across
+    # every run — most of which recovered on retry. We surface the latest run
+    # separately so "this assessment" is distinguishable from lifetime history.
+    # Rows are appended in start order; the last is the most recent run.
+    _latest = rows[-1] if rows else None
+    latest_rejects = _latest.validator_rejections if _latest else 0
+    latest_retries = _latest.retry_count if _latest else 0
+    latest_dual_pass = (
+        (getattr(_latest, "dual_pass_disagreements", 0) or 0) if _latest else 0
+    )
+    latest_supersession = _latest.supersession_hits if _latest else 0
+    latest_llm_calls = _latest.llm_calls if _latest else 0
+
     # Final per-CCI verdict counts (source of truth) when we have a session.
     # A trusted verdict (needs_review=False) is "accepted"; an abstain
     # (needs_review=True) is "abstained". Fall back to the legacy run-sum
@@ -256,6 +272,32 @@ def _aggregate(rows: list[AssessmentRun], s: Session | None = None) -> dict[str,
             "dual_pass_agreement_pct": dual_pass_agreement_pct,
             "rejection_rate_pct": _safe_div(total_rejects * 100.0, decided_denom),
             "abstention_rate_pct": _safe_div(total_abstained * 100.0, decided_denom),
+            # Run-history activity, split into the latest run vs all runs so the
+            # UI can show both without conflating "this assessment" with
+            # lifetime totals. `validator_complaints` is the honest name for
+            # what was labeled "validator_rejections": individual rule-#11
+            # complaint events (a single retry can log several), NOT failed
+            # controls. `retries` is LLM re-asks (one per bounced attempt).
+            # Almost all rejected attempts recover on retry, so neither number
+            # is a count of controls that failed — those live in the
+            # "current verdicts" block above (accepted/abstained/decided).
+            "activity": {
+                "latest": {
+                    "validator_complaints": latest_rejects,
+                    "retries": latest_retries,
+                    "dual_pass_disagreements": latest_dual_pass,
+                    "supersession_hits": latest_supersession,
+                    "llm_calls": latest_llm_calls,
+                },
+                "cumulative": {
+                    "validator_complaints": total_rejects,
+                    "retries": total_retries,
+                    "dual_pass_disagreements": total_dual_pass,
+                    "supersession_hits": total_supersession,
+                    "llm_calls": total_llm_calls,
+                    "runs": n_runs,
+                },
+            },
         },
         "cost": {
             "total_usd": round(total_cost, 4),
@@ -395,7 +437,7 @@ def _rate_card() -> list[dict[str, Any]]:
 @router.get("")
 def get_metrics(s: Session = Depends(get_session)) -> dict[str, Any]:
     """Full in-app payload — live aggregates + mechanisms + references."""
-    rows = s.exec(select(AssessmentRun)).all()
+    rows = s.exec(select(AssessmentRun).order_by(AssessmentRun.id)).all()
     references = load_references()
     return {
         "live": _aggregate(rows, s),
@@ -420,7 +462,7 @@ def get_metrics_public(s: Session = Depends(get_session)) -> dict[str, Any]:
     specific workbook id, run id, or command string. Safe to render on a
     public static site.
     """
-    rows = s.exec(select(AssessmentRun)).all()
+    rows = s.exec(select(AssessmentRun).order_by(AssessmentRun.id)).all()
     references = load_references()
     return {
         "live": _aggregate(rows, s),

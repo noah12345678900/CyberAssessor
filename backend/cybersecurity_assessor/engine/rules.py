@@ -163,6 +163,62 @@ _COL_L_INHERITED_UNNAMED: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# Column-L flex-slice resolver (pie-slice model)
+# ---------------------------------------------------------------------------
+#
+# The "flex slot" (commonly the On-Premises slice, but possibly a cloud-only
+# workbook deployment — see memory ccis-assessor-slice-model) takes its
+# STATUS from the eMASS workbook's Column L (CcisRow.inherited), which is the
+# System Owner's formal inheritance attestation and the single authority for
+# that slice's status. ``resolve_col_l_flex_status`` maps the col-L value to a
+# slice outcome using the SAME vocabulary classify_row uses below — so there is
+# one source of truth for col-L parsing and the per-slice resolver never drifts
+# from the whole-control rule 8a. It deliberately returns a small string enum
+# (not AutoStatusResult) because the caller (the kernel) maps it onto a
+# per-scope ComplianceStatus, not a whole-control verdict.
+
+
+class ColLFlexOutcome(str, Enum):
+    """Outcome of resolving Column L for the workbook/flex slice's status."""
+
+    INHERITED = "inherited"  # col L names an internal inheritance source → Compliant
+    ASSESS = "assess"        # "Local"/"No"/blank → customer-owned, must be assessed
+    ESCALATE = "escalate"    # bare "Yes" (inherited, source unnamed) → 8c escalate
+
+
+def resolve_col_l_flex_status(col_l_value: str | None) -> ColLFlexOutcome:
+    """Classify Column L into the flex-slice STATUS outcome.
+
+    Mirrors the rule-8a structural branch in ``classify_row`` (the
+    ``_COL_L_*`` sets + the named-source / external-CSP logic) so the
+    per-slice resolver and the whole-control rule never diverge:
+
+      * a real inheritance source name (not "local", not a yes/no token, and
+        not an external-CSP name) → INHERITED (Compliant).
+      * "Local" / "No" / blank / other NOT-inherited tokens → ASSESS.
+      * bare "Yes" / "inherited" (inherited but source UNNAMED) → ESCALATE.
+      * a value that names an external CSP → ASSESS (col L alone can't make
+        the 8b NA call without the K/J text triggers; defer to assessment
+        rather than auto-pass — precision over recall).
+
+    Note this is STATUS only; the responsibility LABEL and narrative for the
+    flex slice come from the CRM's ``responsibility_onprem`` / ``narrative_onprem``
+    when present (the kernel composes them). Column L carries no prose.
+    """
+    col_l = (col_l_value or "").strip()
+    col_l_lower = col_l.lower()
+    if not col_l or col_l_lower == "local" or col_l_lower in _COL_L_NOT_INHERITED:
+        return ColLFlexOutcome.ASSESS
+    if col_l_lower in _COL_L_INHERITED_UNNAMED:
+        return ColLFlexOutcome.ESCALATE
+    if _value_names_external_csp(col_l):
+        # Named CSP in col L is an 8b structural *hint* but the plugin requires
+        # K/J text triggers to fire 8b; without those, don't auto-NA — assess.
+        return ColLFlexOutcome.ASSESS
+    return ColLFlexOutcome.INHERITED
+
+
+# ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
 

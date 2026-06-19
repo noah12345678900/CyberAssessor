@@ -21,10 +21,13 @@ per attached CRM ``scope_label`` — the data input that the route layer
 turns into N ``AssessmentImplementation`` rows. Within a single
 ``scope_label`` the same latest-wins rule applies (re-uploading the
 AWS-Gov CRM updates only the AWS-Gov slice). An ``"On-Premises"`` slice
-is synthesized whenever any cloud slice carries a customer or hybrid
-verdict — the customer-side work has to be assessed on the on-prem
-footprint too, and on-prem is never a CRM upload by contract (see
-``baselines/scope_labels.py``).
+is synthesized PER-CONTROL for every control that has cloud slices but
+no explicit on-prem slice (overlay-default-local: a blank on-prem column
+means the customer owns the on-prem footprint and it must be assessed).
+The synthesized slice honors a CRM-declared ``responsibility_onprem`` —
+in particular ``not_applicable`` is the cloud-only escape hatch — and
+defaults to ``customer`` when the column is blank. On-prem is never a CRM
+upload by contract (see ``baselines/scope_labels.py``).
 
 Legacy CRMs (uploaded before the scope_label migration; ``scope_label IS
 NULL``) contribute to ``lookup()`` exactly as before but contribute *no*
@@ -47,6 +50,24 @@ from ..models import (
     Control,
     WorkbookOverlay,
 )
+
+# Physical / environmental control families. A CSP CRM can declare these
+# "inherited" for the cloud datacenters, but that inheritance provably CANNOT
+# cover a customer-operated on-prem facility — physical access, environmental
+# controls, and delivery/removal are local obligations no provider assumes. So
+# a PE-family control inherited on every cloud scope still has an on-prem
+# facility scope to assess; we synthesize a customer On-Premises slice for it
+# even though no cloud scope is customer-owned (the PE-3 bug: it otherwise
+# short-circuited to fully-Compliant, silently dropping the on-prem facility).
+_PHYSICAL_INHERITANCE_FAMILIES = frozenset({"PE"})
+
+
+def is_physical_family(control_id: str | None) -> bool:
+    """True for a PE-family control (e.g. 'PE-3', 'pe-3 (1)', 'PE-13')."""
+    if not control_id:
+        return False
+    head = control_id.strip().upper().replace("_", "-").split("-", 1)[0]
+    return head in _PHYSICAL_INHERITANCE_FAMILIES
 
 
 @dataclass(frozen=True)
@@ -86,12 +107,6 @@ class ImplementationSlice:
     responsibility: str | None  # customer/provider/hybrid/inherited/not_applicable
     narrative: str | None  # narrative from the CRM; None for synthesized on-prem
     source_baseline_id: int | None  # FK to Baseline; None for synthesized on-prem
-
-
-# Responsibility values that mean "customer has to do work on this control".
-# Drives on-prem-slice synthesis: if any cloud slice is in this set, the
-# customer's work shows up on the on-prem footprint too.
-_CUSTOMER_OWNED_RESPONSIBILITIES = frozenset({"customer", "hybrid"})
 
 
 @dataclass(frozen=True)
@@ -263,24 +278,49 @@ def build_crm_context(workbook_id: int, session: Session) -> CrmContext:
             )
         )
 
-    # Synthesize the On-Premises slice for any control whose cloud slices
-    # leave customer-side work to do. Appended last so the UI/exporter
-    # renders cloud platforms first, on-prem last — stable ordering keyed
-    # to the user's mental model.
+    # Synthesize the flex (On-Premises / workbook) slice — PER-CONTROL.
+    # Appended last so the UI/exporter renders cloud platforms first, the flex
+    # slice last. The flex slice is the workbook-defined slot (NOT necessarily a
+    # physical on-prem footprint — it may be a cloud-only workbook; see memory
+    # ccis-assessor-slice-model). Its existence is per-control: ANY control with
+    # cloud CRM slices but no explicit On-Premises slice gets one.
+    #
+    # AUTHORITY SPLIT (owner decision 2026-06-18):
+    #   * STATUS of this slice is NOT decided here — build_crm_context has no
+    #     access to the workbook's Column L (CcisRow.inherited), which is the
+    #     single authority for the flex-slice status. The kernel resolves it
+    #     from col L (rules.resolve_col_l_flex_status) and writes it onto the
+    #     Decision via statuses_by_scope. So the ``responsibility`` value set
+    #     below is the LABEL only, never the verdict.
+    #   * The CRM's ``responsibility_onprem`` provides the responsibility LABEL
+    #     (customer/hybrid/inherited/provider/not_applicable); absent → default
+    #     "customer". ``narrative_onprem`` provides the slice narrative TEXT
+    #     (the only source of customer-authored on-prem prose for the LLM).
+    # Note: a CRM-declared on-prem ``not_applicable`` is NO LONGER a status
+    # escape hatch — col L wins outright. It remains only a label here.
     for ctrl_id, slices in by_control_impls.items():
-        already_has_onprem = any(s.scope_label == ON_PREM_LABEL for s in slices)
-        if already_has_onprem:
+        if not slices:
             continue
-        if any(
-            s.responsibility in _CUSTOMER_OWNED_RESPONSIBILITIES for s in slices
-        ):
-            slices.append(
-                ImplementationSlice(
-                    scope_label=ON_PREM_LABEL,
-                    responsibility="customer",
-                    narrative=None,
-                    source_baseline_id=None,
-                )
+        if any(s.scope_label == ON_PREM_LABEL for s in slices):
+            continue
+        entry = by_control.get(ctrl_id)
+        declared_onprem_narr = entry.narrative_onprem if entry else None
+        # The slice's ``responsibility`` is the internal ROUTING field that
+        # plan_implementations branches on; it is always "customer" for the
+        # synthesized flex slice (overlay-default-local). The CRM's declared
+        # ``responsibility_onprem`` is NOT used here: col L is the status
+        # authority now, so a CRM on-prem label of "not_applicable" must NOT
+        # route this slice to the NA branch (that would override col L). The
+        # CRM label still rides on the CrmEntry for display (the on-prem chip)
+        # and the exporter; only the routing field is fixed to "customer".
+        # narrative_onprem still flows in as the slice narrative.
+        slices.append(
+            ImplementationSlice(
+                scope_label=ON_PREM_LABEL,
+                responsibility="customer",
+                narrative=declared_onprem_narr,
+                source_baseline_id=None,
             )
+        )
 
     return CrmContext(by_control=by_control, by_control_impls=by_control_impls)

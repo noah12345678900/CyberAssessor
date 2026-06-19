@@ -251,31 +251,39 @@ NIST_800_53 = FrameworkDemo(
             "AC-18 does not apply to this system.",
             cci="CCI-001438", inherited="No",
         ),
-        # 10th control — the CLOUD-COMPLIANT showcase. PE-3 (Physical Access
-        # Control) is marked "Inherited" by BOTH demo CRMs (AWS GovCloud +
-        # Azure Government own datacenter physical security). Left UNASSESSED
-        # (blank status) so it flows to the assessor, which short-circuits to
-        # COMPLIANT via cloud inheritance (crm_inherited) WITHOUT an LLM call —
-        # demonstrating that an inherited cloud control resolves Compliant
-        # (applicable, met by the provider), distinct from the SC-7 enterprise-
-        # service inheritance and the AC-18 scope-exclusion NA.
+        # 10th control — the PIE-SLICE FULLY-INHERITED showcase. PE-3 (Physical
+        # Access Control) is marked "Inherited" by BOTH demo CRMs (AWS GovCloud +
+        # Azure Government own datacenter physical security), AND the workbook's
+        # Column L names "DoW Enterprise" as the inheritance source for the flex
+        # (On-Premises/workbook) slice — the facility itself is a DoW enterprise
+        # data center whose physical-access plane the system inherits. Left
+        # UNASSESSED (blank status) so it flows to the assessor: the two cloud
+        # slices short-circuit Compliant-by-inheritance (crm_inherited) AND the
+        # flex slice resolves Compliant from Column L (resolve_col_l_flex_status
+        # -> INHERITED) WITHOUT an LLM call. The whole control rolls up Compliant.
+        # This demonstrates the pie-slice authority split: Column L (eMASS) governs
+        # the flex slice's status, the CRMs govern the cloud slices. (Contrast the
+        # AU-9 customer-owned abstain and the AC-18 scope-exclusion NA.)
         Req(
             "PE-3", "Physical Access Control",
-            "PE", "Physical access control for the Example System Demo workloads is "
-            "inherited from the cloud service providers: AWS GovCloud and Azure "
-            "Government operate the datacenter physical-security plane (multi-"
-            "factor perimeter access, biometric server-room boundaries, mantrap "
-            "vestibules, 24x7 guards).",
+            "PE", "Physical access control for the Example System Demo is inherited "
+            "on every scope: the AWS GovCloud and Azure Government enclaves inherit "
+            "datacenter physical security from the cloud service providers, and the "
+            "on-premises/workbook footprint inherits physical access from the DoW "
+            "Enterprise data center (Column L) — multi-factor perimeter access, "
+            "biometric server-room boundaries, mantrap vestibules, 24x7 guards.",
             "The organization enforces physical access authorizations at entry "
             "and exit points to the facility where the information system "
             "resides.",
-            "If inheriting, cite the provider CRM; otherwise provide the "
-            "facility physical-access procedures and access logs.",
-            "Examine the provider CRM inheritance for each cloud enclave. "
-            "Confirm the datacenter physical-access plane is provider-owned.",
+            "If inheriting, cite the provider CRM (cloud) and the workbook "
+            "inheritance source (Column L); otherwise provide the facility "
+            "physical-access procedures and access logs.",
+            "Examine the provider CRM inheritance for each cloud enclave and the "
+            "Column L inheritance source for the flex scope. Confirm every scope's "
+            "physical-access plane is inherited.",
             status="",
             results="",
-            cci="CCI-000919", inherited="No",
+            cci="CCI-000919", inherited="DoW Enterprise",
         ),
         # 11th control — the ABSTAIN showcase. AU-4 (Audit Log Storage Capacity)
         # is in-scope and left UNASSESSED. Its ONLY evidence

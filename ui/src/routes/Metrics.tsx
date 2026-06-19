@@ -248,23 +248,18 @@ function AccuracySection({
         reference={refByKey.get("manual_assessment_accuracy") ?? null}
       />
 
+      {/* Current verdicts — where the workbook stands NOW (live Assessment
+          rows). These are counts of CONTROLS, post-review. */}
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Current verdicts
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           label="CCIs accepted"
           value={a.ccis_accepted.toLocaleString()}
           icon={CheckCircle2}
           tone="success"
-        />
-        <StatCard
-          label="Validator rejects"
-          value={a.validator_rejections.toLocaleString()}
-          icon={AlertTriangle}
-          tone={a.validator_rejections > 0 ? "warning" : undefined}
-          sublabel={
-            a.rejection_rate_pct !== null
-              ? `${a.rejection_rate_pct.toFixed(1)}% of decided`
-              : undefined
-          }
+          sublabel={`of ${a.decided.toLocaleString()} decided`}
         />
         <StatCard
           label="Abstained"
@@ -272,9 +267,15 @@ function AccuracySection({
           icon={CircleSlash}
           sublabel={
             a.abstention_rate_pct !== null
-              ? `${a.abstention_rate_pct.toFixed(1)}% of decided`
+              ? `${a.abstention_rate_pct.toFixed(1)}% of decided · pending review`
               : "Precision over recall"
           }
+        />
+        <StatCard
+          label="Decided"
+          value={a.decided.toLocaleString()}
+          icon={CheckCircle2}
+          sublabel="accepted + abstained"
         />
         <StatCard
           label="Dual-pass agreement"
@@ -284,7 +285,44 @@ function AccuracySection({
               : "—"
           }
           icon={Repeat}
-          sublabel={`${a.dual_pass_disagreements.toLocaleString()} disagreements`}
+          sublabel={`${a.activity.cumulative.dual_pass_disagreements.toLocaleString()} disagreements (all runs)`}
+        />
+      </div>
+
+      {/* Assessment activity — what the assessor DID getting there (run
+          history). These are EVENTS, not controls: a validator complaint is a
+          rule-#11 flag on one attempt (several can fire per retry), and most
+          rejected attempts recover on the retry. Shown latest-run-first with
+          the cumulative total in the sublabel so "this assessment" is never
+          confused with lifetime history. */}
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide pt-1">
+        Assessment activity (latest run · cumulative)
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard
+          label="Validator complaints"
+          value={a.activity.latest.validator_complaints.toLocaleString()}
+          icon={AlertTriangle}
+          tone={a.activity.latest.validator_complaints > 0 ? "warning" : undefined}
+          sublabel={`${a.activity.cumulative.validator_complaints.toLocaleString()} all runs · rule-#11 flags, not failed controls`}
+        />
+        <StatCard
+          label="Retries"
+          value={a.activity.latest.retries.toLocaleString()}
+          icon={Repeat}
+          sublabel={`${a.activity.cumulative.retries.toLocaleString()} all runs · LLM re-asks`}
+        />
+        <StatCard
+          label="Dual-pass disagreements"
+          value={a.activity.latest.dual_pass_disagreements.toLocaleString()}
+          icon={Repeat}
+          sublabel={`${a.activity.cumulative.dual_pass_disagreements.toLocaleString()} all runs`}
+        />
+        <StatCard
+          label="LLM calls"
+          value={a.activity.latest.llm_calls.toLocaleString()}
+          icon={Repeat}
+          sublabel={`${a.activity.cumulative.llm_calls.toLocaleString()} all runs · ${a.activity.cumulative.runs} runs`}
         />
       </div>
 

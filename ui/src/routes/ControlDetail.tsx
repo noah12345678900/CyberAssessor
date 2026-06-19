@@ -232,8 +232,16 @@ export function ControlDetail() {
   // is out of scope: assessing it produces the empty-narrative Compliant
   // glitch, so the Assess (kernel) button is gated on this. undefined field
   // (legacy / no baseline) is treated as in-scope.
-  const selectedObjectiveInScope =
-    c?.objectives.find((o) => o.id === objectiveId)?.in_workbook !== false;
+  const selectedObjective = c?.objectives.find((o) => o.id === objectiveId);
+  const selectedObjectiveInScope = selectedObjective?.in_workbook !== false;
+  // Workbook Column L (inherited) for the selected CCI — the authority for the
+  // flex (On-Premises/workbook) slice's status. Trimmed; empty/blank reads as
+  // "assess" and we still show the chip so the assessor sees the workbook said
+  // nothing. null/undefined (no workbook in play) omits the chip entirely.
+  const colLInherited =
+    selectedObjective?.inherited === undefined || selectedObjective?.inherited === null
+      ? null
+      : selectedObjective.inherited;
 
   return (
     <div className="p-8 space-y-6">
@@ -317,6 +325,7 @@ export function ControlDetail() {
         baseline={baseline.data}
         baselineRow={baselineRow}
         workbookSelected={workbookId !== undefined}
+        colLInherited={colLInherited}
       />
 
       <ProgramControlsCard
@@ -537,6 +546,7 @@ function ContextCard({
   baseline,
   baselineRow,
   workbookSelected,
+  colLInherited,
 }: {
   controlId: string;
   family: string;
@@ -556,6 +566,9 @@ function ContextCard({
     responsibility_onprem_narrative: string | null;
   };
   workbookSelected: boolean;
+  // Workbook Column L (inherited) for the SELECTED CCI — drives the flex-slice
+  // chip. null when no workbook is in play or the row couldn't be re-read.
+  colLInherited: string | null;
 }) {
   // Tally CCI statuses for this control in the selected workbook so the
   // tester can see "5/8 CCIs assessed — 3C / 1NC / 1NA" at a glance,
@@ -656,6 +669,8 @@ function ContextCard({
             narrativeOnprem={baselineRow.responsibility_onprem_narrative ?? null}
           />
         )}
+
+        {colLInherited !== null && <FlexInheritanceChip colL={colLInherited} />}
 
         {odpEntries.length > 0 && (
           <div className="text-xs space-y-1">
@@ -993,6 +1008,88 @@ function ResponsibilityChip({
           narrative={narrativeOnprem}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Mirror of the backend ``rules.resolve_col_l_flex_status``: classify the
+ * workbook's Column L value into the flex (On-Premises/workbook) slice outcome
+ * so the chip shows the same status the engine will assign. Display-only — the
+ * authoritative resolution still happens server-side.
+ */
+function flexInheritanceMeta(colL: string): {
+  label: string;
+  variant: "brand" | "warning" | "outline" | "subtle";
+  blurb: string;
+} {
+  const v = colL.trim().toLowerCase();
+  const NOT_INHERITED = new Set([
+    "no",
+    "n",
+    "false",
+    "not inherited",
+    "none",
+    "n/a",
+    "na",
+  ]);
+  const INHERITED_UNNAMED = new Set(["yes", "y", "true", "inherited"]);
+  const EXTERNAL_HINTS = ["aws", "azure", "gcp", "csp", "cloud service provider"];
+  if (v === "" || v === "local" || NOT_INHERITED.has(v))
+    return {
+      label: "Assess (local)",
+      variant: "subtle",
+      blurb:
+        "Workbook Col L says locally owned — flex slice is assessed (Non-Compliant if no evidence).",
+    };
+  if (INHERITED_UNNAMED.has(v))
+    return {
+      label: "Escalate",
+      variant: "warning",
+      blurb:
+        'Col L is a bare "inherited" flag with no named source — escalated for reviewer (8c).',
+    };
+  if (EXTERNAL_HINTS.some((h) => v.includes(h)))
+    return {
+      label: "Assess (CSP-named)",
+      variant: "subtle",
+      blurb:
+        "Col L names a cloud provider — assessed locally (8b needs K/J triggers to auto-N/A).",
+    };
+  return {
+    label: "Inherited",
+    variant: "brand",
+    blurb:
+      "Col L names an inheritance source — flex slice is Compliant-by-inheritance per the workbook.",
+  };
+}
+
+/**
+ * Third "pie-slice" chip: the flex (On-Premises / workbook) slice status, taken
+ * from the eMASS workbook's Column L (the single authority for that slice).
+ * Sits next to the two CRM cloud-responsibility chips. Renders only when the
+ * selected CCI's Column L value is known (workbook in play + row readable).
+ */
+function FlexInheritanceChip({ colL }: { colL: string }) {
+  const meta = flexInheritanceMeta(colL);
+  const shown = colL.trim() === "" ? "(blank)" : colL.trim();
+  return (
+    <div className="rounded-md bg-muted/40 p-2 text-xs space-y-1.5">
+      <div className="text-muted-foreground">
+        Inheritance (Workbook Col L)
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground" aria-label="On-premises / workbook scope">
+          <span aria-hidden="true">🏢</span> Flex:
+        </span>
+        <Badge variant={meta.variant} className="text-[10px]">
+          {meta.label}
+        </Badge>
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {shown}
+        </span>
+        <span className="text-muted-foreground">{meta.blurb}</span>
+      </div>
     </div>
   );
 }

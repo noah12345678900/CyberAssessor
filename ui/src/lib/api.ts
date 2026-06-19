@@ -189,6 +189,14 @@ export interface Objective {
    * include_mappings=true; older endpoints leave it undefined.
    */
   mappings?: RequirementMapping[];
+  /**
+   * Workbook Column L (inherited) value for this CCI — e.g. "Local",
+   * "DoW Enterprise", "Yes", "No". This is the authority for the flex
+   * (On-Premises/workbook) slice's status under the pie-slice model.
+   * Only populated when get_control is called with a workbook_id and the
+   * workbook row is readable; null/undefined otherwise (chip omitted).
+   */
+  inherited?: string | null;
 }
 
 export interface RequirementMapping {
@@ -1866,8 +1874,28 @@ export interface MetricsReference {
   time: MetricsReferenceEntry[];
 }
 
+export interface MetricsActivityCounters {
+  /** Rule-#11 complaint EVENTS (a single retry can log several) — NOT failed
+   * controls. Most recover on retry. Renamed from validator_rejections. */
+  validator_complaints: number;
+  /** LLM re-ask rounds (one per bounced attempt). */
+  retries: number;
+  dual_pass_disagreements: number;
+  supersession_hits: number;
+  llm_calls: number;
+}
+
+export interface MetricsActivity {
+  /** The most recent assessment run only. */
+  latest: MetricsActivityCounters;
+  /** Summed across every run ever (adds `runs`). */
+  cumulative: MetricsActivityCounters & { runs: number };
+}
+
 export interface MetricsAccuracyLive {
   ccis_accepted: number;
+  /** Deprecated alias of activity.cumulative.validator_complaints — kept for
+   * back-compat. These are complaint events, not failed controls. */
   validator_rejections: number;
   abstained: number;
   /** Authoritative "decided" denominator = accepted + abstained. Render this
@@ -1880,6 +1908,10 @@ export interface MetricsAccuracyLive {
   dual_pass_agreement_pct: number | null;
   rejection_rate_pct: number | null;
   abstention_rate_pct: number | null;
+  /** Run-history activity split into latest-run vs cumulative. Current
+   * verdict counts (accepted/abstained/decided) live above; this block is
+   * "what the assessor did", not "where the workbook stands". */
+  activity: MetricsActivity;
 }
 
 export interface MetricsCostLive {
