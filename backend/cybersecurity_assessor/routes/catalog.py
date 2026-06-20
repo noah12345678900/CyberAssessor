@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
 from ..baselines.crm_xlsx import CrmXlsxBaselineSource
 from ..baselines.other_xlsx import OtherXlsxBaselineSource
@@ -36,7 +36,9 @@ from ..catalogs.program_controls_loader import load_program_controls
 from ..catalogs.soc2_loader import load_soc2_catalog
 from ..catalogs.sp800_171_loader import load_sp800_171_catalog
 from ..db import get_session
+from ..engine.crm_backfill import purge_baseline_contribution
 from ..models import (
+    AssessmentImplementation,
     Baseline,
     BaselineControl,
     BaselineMembership,
@@ -1037,6 +1039,12 @@ def import_overlay(
         # this implementation slice. Cascade-delete the prior Baseline
         # (mirrors routes/baselines.py:delete_baseline) so re-attach is
         # idempotent and the overlays UI doesn't accumulate stale rows.
+        # IMPORTANT: a CRM baseline owns CrmSuspicionLog / CrmCorpusFeatures /
+        # CrmShortCircuitEvent telemetry AND AssessmentImplementation slices.
+        # Deleting only its BaselineControl/Objective/Overlay rows leaves those
+        # NOT-NULL-FK children orphaned and 500s the s.delete(prior) under
+        # foreign_keys=ON. purge_baseline_contribution clears them in FK-safe
+        # order and recomputes affected parent rollups (same as delete_baseline).
         existing = s.exec(
             select(Baseline).where(
                 Baseline.framework_id == req.framework_id,
@@ -1056,6 +1064,16 @@ def import_overlay(
             s.exec(delete(BaselineControl).where(BaselineControl.baseline_id == prior_id))
             s.exec(delete(BaselineObjective).where(BaselineObjective.baseline_id == prior_id))
             s.exec(delete(WorkbookOverlay).where(WorkbookOverlay.baseline_id == prior_id))
+            # CRM going away entirely (workbook_id=None): purge telemetry +
+            # impl slices in FK-safe order, recompute affected parents.
+            purge_baseline_contribution(s, baseline_id=prior_id, workbook_id=None)
+            # Belt-and-suspenders: NULL any AssessmentImplementation still
+            # pointing at this baseline so the delete can't FK-fail.
+            s.exec(
+                update(AssessmentImplementation)
+                .where(AssessmentImplementation.source_baseline_id == prior_id)
+                .values(source_baseline_id=None)
+            )
             s.delete(prior)
             replaced_baseline_ids.append(prior_id)
         if replaced_baseline_ids:

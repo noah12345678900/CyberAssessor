@@ -42,6 +42,7 @@ from cybersecurity_assessor.models import (
     Assessment,
     AssessmentCitation,
     AssessmentEvidenceShown,
+    AssessmentImplementation,
     AssessmentRun,
     AssessmentTrace,
     Asset,
@@ -238,6 +239,21 @@ def client_and_id(tmp_path: Path):
                 source_quote="s",
             )
         )
+        # AssessmentImplementation → Assessment (NOT-NULL) — the omitted child
+        # that 500'd delete_workbook after a reassess-with-CRMs. A reassess
+        # creates one impl slice per scope; without clearing them the parent
+        # Assessment delete FK-failed. (Also references the CRM baseline via
+        # source_baseline_id, so this guards that nullable FK too.)
+        s.add(
+            AssessmentImplementation(
+                assessment_id=a.id,
+                scope_label="AWS GovCloud",
+                source_baseline_id=crm_baseline.id,
+                responsibility="inherited",
+                status=ComplianceStatus.COMPLIANT,
+                narrative="inherited via CRM",
+            )
+        )
 
         # --- POAM chain: Poam → {Objective, Evidence, Milestone, RiskHistory,
         #     ResidualSuggestionCache} -----------------------------------------
@@ -372,6 +388,7 @@ def test_delete_workbook_satisfies_all_foreign_keys(client_and_id):
     cascade = r.json()["cascade"]
     # The previously-buggy chains all report 1 now.
     assert cascade["assessment_citations"] == 1
+    assert cascade["assessment_implementations"] == 1
     assert cascade["calibration_entries"] == 1
     assert cascade["poam_risk_history"] == 1
     assert cascade["residual_suggestion_cache"] == 1
@@ -386,6 +403,7 @@ def test_delete_workbook_satisfies_all_foreign_keys(client_and_id):
         # Spot-check that the deep children are gone.
         for model in (
             AssessmentCitation,
+            AssessmentImplementation,
             CalibrationEntry,
             PoamRiskHistory,
             ResidualSuggestionCache,
