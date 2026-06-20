@@ -541,9 +541,10 @@ _text(s, Inches(1.1), Inches(5.08), Inches(11.2), Inches(1.62),
        [("Basis: a full-system FedRAMP Moderate ATO (~325 controls, ~975 CCIs). Manual A&A benchmark = $700/control "
          "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, ", 11.5, INK, False, False),
          ("GAO-24-106591", 11.5, BLUE, False, False, "https://www.gao.gov/products/GAO-24-106591"),
-         (") over ~325 controls, and the industry-standard 8 hr/control per ", 11.5, INK, False, False),
-         ("NIST SP 800-53A", 11.5, BLUE, False, False, "https://csrc.nist.gov/pubs/sp/800/53/a/r5/final"),
-         (". Deterministic auto-resolution + AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and "
+         (") over ~325 controls, and the industry-standard 8 hr/control per NIST SP 800-53A. Manual A&A "
+         "inter-rater agreement runs ~64% (Cohen's κ, ", 11.5, INK, False, False),
+         ("Radziwill & Benton 2017", 11.5, BLUE, False, False, "https://arxiv.org/abs/1707.02653"),
+         ("). Deterministic auto-resolution + AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and "
          "≈2,080 hrs of internal labor, against an outsourced 3PAO engagement of $150–300K it largely replaces.",
          11.5, INK, False, False)],
        [("Actual savings vary by system size, baseline, evidence quality, and team. Your numbers will differ — these are planning estimates only.",
