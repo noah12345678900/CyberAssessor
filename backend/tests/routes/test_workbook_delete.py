@@ -49,6 +49,7 @@ from cybersecurity_assessor.models import (  # noqa: E402
     EvidenceAsset,
     EvidenceBoundary,
     EvidenceKind,
+    EvidenceTag,
     FindingStatus,
     Framework,
     NarrativeClass,
@@ -312,6 +313,11 @@ def seeded(tmp_path: Path):
             )
         )
 
+        # EvidenceTag for BOTH evidence rows — the orphan-tag fix deletes the
+        # target's tags with the evidence and must leave the sibling's intact.
+        s.add(EvidenceTag(evidence_id=target_evidence.id, objective_id=objective.id))
+        s.add(EvidenceTag(evidence_id=sibling_evidence.id, objective_id=objective.id))
+
         s.commit()
 
         target_id = target_wb.id
@@ -362,7 +368,11 @@ def test_delete_workbook_cascades_and_preserves_shared_artifacts(seeded) -> None
     assert cascade["stig_findings"] == 1
     assert cascade["overlay_attachments"] == 1
     assert cascade["sync_events"] == 1
-    assert cascade["evidence_unlinked"] == 1
+    # Evidence is now DELETED (not unlinked) along with its tags. 1:1 with the
+    # workbook by design, so the sibling's evidence is untouched (verified in
+    # the post-conditions below).
+    assert cascade["evidence_removed"] == 1
+    assert cascade["evidence_tags"] == 1
     assert cascade["system_contexts_unlinked"] == 1
     # Tables seeded with zero target rows still report 0 — proves the route
     # didn't skip the table entirely.
@@ -405,13 +415,27 @@ def test_delete_workbook_cascades_and_preserves_shared_artifacts(seeded) -> None
         ).all()
         assert len(sibling_sync) == 1
 
-        # Shared Evidence survives — target's is NULL'd, sibling's untouched.
-        target_evidence = s.get(Evidence, target_evidence_id)
-        assert target_evidence is not None
-        assert target_evidence.workbook_id is None
+        # Target's Evidence is DELETED (not NULL'd); sibling's is untouched.
+        # This is the orphan-tag fix: evidence is 1:1 with a workbook, so the
+        # target's rows are removed entirely rather than left as workbook_id=NULL
+        # orphans whose tags kept surfacing the deleted artifact on controls.
+        assert s.get(Evidence, target_evidence_id) is None
         sibling_evidence = s.get(Evidence, sibling_evidence_id)
         assert sibling_evidence is not None
         assert sibling_evidence.workbook_id == sibling_id
+        # Target's EvidenceTag rows are gone; sibling's survive.
+        assert (
+            s.exec(
+                select(EvidenceTag).where(EvidenceTag.evidence_id == target_evidence_id)
+            ).all()
+            == []
+        )
+        assert (
+            s.exec(
+                select(EvidenceTag).where(EvidenceTag.evidence_id == sibling_evidence_id)
+            ).all()
+            != []
+        )
 
         # SystemContext: target's NULL'd, sibling's intact.
         ctx_target = s.exec(

@@ -144,6 +144,44 @@ def test_parse_response_raises_on_bad_status():
         parse_response('{"status": "Vibes", "narrative": "X."}')
 
 
+def test_parse_response_handles_trailing_prose_after_envelope():
+    """Regression (AC-17): the model emitted a COMPLETE valid JSON envelope and
+    then a trailing prose 'Note: ...' after the closing brace. The old
+    first-{-to-last-} scan swallowed the prose and json.loads raised
+    'Extra data', then the legacy regex couldn't traverse the nested objects, so
+    BOTH phases failed deterministically and the control parked at
+    needs_review/llm-parse-error on every reassess. raw_decode stops at the
+    object's closing brace and ignores the trailing note.
+    """
+    raw = (
+        '{"status": "Non-Compliant", "narrative": "On-Prem residual is '
+        'unsubstantiated.", "confidence": 0.9}\n\n'
+        "Note: the On-Premises absence has no positive evidence span to quote."
+    )
+    parsed = parse_response(raw)
+    assert parsed.status == ComplianceStatus.NON_COMPLIANT
+    assert "On-Prem residual" in parsed.narrative
+
+
+def test_parse_response_handles_nested_objects_and_arrays():
+    """Regression (AC-17): a multi-scope envelope nests a narratives_by_scope
+    object and a citations array of objects. The legacy regex body class
+    [^{}]* cannot traverse the inner braces; raw_decode handles arbitrary
+    nesting. Also pins that leading prose before the envelope is tolerated.
+    """
+    raw = (
+        "Analyzing per scope:\n\n"
+        '{"status": "Non-Compliant", "narrative": "Gap on On-Prem.", '
+        '"narratives_by_scope": {"AWS GovCloud": "verified", "Azure": "inherited"}, '
+        '"confidence": 0.9, '
+        '"citations": [{"narrative_field": "narrative_cloud", "evidence_id": 2, '
+        '"source_quote": "Customer fully inherits Azure Bastion."}]}'
+    )
+    parsed = parse_response(raw)
+    assert parsed.status == ComplianceStatus.NON_COMPLIANT
+    assert parsed.narrative == "Gap on On-Prem."
+
+
 # ---------------------------------------------------------------------------
 # User-message construction
 # ---------------------------------------------------------------------------
