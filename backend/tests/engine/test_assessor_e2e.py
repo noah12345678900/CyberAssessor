@@ -90,6 +90,7 @@ class StubLlmClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        **_kwargs,  # absorb temperature (retry bump) and future kwargs
     ) -> LlmProposal:
         self.calls.append(
             {
@@ -118,6 +119,7 @@ class StubLlmClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        **_kwargs,
     ) -> tuple[LlmProposal, LlmProposal]:
         """Dual-pass surface for v0.2 — returns the SAME proposal twice.
 

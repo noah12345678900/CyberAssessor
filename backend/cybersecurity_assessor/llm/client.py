@@ -1063,7 +1063,12 @@ class AnthropicClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> LlmProposal:
+        # ``temperature`` override: None → the client default (0.0). The assess
+        # retry loop passes RETRY_TEMPERATURE on attempt >= 1 so a stuck
+        # ambiguous narrative can be rewritten instead of regenerating
+        # identically at temp 0.
         return self._call_once(
             row=row,
             corrective_context=corrective_context,
@@ -1071,7 +1076,7 @@ class AnthropicClient:
             tagged_evidence=tagged_evidence,
             crm_responsibility=crm_responsibility,
             boundary_brief=boundary_brief,
-            temperature=self._temperature,
+            temperature=self._temperature if temperature is None else temperature,
         )
 
     def propose_twice(
@@ -1083,6 +1088,7 @@ class AnthropicClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> tuple[LlmProposal, LlmProposal]:
         """Run two passes: pass 0 = initial verdict, pass 1 = challenger review.
 
@@ -1126,9 +1132,13 @@ class AnthropicClient:
             crm_responsibility=crm_responsibility,
             boundary_brief=boundary_brief,
         )
+        # ``temperature`` override (None → client default). Both passes use the
+        # same temperature so the pair stays comparable; the assess retry loop
+        # raises it on attempt >= 1 to escape a stuck ambiguous output.
+        effective_temp = self._temperature if temperature is None else temperature
         first = self._call_with_user_message(
             user_message=base_user_message,
-            temperature=self._temperature,
+            temperature=effective_temp,
         )
 
         challenger_message = build_challenger_user_message(
@@ -1143,7 +1153,7 @@ class AnthropicClient:
         )
         second = self._call_with_user_message(
             user_message=challenger_message,
-            temperature=self._temperature,
+            temperature=effective_temp,
         )
         return first, second
 
@@ -1657,7 +1667,12 @@ class OpenAIClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> LlmProposal:
+        # ``temperature`` override: None → the client default (0.0). The assess
+        # retry loop passes RETRY_TEMPERATURE on attempt >= 1 so a stuck
+        # ambiguous narrative can be rewritten instead of regenerating
+        # identically at temp 0.
         return self._call_once(
             row=row,
             corrective_context=corrective_context,
@@ -1665,7 +1680,7 @@ class OpenAIClient:
             tagged_evidence=tagged_evidence,
             crm_responsibility=crm_responsibility,
             boundary_brief=boundary_brief,
-            temperature=self._temperature,
+            temperature=self._temperature if temperature is None else temperature,
         )
 
     def propose_twice(
@@ -1677,13 +1692,13 @@ class OpenAIClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> tuple[LlmProposal, LlmProposal]:
         """OpenAI mirror of AnthropicClient.propose_twice — see that docstring.
 
-        Same challenger semantics: pass 0 = initial verdict at
-        ``self._temperature``; pass 1 = challenger review of pass 0's
-        verdict + narrative + citations, also at ``self._temperature``
-        so a replay is byte-identical and the audit trail reproducible.
+        Same challenger semantics: pass 0 = initial verdict; pass 1 = challenger
+        review of pass 0's verdict + narrative + citations. ``temperature`` is an
+        optional override (None → ``self._temperature``); both passes share it.
         """
         base_user_message = build_user_message(
             row=row,
@@ -1694,9 +1709,10 @@ class OpenAIClient:
             crm_responsibility=crm_responsibility,
             boundary_brief=boundary_brief,
         )
+        effective_temp = self._temperature if temperature is None else temperature
         first = self._call_with_user_message(
             user_message=base_user_message,
-            temperature=self._temperature,
+            temperature=effective_temp,
         )
 
         challenger_message = build_challenger_user_message(
@@ -1711,7 +1727,7 @@ class OpenAIClient:
         )
         second = self._call_with_user_message(
             user_message=challenger_message,
-            temperature=self._temperature,
+            temperature=effective_temp,
         )
         return first, second
 

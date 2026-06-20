@@ -108,6 +108,7 @@ class _AbstainOnlyClient:
         tagged_evidence=None,
         crm_responsibility=None,
         boundary_brief=None,
+        **_kwargs,  # absorb temperature (retry bump) and future kwargs
     ):
         self.calls.append({"row": row, "crm_responsibility": crm_responsibility})
         return self._proposal()
@@ -121,6 +122,7 @@ class _AbstainOnlyClient:
         tagged_evidence=None,
         crm_responsibility=None,
         boundary_brief=None,
+        **_kwargs,
     ):
         self.calls.append({"row": row, "crm_responsibility": crm_responsibility})
         p = self._proposal()
