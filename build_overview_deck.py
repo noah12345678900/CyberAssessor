@@ -429,7 +429,7 @@ _text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
       [[("One engine, end to end", 32, NAVY, True, False)]])
 
 feats = [
-    ("Multi-framework", "NIST 800-53, 800-171, CSF 2.0, ISO 27001, CIS v8, PCI DSS, and SOC 2 — one engine, seven frameworks."),
+    ("Multi-framework", "NIST 800-53, 800-171 (CMMC), CSF 2.0, ISO 27001, CIS v8, PCI DSS, and SOC 2 — one engine, seven frameworks."),
     ("Reads every artifact", "PDF, Word, PowerPoint, Excel, STIG .ckl/.cklb/XCCDF, Nessus/ACAS scans, Visio diagrams, and screenshots."),
     ("OCR built in", "Pulls text out of config screenshots (MFA, GPO, lockout screens) so image evidence actually counts — fully offline."),
     ("Cited narratives", "Every verdict names the exact document, section, and STIG rule it relies on — no invented citations."),

@@ -83,7 +83,7 @@ Per-user config lives at `~/.cybersecurity-assessor/config.toml`.
 
 - **v2.0** (current): end-to-end pipeline, Windows installer (electron-builder + PyInstaller sidecar), 800-53r5
   — acceptance bar tracked in [docs/e2e-assessment-coverage-deliverable.md](docs/e2e-assessment-coverage-deliverable.md) (every feature lane exercised + per-CCI evidence traceability)
-- **Next**: 800-171 catalog, embedding-based evidence search, auto-update, SharePoint/Tenable connectors
+- **Next**: 800-171 (CMMC) catalog, embedding-based evidence search, auto-update, SharePoint/Tenable connectors
 - **Later**: FedRAMP, NIST CSF 2.0, ISO 27001, SOC 2
 
 ## Support &amp; contact
