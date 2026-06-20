@@ -27,7 +27,11 @@ from sqlmodel import Session, select
 
 from ..baselines import CcisWorkbookBaselineSource
 from ..db import chunked, get_session
-from ..engine.crm_backfill import backfill_workbook_crm, backfill_workbook_rules
+from ..engine.crm_backfill import (
+    backfill_workbook_crm,
+    backfill_workbook_rules,
+    purge_baseline_contribution,
+)
 from ..excel.ccis_reader import read_workbook_summary
 from ..models import (
     Assessment,
@@ -408,9 +412,32 @@ def detach_workbook_overlay(
     ).first()
     if not ov:
         raise HTTPException(status_code=404, detail="Overlay not attached")
+
+    # Remove the detached CRM baseline's contribution from THIS workbook before
+    # dropping the overlay link: its CRM telemetry, its AssessmentImplementation
+    # slices, and (for a CRM-only control) the now-empty parent Assessment —
+    # recomputing the rollup for parents that still have other slices. Without
+    # this, the detached CRM's stale "Compliant via inheritance" rows survived
+    # and (a) showed a control still Compliant after its CRM was removed and
+    # (b) made the batch preflight skip the control as "already assessed".
+    # Scoped to a CRM baseline; the workbook's primary baseline is never an
+    # overlay (guarded at attach), and a non-CRM overlay has no CRM contribution
+    # to purge — the helper is a no-op for it.
+    purge: dict[str, int] | None = None
+    bl = s.get(Baseline, baseline_id)
+    if bl is not None and bl.source_type == BaselineSourceType.CRM:
+        purge = purge_baseline_contribution(
+            s, baseline_id=baseline_id, workbook_id=workbook_id
+        ).as_dict()
+
     s.delete(ov)
     s.commit()
-    return {"detached": True, "workbook_id": workbook_id, "baseline_id": baseline_id}
+    return {
+        "detached": True,
+        "workbook_id": workbook_id,
+        "baseline_id": baseline_id,
+        "purge": purge,
+    }
 
 
 @router.delete("/{workbook_id}")

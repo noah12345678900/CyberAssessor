@@ -708,3 +708,194 @@ def backfill_workbook_rules(
         skipped_no_rule=skipped_no_rule,
         skipped_no_workbook_row=skipped_no_row,
     )
+
+
+@dataclass(frozen=True)
+class PurgeResult:
+    """Counts for purge_baseline_contribution (detach / delete-baseline cleanup)."""
+
+    suspicion_logs: int
+    short_circuit_events: int
+    corpus_features: int
+    impl_rows: int
+    parents_deleted: int
+    parents_recomputed: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "suspicion_logs": self.suspicion_logs,
+            "short_circuit_events": self.short_circuit_events,
+            "corpus_features": self.corpus_features,
+            "impl_rows": self.impl_rows,
+            "parents_deleted": self.parents_deleted,
+            "parents_recomputed": self.parents_recomputed,
+        }
+
+
+def purge_baseline_contribution(
+    session: Session,
+    *,
+    baseline_id: int,
+    workbook_id: int | None = None,
+) -> PurgeResult:
+    """Remove ONE CRM baseline's contribution and recompute affected parents.
+
+    Shared by ``detach_workbook_overlay`` (workbook-scoped — remove one CRM
+    overlay from one workbook) and ``delete_baseline`` (workbook_id=None — the
+    CRM is going away entirely). Without this, detaching/deleting a CRM left
+    orphan telemetry AND orphan ``AssessmentImplementation`` slices, and never
+    recomputed the parent rollup — so a control that was Compliant ONLY via that
+    CRM's inheritance stayed falsely Compliant, and the stale parent kept the
+    batch preflight skipping it as "already assessed".
+
+    Removed for the baseline (FK-safe child→parent order, matching
+    delete_workbook): CrmShortCircuitEvent → CrmSuspicionLog → CrmCorpusFeatures
+    → AssessmentImplementation(source_baseline_id). Then each affected parent
+    Assessment's rollup is recomputed from its SURVIVING impl rows.
+
+    SAFETY INVARIANT (zero-regression): a parent Assessment is DELETED only when
+    it is CRM-derived (``_is_crm_derived``: verdict_source CRM_*, tester
+    "system") AND it has zero surviving impl rows — i.e. it existed only because
+    of this CRM's inheritance. Every human-edited (tester != "system"), LLM, and
+    RULE_8A/8B parent is preserved; only its CRM-sourced child slice is removed
+    and the worst-of rollup recomputed over the remainder.
+
+    Caller owns the commit.
+    """
+    # Local imports to avoid widening the module's import surface; both are
+    # module-level pure functions in the engine (no circular-import risk —
+    # crm_backfill already imports Assessor from .assessor).
+    from .assessor import compose_rolled_narrative, compute_rollup_status
+    from ..models import (
+        AssessmentCitation,
+        AssessmentEvidenceShown,
+        AssessmentTrace,
+        CrmCorpusFeatures,
+        CrmShortCircuitEvent,
+        CrmSuspicionLog,
+    )
+
+    susp_q = select(CrmSuspicionLog.id).where(
+        CrmSuspicionLog.crm_baseline_id == baseline_id
+    )
+    if workbook_id is not None:
+        susp_q = susp_q.where(CrmSuspicionLog.workbook_id == workbook_id)
+    susp_log_ids = [row for row in session.exec(susp_q).all()]
+
+    sce_count = 0
+    if susp_log_ids:
+        r = session.exec(
+            delete(CrmShortCircuitEvent).where(
+                CrmShortCircuitEvent.suspicion_log_id.in_(susp_log_ids)  # type: ignore[union-attr]
+            )
+        )
+        sce_count = getattr(r, "rowcount", 0) or 0
+
+    corpus_del_filter = CrmCorpusFeatures.crm_baseline_id == baseline_id
+    if workbook_id is not None:
+        r = session.exec(
+            delete(CrmSuspicionLog).where(
+                CrmSuspicionLog.crm_baseline_id == baseline_id,
+                CrmSuspicionLog.workbook_id == workbook_id,
+            )
+        )
+        susp_count = getattr(r, "rowcount", 0) or 0
+        r = session.exec(
+            delete(CrmCorpusFeatures).where(
+                CrmCorpusFeatures.crm_baseline_id == baseline_id,
+                CrmCorpusFeatures.workbook_id == workbook_id,
+            )
+        )
+        corpus_count = getattr(r, "rowcount", 0) or 0
+    else:
+        r = session.exec(
+            delete(CrmSuspicionLog).where(
+                CrmSuspicionLog.crm_baseline_id == baseline_id
+            )
+        )
+        susp_count = getattr(r, "rowcount", 0) or 0
+        r = session.exec(delete(CrmCorpusFeatures).where(corpus_del_filter))
+        corpus_count = getattr(r, "rowcount", 0) or 0
+
+    # Identify the impl rows this baseline produced, and their parent
+    # Assessment ids. When workbook-scoped, restrict to that workbook's
+    # assessments (source_baseline_id is workbook-agnostic on its own).
+    impl_q = select(AssessmentImplementation).where(
+        AssessmentImplementation.source_baseline_id == baseline_id
+    )
+    if workbook_id is not None:
+        impl_q = impl_q.join(
+            Assessment, Assessment.id == AssessmentImplementation.assessment_id
+        ).where(Assessment.workbook_id == workbook_id)
+    impls_to_remove = list(session.exec(impl_q).all())
+    affected_parent_ids = {im.assessment_id for im in impls_to_remove}
+
+    impl_count = 0
+    for im in impls_to_remove:
+        session.delete(im)
+        impl_count += 1
+    session.flush()  # so the survivor query below doesn't see deleted rows
+
+    parents_deleted = 0
+    parents_recomputed = 0
+    for aid in affected_parent_ids:
+        parent = session.get(Assessment, aid)
+        if parent is None:
+            continue
+        survivors = list(
+            session.exec(
+                select(AssessmentImplementation).where(
+                    AssessmentImplementation.assessment_id == aid
+                )
+            ).all()
+        )
+        if not survivors:
+            # No slices left. Delete the parent ONLY if it was CRM-derived (it
+            # existed solely because of this CRM's inheritance). A human/LLM/
+            # rule parent with no surviving slices keeps its own verdict.
+            if _is_crm_derived(parent):
+                # FK-safe child sweep before the parent delete. Assessment has
+                # three 1:N children (AssessmentTrace / AssessmentEvidenceShown /
+                # AssessmentCitation) with NOT-NULL assessment_id FKs and no DB
+                # cascade; under PRAGMA foreign_keys=ON a bare parent delete with
+                # a trace/citation row attached raises a FK constraint failure
+                # → 500. AssessmentCitation.evidence_shown_id FKs to
+                # AssessmentEvidenceShown, so citation MUST go before
+                # evidence-shown (same ordering delete_workbook uses).
+                session.exec(
+                    delete(AssessmentCitation).where(
+                        AssessmentCitation.assessment_id == aid
+                    )
+                )
+                session.exec(
+                    delete(AssessmentTrace).where(
+                        AssessmentTrace.assessment_id == aid
+                    )
+                )
+                session.exec(
+                    delete(AssessmentEvidenceShown).where(
+                        AssessmentEvidenceShown.assessment_id == aid
+                    )
+                )
+                session.delete(parent)
+                parents_deleted += 1
+            continue
+        # Recompute the worst-of rollup from the surviving slices. Never delete
+        # a parent that still has slices, regardless of provenance.
+        new_status = compute_rollup_status([s.status for s in survivors])
+        if new_status is not None:
+            parent.status = new_status
+        rolled = compose_rolled_narrative(survivors)
+        if rolled:
+            parent.narrative_q = rolled
+        session.add(parent)
+        parents_recomputed += 1
+
+    return PurgeResult(
+        suspicion_logs=susp_count,
+        short_circuit_events=sce_count,
+        corpus_features=corpus_count,
+        impl_rows=impl_count,
+        parents_deleted=parents_deleted,
+        parents_recomputed=parents_recomputed,
+    )

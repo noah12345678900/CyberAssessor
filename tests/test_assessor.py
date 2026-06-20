@@ -77,6 +77,7 @@ class StubLlm:
         corrective_context: str | None = None,
         prior_attempts: list[LlmProposal] | None = None,
         tagged_evidence: str | None = None,
+        **_kwargs,  # absorb temperature/crm_responsibility/boundary_brief/etc.
     ) -> LlmProposal:
         self.calls.append(
             {
@@ -96,6 +97,7 @@ class StubLlm:
         corrective_context: str | None = None,
         prior_attempts: list[LlmProposal] | None = None,
         tagged_evidence: str | None = None,
+        **_kwargs,
     ) -> tuple[LlmProposal, LlmProposal]:
         a = self.propose(
             row=row,

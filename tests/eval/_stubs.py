@@ -48,7 +48,11 @@ class StubLlmClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> LlmProposal:
+        # ``temperature`` mirrors the real client surface — the assess retry
+        # loop passes it on attempt >= 1. The stub records it but pops the next
+        # queued proposal regardless (case files drive the retry behavior).
         self.calls.append(
             {
                 "row": row,
@@ -57,6 +61,7 @@ class StubLlmClient:
                 "tagged_evidence": tagged_evidence,
                 "crm_responsibility": crm_responsibility,
                 "boundary_brief": boundary_brief,
+                "temperature": temperature,
             }
         )
         if not self._queue:
@@ -76,6 +81,7 @@ class StubLlmClient:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> tuple[LlmProposal, LlmProposal]:
         """Single-pass parity surface — emits the same proposal twice.
 
@@ -92,6 +98,7 @@ class StubLlmClient:
             tagged_evidence=tagged_evidence,
             crm_responsibility=crm_responsibility,
             boundary_brief=boundary_brief,
+            temperature=temperature,
         )
         return (p, p)
 
@@ -127,6 +134,7 @@ class AssertNoCallStub:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> LlmProposal:
         self.calls.append(
             {
@@ -136,6 +144,7 @@ class AssertNoCallStub:
                 "tagged_evidence": tagged_evidence,
                 "crm_responsibility": crm_responsibility,
                 "boundary_brief": boundary_brief,
+                "temperature": temperature,
             }
         )
         raise AssertionError(
@@ -153,6 +162,7 @@ class AssertNoCallStub:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        temperature: float | None = None,
     ) -> tuple[LlmProposal, LlmProposal]:
         # propose() raises before returning, so this never produces a tuple;
         # the call is forwarded so the AssertionError carries the same CCI

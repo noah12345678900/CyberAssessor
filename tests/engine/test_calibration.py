@@ -73,6 +73,7 @@ class StubLlm:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        **_kwargs,  # absorb temperature (retry bump) and future kwargs
     ) -> LlmProposal:
         self.calls.append({"cci_id": row.cci_id})
         if not self.proposals:
@@ -88,6 +89,7 @@ class StubLlm:
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        **_kwargs,
     ) -> tuple[LlmProposal, LlmProposal]:
         a = self.propose(
             row=row,

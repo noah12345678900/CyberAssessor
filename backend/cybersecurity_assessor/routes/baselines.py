@@ -33,6 +33,7 @@ from ..baselines.scope_labels import (
     OTHER_LABEL,
 )
 from ..db import get_session
+from ..engine.crm_backfill import purge_baseline_contribution
 from ..engine.crm_context import build_crm_context
 from ..engine.crm_ml import CURRENT_FEATURE_SCHEMA_VERSION
 from ..engine.crm_sanity import CrmSuspicionReport, score_crm_suspicion
@@ -480,27 +481,20 @@ def delete_baseline(
         s.exec(delete(BaselineControl).where(BaselineControl.baseline_id == baseline_id))
         s.exec(delete(BaselineObjective).where(BaselineObjective.baseline_id == baseline_id))
         s.exec(delete(WorkbookOverlay).where(WorkbookOverlay.baseline_id == baseline_id))
-        # CrmShortCircuitEvent.suspicion_log_id FKs to CrmSuspicionLog. Under
-        # PRAGMA foreign_keys=ON, deleting the suspicion logs while a
-        # short-circuit event still references one raises a FK constraint
-        # failure → the baseline delete 500s. Delete the events that point at
-        # THIS baseline's suspicion logs first. (CrmShortCircuitEvent has no
-        # crm_baseline_id column, so we filter via the suspicion-log ids.)
-        susp_log_ids = [
-            row for row in s.exec(
-                select(CrmSuspicionLog.id).where(
-                    CrmSuspicionLog.crm_baseline_id == baseline_id
-                )
-            ).all()
-        ]
-        if susp_log_ids:
-            s.exec(
-                delete(CrmShortCircuitEvent).where(
-                    CrmShortCircuitEvent.suspicion_log_id.in_(susp_log_ids)
-                )
-            )
-        s.exec(delete(CrmSuspicionLog).where(CrmSuspicionLog.crm_baseline_id == baseline_id))
-        s.exec(delete(CrmCorpusFeatures).where(CrmCorpusFeatures.crm_baseline_id == baseline_id))
+        # Remove the CRM baseline's contribution across ALL workbooks
+        # (workbook_id=None): CrmShortCircuitEvent → CrmSuspicionLog →
+        # CrmCorpusFeatures (FK-safe order, fixes the original 500), the
+        # AssessmentImplementation slices it produced, and a recompute of each
+        # affected parent rollup. This supersedes the old approach of merely
+        # NULLing AssessmentImplementation.source_baseline_id, which left an
+        # orphan slice that still rolled the parent up to a falsely "Compliant
+        # via inheritance" verdict for a baseline that no longer exists. A
+        # CRM-only parent with no surviving slices is deleted; human/LLM/rule
+        # parents are preserved and recomputed from their remaining slices.
+        purge_baseline_contribution(s, baseline_id=baseline_id, workbook_id=None)
+        # Belt-and-suspenders: NULL any AssessmentImplementation that somehow
+        # still references this baseline (none should remain after the purge),
+        # so the Baseline delete below can't FK-fail under foreign_keys=ON.
         s.exec(
             update(AssessmentImplementation)
             .where(AssessmentImplementation.source_baseline_id == baseline_id)

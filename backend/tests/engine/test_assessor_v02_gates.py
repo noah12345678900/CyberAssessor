@@ -90,6 +90,7 @@ class DualPassDistinctStub(StubLlmClient):
         tagged_evidence: str | None = None,
         crm_responsibility: str | None = None,
         boundary_brief: str | None = None,
+        **_kwargs,
     ) -> tuple[LlmProposal, LlmProposal]:
         p1 = self.propose(
             row=row,
