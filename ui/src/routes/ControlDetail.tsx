@@ -382,7 +382,7 @@ export function ControlDetail() {
 
         {/* Right column: evidence */}
         <div className="lg:col-span-3">
-          <EvidencePanel objectiveId={objectiveId} />
+          <EvidencePanel objectiveId={objectiveId} workbookId={workbookId} />
         </div>
       </div>
     </div>
@@ -2230,8 +2230,14 @@ function DecisionTrace({ decision }: { decision: AssessmentDecision }) {
   );
 }
 
-function EvidencePanel({ objectiveId }: { objectiveId?: number }) {
-  const ev = useEvidenceForObjective(objectiveId);
+function EvidencePanel({
+  objectiveId,
+  workbookId,
+}: {
+  objectiveId?: number;
+  workbookId?: number;
+}) {
+  const ev = useEvidenceForObjective(objectiveId, workbookId);
   const sorted = useMemo(
     () => [...(ev.data ?? [])].sort((a, b) => b.relevance - a.relevance),
     [ev.data],

@@ -1255,7 +1255,9 @@ def get_evidence(evidence_id: int, s: Session = Depends(get_session)) -> dict:
 
 @router.get("/by-objective/{objective_id}")
 def list_evidence_for_objective(
-    objective_id: int, s: Session = Depends(get_session)
+    objective_id: int,
+    workbook_id: int | None = None,
+    s: Session = Depends(get_session),
 ) -> list[dict]:
     """Evidence linked to one objective, one row per distinct artifact.
 
@@ -1266,6 +1268,13 @@ def list_evidence_for_objective(
     in the UI. We collapse here instead of upstream so each tag's
     provenance (auto / manual / llm) survives in the response as a list
     while the visible row count matches the distinct-artifact count.
+
+    Workbook scoping (defense-in-depth): when ``workbook_id`` is given, only
+    evidence belonging to THAT workbook is returned. Evidence is 1:1 with a
+    workbook by design, but two live workbooks can tag the same shared CCI —
+    without this filter, workbook A's artifacts would surface on workbook B's
+    control for that CCI. The control detail always passes the active
+    workbook, so the panel shows only in-scope evidence.
 
     Result ordering: highest aggregated relevance first, then by
     filename — gives a stable, intuitive top-to-bottom read in the UI.
@@ -1302,6 +1311,10 @@ def list_evidence_for_objective(
     for evidence_id, row in grouped.items():
         e = s.get(Evidence, evidence_id)
         if not e:
+            continue
+        # Workbook scoping: skip evidence that belongs to another workbook (or
+        # is orphaned, workbook_id=None) when a workbook filter is supplied.
+        if workbook_id is not None and e.workbook_id != workbook_id:
             continue
         # "source" / "rationale" kept as singular fields for back-compat
         # with the UI's existing column accessors; the new list-shaped

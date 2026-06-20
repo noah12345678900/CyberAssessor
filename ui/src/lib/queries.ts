@@ -227,8 +227,8 @@ export const qk = {
   assets: (workbookId: number) => ["assets", workbookId] as const,
   boundarySegments: (workbookId: number) =>
     ["boundary-segments", workbookId] as const,
-  evidenceForObjective: (objectiveId: number) =>
-    ["evidence-for-objective", objectiveId] as const,
+  evidenceForObjective: (objectiveId: number, workbookId?: number) =>
+    ["evidence-for-objective", objectiveId, workbookId ?? null] as const,
   // Workbook-scoped cross-check; v0.1 backend ignores workbookId but we
   // still key on it so multi-workbook isolation lands without a refactor.
   crosscheck: (workbookId: number) =>
@@ -803,10 +803,15 @@ export const useEvidence = (
     enabled: opts.workbookId != null,
   });
 
-export const useEvidenceForObjective = (objectiveId: number | undefined) =>
+export const useEvidenceForObjective = (
+  objectiveId: number | undefined,
+  workbookId?: number,
+) =>
   useQuery<EvidenceForObjective[]>({
-    queryKey: objectiveId ? qk.evidenceForObjective(objectiveId) : ["evidence-for-objective", "none"],
-    queryFn: () => api.evidenceForObjective(objectiveId!),
+    queryKey: objectiveId
+      ? qk.evidenceForObjective(objectiveId, workbookId)
+      : ["evidence-for-objective", "none"],
+    queryFn: () => api.evidenceForObjective(objectiveId!, workbookId),
     enabled: !!objectiveId,
   });
 

@@ -4166,8 +4166,11 @@ export const api = {
   },
   getEvidence: (id: number) =>
     request<Evidence & { tags: EvidenceTag[] }>(`/api/evidence/${id}`),
-  evidenceForObjective: (objectiveId: number) =>
-    request<EvidenceForObjective[]>(`/api/evidence/by-objective/${objectiveId}`),
+  evidenceForObjective: (objectiveId: number, workbookId?: number) =>
+    request<EvidenceForObjective[]>(
+      `/api/evidence/by-objective/${objectiveId}` +
+        (workbookId !== undefined ? `?workbook_id=${workbookId}` : ""),
+    ),
   // Flip the manual asset-list flag (and optional label) on one artifact.
   // Server clears the label when is_asset_list is unset, so a re-flag
   // starts blank — the UI doesn't need to send null explicitly.

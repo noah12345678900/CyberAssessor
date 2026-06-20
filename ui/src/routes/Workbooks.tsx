@@ -111,12 +111,12 @@ export function Workbooks() {
         ["POAMs", counts.poams],
         ["sweep runs", counts.sweep_runs],
         ["assets", counts.assets],
+        ["evidence", counts.evidence_removed],
       ]
         .filter(([, n]) => typeof n === "number" && (n as number) > 0)
         .map(([k, n]) => `${n} ${k}`)
         .join(" · ");
       const unlinked = [
-        ["evidence", counts.evidence_unlinked],
         ["system contexts", counts.system_contexts_unlinked],
       ]
         .filter(([, n]) => typeof n === "number" && (n as number) > 0)

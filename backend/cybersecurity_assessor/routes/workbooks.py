@@ -46,6 +46,7 @@ from ..models import (
     BaselineControl,
     BaselineSourceType,
     BoundarySegment,
+    BoundaryTokenSource,
     CalibrationEntry,
     ComplianceStatus,
     Component,
@@ -59,6 +60,7 @@ from ..models import (
     EvidenceBoundary,
     EvidenceComponent,
     EvidenceRetentionEvent,
+    EvidenceTag,
     Framework,
     Objective,
     OverrideEpoch,
@@ -467,12 +469,19 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
         ``BoundarySegment`` (with ``EvidenceBoundary`` link rows).
       * ``WorkbookOverlay``, ``WorkbookSyncEvent``.
 
-    **NULL'd, not deleted** (shared artifacts the user uploaded — must
-    survive workbook removal so they remain available to other workbooks):
+    Also deleted:
 
-      * ``Evidence`` — the artifact pool is global. ``workbook_id`` is nulled,
-        ``EvidenceTag`` rows stay intact and continue to surface in any other
-        workbook with overlapping CCIs.
+      * ``Evidence`` and its remaining children (``EvidenceTag``,
+        ``BoundaryTokenSource``). Evidence is 1:1 with a workbook by design
+        (ingest always stamps ``workbook_id``; dedup is composite-keyed
+        ``(workbook_id, sha256)``), so deleting it can't orphan another
+        workbook. The old behavior NULL'd ``workbook_id`` but kept the tags,
+        leaving orphan evidence that surfaced deleted artifacts on controls
+        forever and broke re-import dedup — see the Evidence block below.
+
+    **NULL'd, not deleted** (shared artifacts that must survive workbook
+    removal so they remain available to other workbooks):
+
       * ``SystemContext`` — boundary description is reusable.
 
     Not touched: the workbook's auto-created ``Baseline`` (if any) and the
@@ -766,15 +775,60 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
     )
     counts["automation_schedules"] = getattr(r, "rowcount", 0) or 0
 
+    # --- Evidence: DELETE (not unlink) ----------------------------------------
+    # Evidence is 1:1 with a workbook by design — ingest ALWAYS stamps
+    # workbook_id and dedup is composite-keyed (workbook_id, sha256), so the
+    # same file imported into two workbooks deliberately produces TWO rows
+    # ("spillage-defense, per-workbook hard scoping"). Nothing ever points two
+    # workbooks at one Evidence row, so deleting this workbook's evidence can't
+    # orphan another workbook's data.
+    #
+    # The OLD behavior NULL'd workbook_id and KEPT every EvidenceTag. That left
+    # orphaned (workbook_id=NULL) evidence whose tags still surfaced the deleted
+    # artifact on controls forever — and polluted re-imports, because dedup
+    # scoped to a NULL workbook_id never matched, so each re-ingest made a fresh
+    # duplicate row. Per-row delete (delete_one_evidence) already deletes the
+    # full child fan-out; this mirrors it so the two delete paths agree.
+    #
+    # Most evidence children were already cleared above by id-scoped passes:
+    # StigFinding (by evidence_id), EvidenceAsset/EvidenceBoundary/
+    # EvidenceComponent (by scope-object id), PoamEvidence (by poam_id), and
+    # AssessmentEvidenceShown + AssessmentCitation (by assessment_id). The two
+    # NOT cleared anywhere else are EvidenceTag and BoundaryTokenSource — clear
+    # them here, null the supersession self-FK, then delete the Evidence rows.
+    if evidence_ids:
+        tags = tokens = 0
+        for batch in chunked(evidence_ids):
+            r = s.exec(delete(EvidenceTag).where(EvidenceTag.evidence_id.in_(batch)))
+            tags += getattr(r, "rowcount", 0) or 0
+            r = s.exec(
+                delete(BoundaryTokenSource).where(
+                    BoundaryTokenSource.source_evidence_id.in_(batch)
+                )
+            )
+            tokens += getattr(r, "rowcount", 0) or 0
+            # Null any supersession back-pointer INTO this batch so the Evidence
+            # delete below can't trip the self-FK (a superseding row may live in
+            # another workbook / outside the batch).
+            s.exec(
+                update(Evidence)
+                .where(Evidence.superseded_by_id.in_(batch))
+                .values(superseded_by_id=None)
+            )
+        counts["evidence_tags"] = tags
+        counts["boundary_token_sources"] = tokens
+        ev_removed = 0
+        for batch in chunked(evidence_ids):
+            r = s.exec(delete(Evidence).where(Evidence.id.in_(batch)))
+            ev_removed += getattr(r, "rowcount", 0) or 0
+        counts["evidence_removed"] = ev_removed
+    else:
+        counts["evidence_tags"] = 0
+        counts["boundary_token_sources"] = 0
+        counts["evidence_removed"] = 0
+
     # --- Shared artifacts: NULL workbook_id (do NOT delete) -------------------
-    # Evidence is a global artifact pool — other workbooks may reference these
-    # same files. Same logic for SystemContext (boundary description is reusable).
-    r = s.exec(
-        update(Evidence)
-        .where(Evidence.workbook_id == workbook_id)
-        .values(workbook_id=None)
-    )
-    counts["evidence_unlinked"] = getattr(r, "rowcount", 0) or 0
+    # SystemContext (boundary description) stays reusable across workbooks.
     r = s.exec(
         update(SystemContext)
         .where(SystemContext.workbook_id == workbook_id)

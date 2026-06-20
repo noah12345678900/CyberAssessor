@@ -657,21 +657,33 @@ def parse_response(raw_text: str) -> ParsedResponse:
 
     obj: dict | None = None
 
-    # Phase 1 — outer-brace scan. Returns the largest top-level JSON object,
-    # which is the envelope itself (the only structure that can house a
-    # nested citations array). Failure modes (no braces, malformed JSON,
-    # non-dict, missing required keys) all degrade to phase 2 silently —
-    # this is opportunistic, not authoritative.
-    try:
-        candidate = _parse_extraction_json(text)
-    except ValueError:
-        candidate = None
-    if (
-        isinstance(candidate, dict)
-        and "status" in candidate
-        and "narrative" in candidate
-    ):
-        obj = candidate
+    # Phase 1 — raw_decode scan. Walk every '{' position and try to decode a
+    # complete JSON object starting there, returning the FIRST one that is a
+    # dict containing BOTH "status" AND "narrative". This is immune to the two
+    # ways the model breaks the old first-{-to-last-} approach:
+    #   * TRAILING PROSE after the JSON ("...}\n\nNote: ...") — first-to-last
+    #     swallowed it and json.loads raised "Extra data". raw_decode stops at
+    #     the object's closing brace and ignores the rest. (The real AC-17
+    #     multi-scope response that deterministically failed parsing.)
+    #   * NESTED braces (narratives_by_scope {...}, citations [{...}]) — the
+    #     legacy regex _JSON_OBJECT_RE body class [^{}]* can't traverse them.
+    # Gating on status+narrative skips any leading inline prose object that
+    # lacks the envelope keys (preserves test_parse_response_extracts_last_*).
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            candidate, _end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            candidate = None
+        if (
+            isinstance(candidate, dict)
+            and "status" in candidate
+            and "narrative" in candidate
+        ):
+            obj = candidate
+            break
+        start = text.find("{", start + 1)
 
     # Phase 2 — legacy single-line regex. Required for backward
     # compatibility with the OFF-flag path: the system prompt's "JSON on
