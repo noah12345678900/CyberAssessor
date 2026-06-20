@@ -31,7 +31,7 @@ document, scan, and log is fabricated for the fictional "Example System Demo" sy
 
 | Folder | What's in it |
 |---|---|
-| `workbooks/` | One importable demo workbook per framework (NIST 800-53, 800-171, CSF 2.0, ISO 27001, CIS v8, PCI DSS, SOC 2). `DEMO_NIST_800-53r5_Example System.xlsx` is the primary 8-control demo — including AC-17, whose responsibility diverges across the two CRMs (AWS=Customer, Azure=Inherited) to showcase per-scope narratives |
+| `workbooks/` | One importable demo workbook per framework (NIST 800-53, 800-171 (CMMC), CSF 2.0, ISO 27001, CIS v8, PCI DSS, SOC 2). `DEMO_NIST_800-53r5_Example System.xlsx` is the primary 8-control demo — including AC-17, whose responsibility diverges across the two CRMs (AWS=Customer, Azure=Inherited) to showcase per-scope narratives |
 | `policies/` | Implementing policies/procedures referenced by `Col F` and `Col U` |
 | `configs/` | GPO export referenced by AC-7, AC-11, IA-5 rows |
 | `text/` | Operator-generated weekly review records (AU-6, SI-4 evidence) |
