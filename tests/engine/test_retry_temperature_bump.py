@@ -1,29 +1,27 @@
-"""Regression: the assess retry loop bumps temperature on retries so a stuck
-ambiguous narrative can be rewritten instead of regenerating identically.
+"""Regression: the assess retry loop runs every attempt at the default
+temperature (no per-retry bump) so structured JSON output stays reliable.
 
-THE GAP (user-found, AC-7a). The retry loop re-calls the LLM up to 3x AND feeds
-the ambiguous-rejection back as corrective context — but every attempt ran at
-temperature 0.0, so a deterministically-ambiguous narrative regenerated
-identically on every retry and exhausted to a `validator-exhausted` needs-review.
+HISTORY. A 2026-06-19 change bumped retries to temperature 0.4 to escape a stuck
+"ambiguous" narrative loop (AC-7a). But the LLM client enforces NO JSON output
+mode, so the higher temperature let the model wander off the JSON envelope on
+retries → "[parse_error] no JSON object" (AC-17). Reverted 2026-06-20: all
+attempts run at the client default (0.0). The retry mechanism itself is
+unchanged — it still re-calls the LLM with corrective context — it just no
+longer perturbs the temperature.
 
-The fix: attempt 0 runs at the client default (0.0 — happy path + cache
-unchanged); every retry (attempt >= 1, only reached after a validator rejection)
-passes `RETRY_TEMPERATURE` (0.4). These tests pin:
-  * attempt 0 gets NO temperature override (the kwarg is not passed);
-  * retries get temperature == RETRY_TEMPERATURE;
-  * a row that's ambiguous on attempt 0 but compliant on retry RECOVERS to a
-    Compliant verdict instead of exhausting to needs-review.
+These tests pin the reverted contract:
+  * NO attempt (first or retry) receives a temperature override — the assessor
+    never passes ``temperature=`` to the client, so the client uses its own
+    DEFAULT_TEMPERATURE (0.0) on every call.
+  * The corrective-context retry still recovers an ambiguous-then-clean row to a
+    Compliant proposal (the retry loop works; only the temp bump was removed).
 
-Collected via testpaths=["../tests"].
+Collected via testpaths.
 """
 
 from __future__ import annotations
 
-from cybersecurity_assessor.engine.assessor import (
-    RETRY_TEMPERATURE,
-    Assessor,
-    LlmProposal,
-)
+from cybersecurity_assessor.engine.assessor import Assessor, LlmProposal
 from cybersecurity_assessor.engine.evidence_bundle import EvidenceBlock
 from cybersecurity_assessor.excel.ccis_reader import CcisRow
 from cybersecurity_assessor.models import ComplianceStatus
@@ -47,6 +45,13 @@ _CLEAN_COMPLIANT_NARRATIVE = (
     "Examined the Example System Account Management Plan (USD00050010) and "
     "confirmed via the documented procedure that account provisioning, review, "
     "and removal are performed as required for this control objective."
+)
+
+# An AMBIGUOUS narrative the validator rejects (status_narrative_mismatch).
+_AMBIGUOUS_NARRATIVE = (
+    "The control might be partially addressed; some settings appear present but "
+    "it is unclear whether they fully apply, and further review may or may not "
+    "be warranted depending on interpretation."
 )
 
 
@@ -76,24 +81,14 @@ def _row() -> CcisRow:
         previous_results=None,
     )
 
-# An AMBIGUOUS narrative the validator rejects with status_narrative_mismatch:
-# it pairs neither a clean compliance-affirming nor NA-justifying nor
-# gap-describing classification, so classify() lands AMBIGUOUS.
-_AMBIGUOUS_NARRATIVE = (
-    "The control might be partially addressed; some settings appear present but "
-    "it is unclear whether they fully apply, and further review may or may not "
-    "be warranted depending on interpretation."
-)
-
 
 class _TempRecordingLlm:
-    """Fake LLM that records the temperature of every call and returns an
-    ambiguous proposal on attempt 0, a clean compliant proposal thereafter.
+    """Fake LLM that records the temperature kwarg of every call and returns an
+    ambiguous proposal on attempt 0, a clean compliant proposal on retry.
 
-    Mirrors the orchestrator's client surface (propose / propose_twice) with the
-    new optional ``temperature`` kwarg. The orchestrator passes NO temperature
-    on attempt 0 (so it arrives as the default None here) and RETRY_TEMPERATURE
-    on retries.
+    ``temperature`` defaults to None so the assertion can confirm the assessor
+    passes NO override (the reverted contract). If the assessor ever re-adds a
+    bump, ``temperatures`` would contain a non-None value and the test fails.
     """
 
     _audit_citations = False
@@ -104,13 +99,11 @@ class _TempRecordingLlm:
 
     def _proposal(self) -> LlmProposal:
         if self.calls == 1:
-            # First attempt → ambiguous (validator rejects → retry).
             return LlmProposal(
                 status=ComplianceStatus.COMPLIANT,
                 narrative=_AMBIGUOUS_NARRATIVE,
                 confidence=0.9,
             )
-        # Retry → clean compliant narrative that passes the validator.
         return LlmProposal(
             status=ComplianceStatus.COMPLIANT,
             narrative=_CLEAN_COMPLIANT_NARRATIVE,
@@ -127,9 +120,13 @@ class _TempRecordingLlm:
         return (p, p)
 
 
-def test_attempt0_no_temp_override_retry_bumps_and_recovers():
-    """Attempt 0 → no temp override (None); retry → RETRY_TEMPERATURE; an
-    ambiguous-then-clean row recovers to Compliant instead of exhausting."""
+def test_no_attempt_passes_a_temperature_override():
+    """Reverted contract: neither the first attempt nor any retry passes a
+    temperature override — the client always uses its DEFAULT_TEMPERATURE.
+
+    The corrective-context retry still recovers the ambiguous-then-clean row to
+    a Compliant proposal, proving the retry LOOP works without the temp bump.
+    """
     fake = _TempRecordingLlm()
     d = Assessor(llm=fake).assess(
         _row(),
@@ -137,21 +134,18 @@ def test_attempt0_no_temp_override_retry_bumps_and_recovers():
         evidence_block=_EVIDENCE,
     )
 
-    # The loop retried at least once (ambiguous attempt 0 → clean retry).
     assert fake.calls >= 2, "expected a retry after the ambiguous first attempt"
-    # Attempt 0 received NO temperature override (happy path unchanged).
-    assert fake.temperatures[0] is None
-    # Every retry received the bumped temperature.
-    for t in fake.temperatures[1:]:
-        assert t == RETRY_TEMPERATURE
-    # The row recovered to a trusted Compliant verdict (NOT validator-exhausted).
+    # The headline assertion: NO call received a temperature override (no bump).
+    assert all(t is None for t in fake.temperatures), (
+        f"no attempt may pass a temperature override; got {fake.temperatures}"
+    )
+    # The retry still recovered to a trusted Compliant verdict.
     assert d.status is ComplianceStatus.COMPLIANT
     assert d.needs_review is False
 
 
-def test_clean_first_attempt_never_bumps_temperature():
-    """A row that passes on attempt 0 makes exactly one call with NO temperature
-    override — clean rows behave exactly as before this change."""
+def test_clean_first_attempt_single_call_no_override():
+    """A row that passes on attempt 0 makes exactly one call, no temp override."""
 
     class _CleanLlm:
         _audit_citations = False
@@ -177,5 +171,5 @@ def test_clean_first_attempt_never_bumps_temperature():
         tagged_evidence=_EVIDENCE.text,
         evidence_block=_EVIDENCE,
     )
-    assert fake.temperatures == [None], "clean row must make one call at default temp"
+    assert fake.temperatures == [None]
     assert d.status is ComplianceStatus.COMPLIANT

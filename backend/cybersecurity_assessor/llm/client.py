@@ -1065,10 +1065,10 @@ class AnthropicClient:
         boundary_brief: str | None = None,
         temperature: float | None = None,
     ) -> LlmProposal:
-        # ``temperature`` override: None → the client default (0.0). The assess
-        # retry loop passes RETRY_TEMPERATURE on attempt >= 1 so a stuck
-        # ambiguous narrative can be rewritten instead of regenerating
-        # identically at temp 0.
+        # ``temperature`` override: None → the client default (0.0). Kept as a
+        # general-purpose hook; the assessor currently passes no override (all
+        # attempts run at temp 0 for reliable JSON — see the retry loop note in
+        # engine/assessor.py).
         return self._call_once(
             row=row,
             corrective_context=corrective_context,
@@ -1669,10 +1669,10 @@ class OpenAIClient:
         boundary_brief: str | None = None,
         temperature: float | None = None,
     ) -> LlmProposal:
-        # ``temperature`` override: None → the client default (0.0). The assess
-        # retry loop passes RETRY_TEMPERATURE on attempt >= 1 so a stuck
-        # ambiguous narrative can be rewritten instead of regenerating
-        # identically at temp 0.
+        # ``temperature`` override: None → the client default (0.0). Kept as a
+        # general-purpose hook; the assessor currently passes no override (all
+        # attempts run at temp 0 for reliable JSON — see the retry loop note in
+        # engine/assessor.py).
         return self._call_once(
             row=row,
             corrective_context=corrective_context,
