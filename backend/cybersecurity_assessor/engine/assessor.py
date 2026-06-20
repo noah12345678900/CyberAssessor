@@ -1794,12 +1794,12 @@ class Assessor:
             # fix #2 -- run lookup + bump on this worker's PRIVATE session,
             # no ``_cache_lock``. Each thread owns its session, so the
             # lookup-and-bump pair can't corrupt a sibling's transaction
-            # state. ``bump_hit`` no longer commits (perf, 2026-06-19): the
-            # hit-count increment is staged on this worker's session and rides
-            # the next ``store`` commit or is dropped on session close. The hit
-            # counter is advisory telemetry, so the benign read-modify-write
-            # race between two workers replaying the same fingerprint at most
-            # under-counts a hit — never a correctness issue.
+            # state. ``bump_hit`` commits immediately so the write lock is
+            # acquired-and-released per hit, NOT held across the batch — see the
+            # regression note in decision_cache.bump_hit. The hit counter is
+            # advisory telemetry, so the benign read-modify-write race between
+            # two workers replaying the same fingerprint at most under-counts a
+            # hit — never a correctness issue.
             cached = decision_cache.lookup(worker_cache_session, cache_fp)
             if cached is not None:
                 decision_cache.bump_hit(worker_cache_session, cached)
