@@ -22,6 +22,7 @@ from pathlib import Path
 
 from sqlmodel import Session, delete, select
 
+from ..db import chunked
 from ..excel.ccis_reader import (
     _ccis_to_oscal_control_id,
     _normalize_control,
@@ -783,13 +784,17 @@ def purge_baseline_contribution(
     susp_log_ids = [row for row in session.exec(susp_q).all()]
 
     sce_count = 0
-    if susp_log_ids:
+    # Chunk the IN-clause through chunked() so a baseline with more suspicion
+    # logs than SQLITE_MAX_VARIABLES (32766) can't blow the delete with "too
+    # many SQL variables" — the one new delete path that previously bypassed the
+    # safeguard the cascade deletes use.
+    for batch in chunked(susp_log_ids):
         r = session.exec(
             delete(CrmShortCircuitEvent).where(
-                CrmShortCircuitEvent.suspicion_log_id.in_(susp_log_ids)  # type: ignore[union-attr]
+                CrmShortCircuitEvent.suspicion_log_id.in_(batch)  # type: ignore[union-attr]
             )
         )
-        sce_count = getattr(r, "rowcount", 0) or 0
+        sce_count += getattr(r, "rowcount", 0) or 0
 
     corpus_del_filter = CrmCorpusFeatures.crm_baseline_id == baseline_id
     if workbook_id is not None:

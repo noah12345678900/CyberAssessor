@@ -1794,8 +1794,9 @@ class Assessor:
             # fix #2 -- run lookup + bump on this worker's PRIVATE session,
             # no ``_cache_lock``. Each thread owns its session, so the
             # lookup-and-bump pair can't corrupt a sibling's transaction
-            # state, and ``bump_hit``'s commit lands on an isolated
-            # connection (SQLite WAL serializes the actual write). The hit
+            # state. ``bump_hit`` no longer commits (perf, 2026-06-19): the
+            # hit-count increment is staged on this worker's session and rides
+            # the next ``store`` commit or is dropped on session close. The hit
             # counter is advisory telemetry, so the benign read-modify-write
             # race between two workers replaying the same fingerprint at most
             # under-counts a hit — never a correctness issue.

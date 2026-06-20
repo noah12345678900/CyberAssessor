@@ -401,11 +401,18 @@ def bump_hit(session: Session, cached: DecisionCache) -> None:
     """Increment ``hit_count`` and refresh ``last_hit_at`` on a hit.
 
     Split from :func:`lookup` so the inspect-only path stays clean.
+
+    NO per-call commit (perf, 2026-06-19). hit_count/last_hit_at are pure
+    telemetry, so the staged change can ride the next ``store`` commit (or be
+    lost on session close — acceptable for a counter). Under the 8-worker batch
+    assess, committing on every cache HIT serialized all workers on SQLite's
+    single writer lock — the biggest local amplifier of LLM wall-clock at
+    1000-CCI scale. ``store`` keeps its commit so cache ENTRIES still persist
+    across batches; only the contention-heavy hit-counter write is deferred.
     """
     cached.hit_count += 1
     cached.last_hit_at = datetime.now(timezone.utc)
     session.add(cached)
-    session.commit()
 
 
 def store(session: Session, fp: str, decision: "Decision") -> None:

@@ -174,10 +174,18 @@ select = ["E", "F", "I", "B", "UP", "W"]
 ignore = ["E501"]  # line length handled by formatter
 
 [tool.pytest.ini_options]
-testpaths = ["../tests"]
+# Both trees are collected (2026-06-19): the top-level tests/ tree AND the
+# backend/tests/ tree (~1500 tests: assessor e2e, persistence, cascades,
+# concurrency) that was previously dark. Default run deselects the two opt-in
+# marker classes so the suite is green headless: requires_excel (xlwings COM —
+# opening Excel faults a headless/xdist worker) and live_llm (needs an API key).
+# Run those explicitly with `-m requires_excel` / `-m live_llm` on a dev box.
+testpaths = ["../tests", "tests"]
+addopts = "-m 'not requires_excel and not live_llm'"
 markers = [
     "requires_excel: test requires Excel desktop app + xlwings COM bridge (install with `pip install -e .[excel]`; skipped in CI)",
     "live_llm: runs eval cases against a real LLM endpoint (requires API key; opt-in via `pytest -m live_llm`; skipped in default CI)",
+    "integration: heavier end-to-end test (e.g. packaged-sidecar smoke); runs in the default suite but tagged for selective runs.",
 ]
 filterwarnings = [
     # Benign: SQLAlchemy cannot reflect SQLite expression-based indexes. The
