@@ -441,16 +441,6 @@ class Decision:
 
 DEFAULT_MAX_RETRIES = 2
 
-# Retry temperature (2026-06-19). Attempt 0 runs at the client's deterministic
-# DEFAULT_TEMPERATURE (0.0) — the happy path and decision cache are unchanged.
-# Every RETRY (attempt_no >= 1, only reached after a validator rejection) runs
-# at this constant bump so the corrective context ("your last narrative was
-# ambiguous, rewrite it") has stochastic room to escape a stuck output. Without
-# it, a deterministically-ambiguous narrative regenerated identically at temp 0
-# on every retry and exhausted to a validator-exhausted needs-review (AC-7a).
-# Constant, NOT escalating (owner decision): a single 0.4 on all retries.
-RETRY_TEMPERATURE = 0.4
-
 # v0.2 precision-over-recall knobs. Module-level so callers can flip them
 # in tests / batch runs without round-tripping through AppConfig. These are
 # CODE-LEVEL tuning constants by design (see KernelConfig docstring): the
@@ -1862,17 +1852,14 @@ class Assessor:
 
         corrective_context = initial_context
         for attempt_no in range(self._max_retries + 1):
-            # Attempt 0 → no temperature override (client uses its
-            # DEFAULT_TEMPERATURE=0.0, the deterministic happy path + cache).
-            # Retries (attempt_no >= 1, only reached after a validator rejection)
-            # → RETRY_TEMPERATURE so the corrective context can escape a stuck
-            # ambiguous output. The kwarg is passed ONLY on retries, so attempt-0
-            # calls are byte-identical to before this change (and a minimal LLM
-            # stub that doesn't accept ``temperature`` keeps working on the happy
-            # path).
-            temp_kwargs = (
-                {} if attempt_no == 0 else {"temperature": RETRY_TEMPERATURE}
-            )
+            # All attempts run at the client's DEFAULT_TEMPERATURE (0.0). A
+            # 2026-06-19 change bumped retries to 0.4 to escape a stuck
+            # "ambiguous" narrative loop, but the LLM client enforces NO JSON
+            # output mode, so a higher temperature let the model wander off the
+            # JSON envelope on retries → "[parse_error] no JSON object" (AC-17).
+            # Reverted 2026-06-20: temp 0 keeps the structured output reliable;
+            # a rarely-stuck ambiguous control just lands in needs_review, which
+            # a human reviews anyway — a far cheaper failure than a parse error.
             # Dual-pass when enabled: pass 0 is the initial verdict at
             # temp 0.0; pass 1 is the *challenger* — same temp 0.0, but
             # the user message embeds pass 0's verdict + narrative + the
@@ -1891,7 +1878,6 @@ class Assessor:
                     tagged_evidence=tagged_evidence,
                     crm_responsibility=crm_responsibility,
                     boundary_brief=boundary_brief,
-                    **temp_kwargs,
                 )
                 # Record BOTH passes' token usage — the cache amortizes
                 # input but output is still per-call.
@@ -2043,7 +2029,6 @@ class Assessor:
                     tagged_evidence=tagged_evidence,
                     crm_responsibility=crm_responsibility,
                     boundary_brief=boundary_brief,
-                    **temp_kwargs,
                 )
                 attempts.append(proposal)
                 if outcome is not None:
