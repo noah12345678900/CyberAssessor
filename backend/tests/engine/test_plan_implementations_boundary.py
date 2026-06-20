@@ -357,8 +357,13 @@ def test_abstain_keeps_deterministic_slices_drops_customer_owned() -> None:
     ]
     plans = _by_label(plan_implementations(_decision(status=None), slices))
 
-    assert set(plans.keys()) == {_AWS_LABEL, _AZURE_LABEL}
-    assert _ONPREM_LABEL not in plans
+    # Updated 2026-06-19: on a hard abstain, customer/hybrid slices are now
+    # EMITTED with status=None for reviewer visibility (assessor.py
+    # plan_implementations customer branch) rather than DROPPED. The reviewer
+    # sets each scope's status on the detail page. So the On-Premises customer
+    # slice is present with status=None; the deterministic clouds are unchanged.
+    assert set(plans.keys()) == {_AWS_LABEL, _AZURE_LABEL, _ONPREM_LABEL}
+    assert plans[_ONPREM_LABEL].status is None
     assert plans[_AWS_LABEL].status is ComplianceStatus.COMPLIANT
     assert plans[_AZURE_LABEL].status is ComplianceStatus.NOT_APPLICABLE
     # CRM text still passed through verbatim — abstain doesn't affect

@@ -279,8 +279,18 @@ def _make_row(
     excel_row: int = 100,
     control_id: str = "AC-2",
     cci_id: str | None = "CCI-000015",
+    inherited: str | None = None,
+    remote_inheritance: str | None = None,
 ) -> CcisRow:
-    """Minimal CcisRow — only fields the backfill touches need values."""
+    """Minimal CcisRow — only fields the backfill touches need values.
+
+    ``inherited`` / ``remote_inheritance`` are Column L / Column M. Pass
+    ``inherited="Yes", remote_inheritance="<source>"`` to make the synthesized
+    flex (On-Premises) slice resolve INHERITED — which is what now makes a
+    flex-bearing control "deterministic" at backfill time (col L is the flex
+    slice's status authority; ASSESS/ESCALATE defer to assess). Default None →
+    flex slice ASSESS → control deferred (the post-flex-slice behavior).
+    """
     return CcisRow(
         excel_row=excel_row,
         required=True,
@@ -293,8 +303,8 @@ def _make_row(
         definition=None,
         guidance=None,
         procedures=None,
-        inherited=None,
-        remote_inheritance=None,
+        inherited=inherited,
+        remote_inheritance=remote_inheritance,
         status=None,
         date_tested=None,
         tester=None,
@@ -788,9 +798,19 @@ def test_defensive_guard_skips_when_decision_not_accepted(
         control_id_int=control_ac2.id,
         responsibility="provider",
     )
-    _install_fake_reader(monkeypatch, [_make_row()])
+    # Flex slice must resolve INHERITED (col L "Yes" + col M source) so the
+    # control is deterministic and the loop reaches the not-accepted guard;
+    # otherwise the synthesized flex slice defers the control (ASSESS) and the
+    # guard is never exercised.
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(inherited="Yes", remote_inheritance="DoW Enterprise")],
+    )
 
-    def fake_finalize(self, row, cci, entry, *, outcome, workbook_id=None, slices=None):
+    def fake_finalize(
+        self, row, cci, entry, *, outcome, workbook_id=None, slices=None,
+        flex_statuses=None,
+    ):
         return Decision(
             cci_id=cci,
             excel_row=row.excel_row,
@@ -989,11 +1009,13 @@ def test_masked_provider_only_multiscope_still_backfills(
 
     The fix must only defer when a customer/hybrid slice actually exists.
     AWS GovCloud 'provider' (older) + Azure 'inherited' (newer) carry no
-    customer-side work, so ``build_crm_context`` synthesizes no On-Premises
-    slice and every slice is deterministic. The control still backfills a
-    single deterministic Assessment, exactly as a lone inherited CRM would —
-    over-deferring here would spuriously force the LLM on genuinely
-    fully-inherited controls.
+    customer-side work. ``build_crm_context`` now ALWAYS synthesizes an
+    On-Premises flex slice; for the control to be deterministic that flex slice
+    must resolve INHERITED via col L (the flex-slice status authority), so this
+    row is col-L "Yes" + col-M source. With both clouds inheritable AND the flex
+    slice inherited, the control backfills a single deterministic Assessment —
+    over-deferring here would spuriously force the LLM on a fully-inherited
+    control.
     """
     _attach_in_scope(
         session,
@@ -1021,12 +1043,15 @@ def test_masked_provider_only_multiscope_still_backfills(
         attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
         narrative="Inherited from Azure AD baseline.",
     )
-    _install_fake_reader(monkeypatch, [_make_row()])
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(inherited="Yes", remote_inheritance="DoW Enterprise")],
+    )
 
     result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
 
     assert result.applied == 1, (
-        "all-inheritable multi-scope must still backfill; "
+        "all-inheritable multi-scope (incl. flex-inherited) must still backfill; "
         f"got {result.as_dict()}"
     )
     assert result.skipped_non_deterministic == 0
@@ -1094,19 +1119,27 @@ def test_two_inherited_crms_backfill_per_scope_rows_and_api_serializes_both(
         attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
         narrative="Microsoft Azure Government enforces datacenter physical access.",
     )
-    _install_fake_reader(monkeypatch, [_make_row()])
+    # Flex slice resolves INHERITED via col L so the control is deterministic
+    # (col L is the flex-slice status authority). The synthesized On-Premises
+    # slice is now always present, so the control writes THREE impl rows.
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(inherited="Yes", remote_inheritance="DoW Enterprise")],
+    )
 
     result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
     session.commit()
 
-    # 1. Backfill ran and produced the per-scope impl rows.
+    # 1. Backfill ran and produced the per-scope impl rows (2 clouds + flex).
     assert result.applied == 1, f"expected one backfilled control; got {result.as_dict()}"
     impls = session.exec(select(AssessmentImplementation)).all()
-    assert len(impls) == 2, (
-        "two inherited CRMs must write two AssessmentImplementation rows "
-        f"(keying fix); got {len(impls)}"
+    assert len(impls) == 3, (
+        "two inherited CRMs + the synthesized flex slice must write three "
+        f"AssessmentImplementation rows; got {len(impls)}"
     )
-    assert {im.scope_label for im in impls} == {"AWS GovCloud", "Azure Government"}
+    assert {im.scope_label for im in impls} == {
+        "AWS GovCloud", "Azure Government", "On-Premises",
+    }
     assert all(im.status is ComplianceStatus.COMPLIANT for im in impls)
 
     # 2. Parent narrative_q composes BOTH clouds — not just the latest attach.
@@ -1120,11 +1153,13 @@ def test_two_inherited_crms_backfill_per_scope_rows_and_api_serializes_both(
     out = list_assessments(control_ac2.id, workbook_id=workbook.id, s=session)
     assert len(out) == 1
     api_impls = out[0]["implementations"]
-    assert len(api_impls) == 2, (
+    assert len(api_impls) == 3, (
         "list_assessments must serialize implementations so ControlDetail's "
         f"N-impl editor/chips activate; got {api_impls!r}"
     )
-    assert {i["scope_label"] for i in api_impls} == {"AWS GovCloud", "Azure Government"}
+    assert {i["scope_label"] for i in api_impls} == {
+        "AWS GovCloud", "Azure Government", "On-Premises",
+    }
     assert "AWS GovCloud" in out[0]["narrative_q"]
     assert "Azure Government" in out[0]["narrative_q"]
 
@@ -1138,15 +1173,18 @@ def test_two_na_crms_backfill_per_scope_not_applicable(
     objective_ac2,
     monkeypatch,
 ):
-    """N/A regression: two not_applicable CRMs → 2 NA impl rows, parent NA, API serializes.
+    """Two not_applicable cloud CRMs + a non-inherited flex slice → DEFER.
 
-    Directly pins the user's "not a single N/A chip loaded" report: a control
-    both CRMs mark not_applicable must backfill two NOT_APPLICABLE impl rows,
-    roll the parent up to NOT_APPLICABLE, and surface both via the API so the
-    per-scope N/A chips render.
+    Updated 2026-06-19 for the flex-slice model. build_crm_context now always
+    synthesizes an On-Premises flex slice. With col L unset, that flex slice
+    resolves ASSESS (col L is the flex-slice status authority; only INHERITED is
+    deterministic at backfill). Two NA clouds + one ASSESS flex slice is NOT
+    fully deterministic, so the CRM backfill correctly DEFERS the control to
+    assess time rather than writing a premature verdict. (An all-NA control that
+    should short-circuit comes from col N "Not Applicable" via rule 8b — the
+    backfill_workbook_rules path — not from the CRM N/A columns.)
     """
-    from cybersecurity_assessor.models import AssessmentImplementation
-    from cybersecurity_assessor.routes.controls import list_assessments
+    from cybersecurity_assessor.models import AssessmentImplementation  # noqa: F401
 
     _attach_in_scope(
         session,
@@ -1174,20 +1212,15 @@ def test_two_na_crms_backfill_per_scope_not_applicable(
         attached_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone.utc),
         narrative="Not applicable on Azure Government — no such surface.",
     )
-    _install_fake_reader(monkeypatch, [_make_row()])
+    _install_fake_reader(monkeypatch, [_make_row()])  # col L unset → flex ASSESS
 
     result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
     session.commit()
 
-    assert result.applied == 1, f"got {result.as_dict()}"
-    parent = session.exec(select(Assessment)).one()
-    assert parent.status is ComplianceStatus.NOT_APPLICABLE
-    out = list_assessments(control_ac2.id, workbook_id=workbook.id, s=session)
-    api_impls = out[0]["implementations"]
-    assert len(api_impls) == 2
-    assert all(
-        i["status"] is ComplianceStatus.NOT_APPLICABLE for i in api_impls
-    )
+    # Non-deterministic (flex slice ASSESS) → deferred, no row written.
+    assert result.applied == 0, f"got {result.as_dict()}"
+    assert result.skipped_non_deterministic == 1
+    assert session.exec(select(Assessment)).all() == []
 
 
 def test_multitenant_empty_slices_defers_not_backfill(
@@ -1278,6 +1311,12 @@ def test_self_heal_deterministic_then_customer_deletes_stale_row(
     attach (AWS customer) makes the control customer/hybrid — it must now defer
     to the LLM. The self-heal deletes the stale system-written deterministic
     row so no frozen single-scope Compliant survives.
+
+    Col L is "Yes" + col M source so the synthesized flex slice resolves
+    INHERITED — required for attach #1 to be deterministic and write a row
+    (flex ASSESS would defer it and there'd be nothing to self-heal). The
+    customer CLOUD slice from attach #2 is what makes the control
+    non-deterministic, independent of the flex slice.
     """
     _attach_in_scope(
         session,
@@ -1285,7 +1324,10 @@ def test_self_heal_deterministic_then_customer_deletes_stale_row(
         control_id_int=control_ac2.id,
         objective_id_int=objective_ac2.id,
     )
-    _install_fake_reader(monkeypatch, [_make_row()])
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(inherited="Yes", remote_inheritance="DoW Enterprise")],
+    )
 
     # Attach #1 — Azure inherited (deterministic) → backfill writes a row.
     _attach_crm_scoped(

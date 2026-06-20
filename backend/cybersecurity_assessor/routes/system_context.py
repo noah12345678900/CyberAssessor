@@ -54,6 +54,7 @@ from ..models import Evidence, SystemContext, SystemContextSourceType, Workbook,
 from ..system_context.base import get_source_for_type
 from ..system_context.freeform import FreeformContextSource
 from .evidence import _serialize as _serialize_evidence
+from .evidence import delete_one_evidence
 
 router = APIRouter(prefix="/api/system-context", tags=["system-context"])
 
@@ -241,8 +242,17 @@ def reset_pending_context(s: Session = Depends(get_session)) -> dict:
     """
     ctx = _get_pending_context(s)
     docs = _get_pending_boundary_docs(s)
+    # Delete each boundary-doc Evidence via the shared evidence-delete helper,
+    # NOT a bare s.delete(d). Evidence has nine FK children (EvidenceTag,
+    # StigFinding, EvidenceComponent/Asset/Boundary, BoundaryTokenSource,
+    # AssessmentEvidenceShown/Citation, the superseded_by self-FK) with no DB
+    # ondelete; a bare delete under PRAGMA foreign_keys=ON raises a FK
+    # constraint failure → 500 (boundary docs auto-tag EvidenceTag + carry
+    # EvidenceBoundary/BoundaryTokenSource on ingest, so this fired in practice).
+    # delete_one_evidence clears all children first and commits per doc.
     for d in docs:
-        s.delete(d)
+        if d.id is not None:
+            delete_one_evidence(d.id, purge_text=True, s=s)
     if ctx is not None:
         s.delete(ctx)
     s.commit()

@@ -464,6 +464,11 @@ export const useAttachOverlay = () => {
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(vars.workbookId),
       });
+      // Attach can flip a control's flex-slice picture (col-L chip), same as
+      // detach — keep the On-Prem (Col L) column fresh.
+      qc.invalidateQueries({
+        queryKey: qk.workbookColLStatus(vars.workbookId),
+      });
       qc.invalidateQueries({ queryKey: ["assessments"] });
       // Server-side attach auto-fires compute_and_persist_crm_suspicion on
       // CRM overlays (Gap B). Drop the cached suspicion log so the banner
@@ -492,6 +497,19 @@ export const useDetachOverlay = () => {
         queryKey: qk.workbookOverlayMembership(vars.workbookId),
       });
       qc.invalidateQueries({ queryKey: qk.workbooks });
+      // Detach now PURGES the CRM's contribution server-side (its
+      // AssessmentImplementation slices + telemetry, recomputing/removing
+      // affected parents). Mirror attach's invalidations so the UI reflects the
+      // reverted verdicts instead of showing phantom rows: control-status +
+      // col-L chips, the assessments cache, and the CRM-suspicion banner.
+      qc.invalidateQueries({
+        queryKey: qk.workbookControlStatus(vars.workbookId),
+      });
+      qc.invalidateQueries({
+        queryKey: qk.workbookColLStatus(vars.workbookId),
+      });
+      qc.invalidateQueries({ queryKey: ["assessments"] });
+      qc.invalidateQueries({ queryKey: qk.crmSuspicion(vars.workbookId) });
     },
   });
 };
@@ -1472,6 +1490,14 @@ export const useDeleteBaseline = (
     onSuccess: (result, ...rest) => {
       qc.invalidateQueries({ queryKey: qk.baselines });
       qc.invalidateQueries({ queryKey: ["workbooks"] });
+      // A workbook bound to (or overlaid by) the deleted baseline keeps the
+      // dangling baseline in its per-workbook + overlay-membership caches, and
+      // delete_baseline now purges CRM-derived assessments server-side. Drop
+      // the ["workbook"] prefix (control-status, col-l-status, overlays,
+      // membership) + assessments so dependent views recompute instead of
+      // pointing at a baselineId that no longer exists.
+      qc.invalidateQueries({ queryKey: ["workbook"] });
+      qc.invalidateQueries({ queryKey: ["assessments"] });
       callerOnSuccess?.(result, ...rest);
     },
   });
@@ -1882,6 +1908,12 @@ export const useUpsertAssessment = (
         qc.invalidateQueries({
           queryKey: qk.workbookControlStatus(vars.body.workbook_id),
         });
+        // The On-Prem (Col L) grid column derives its "N/A" outcome from the
+        // workbook's Column-N status, which this save just changed — refresh it
+        // so the chip doesn't show stale until a manual refetch.
+        qc.invalidateQueries({
+          queryKey: qk.workbookColLStatus(vars.body.workbook_id),
+        });
       } catch (err) {
         // Save succeeded; the workbook write didn't. Surface it so the user
         // knows the Excel artifact is out of sync with the DB — otherwise
@@ -1933,6 +1965,10 @@ export const useAssessObjective = (
       // detail page until something else refetches.
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(vars.workbookId),
+      });
+      // Col-L "N/A" chip derives from Column-N status this assess may change.
+      qc.invalidateQueries({
+        queryKey: qk.workbookColLStatus(vars.workbookId),
       });
       // The persisted row lands as needs_review=true; surface it in the
       // queue immediately so a reviewer can find it without a manual
@@ -2016,6 +2052,9 @@ export const useAssessBatch = (
         qc.invalidateQueries({
           queryKey: qk.workbookControlStatus(result.workbook_id),
         });
+        qc.invalidateQueries({
+          queryKey: qk.workbookColLStatus(result.workbook_id),
+        });
       } catch (err) {
         // Assess succeeded; the workbook write didn't. Surface as a toast —
         // a silent console.warn here was hiding the case where the working
@@ -2089,6 +2128,12 @@ return useMutation({
     ...restOpts,
     onSuccess: (...args) => {
       qc.invalidateQueries({ queryKey: ["assessments"] });
+      // Applying a row writes Column N, which the Controls grid status pill and
+      // the On-Prem (Col L) "N/A" chip both derive from. The single-apply
+      // result carries only assessment_id (no workbook_id), so invalidate the
+      // ["workbook"] prefix — covers control-status + col-l-status for the
+      // active workbook. (The bulk apply below targets by id; this one can't.)
+      qc.invalidateQueries({ queryKey: ["workbook"] });
       callerOnSuccess?.(...args);
     },
   });
@@ -2133,6 +2178,10 @@ export const useApplyAllToWorkbook = (
       // refresh so the user sees the new totals without a page reload.
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(result.workbook_id),
+      });
+      // Col-L "N/A" chip derives from Column-N status the bulk apply writes.
+      qc.invalidateQueries({
+        queryKey: qk.workbookColLStatus(result.workbook_id),
       });
       callerOnSuccess?.(...args);
     },

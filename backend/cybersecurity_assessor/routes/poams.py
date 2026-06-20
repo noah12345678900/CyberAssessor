@@ -937,6 +937,12 @@ def delete_poam(poam_id: int, s: Session = Depends(get_session)) -> dict:
     p = s.get(Poam, poam_id)
     if not p:
         raise HTTPException(status_code=404, detail="POAM not found")
+    # PoamRiskHistory FKs to poam.id (NOT NULL, no DB cascade). Under
+    # PRAGMA foreign_keys=ON, deleting a POAM that has any risk-history row
+    # raises a FK constraint failure → 500. Delete it first, matching the bulk
+    # delete_all_poams path. (Was missing here — single-POAM delete 500'd on any
+    # POAM whose risk level was ever changed.)
+    s.exec(delete(PoamRiskHistory).where(PoamRiskHistory.poam_id == poam_id))
     s.exec(delete(PoamMilestone).where(PoamMilestone.poam_id == poam_id))
     s.exec(delete(PoamObjective).where(PoamObjective.poam_id == poam_id))
     s.exec(delete(PoamEvidence).where(PoamEvidence.poam_id == poam_id))
