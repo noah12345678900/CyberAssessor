@@ -143,7 +143,11 @@ def _grad_round(slide, l, t, w, h, c1, c2, angle=45, line=None, line_w=None, rad
 
 def _text(slide, l, t, w, h, runs, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
           space_after=6, line_spacing=1.05):
-    """runs: list of paragraphs; each paragraph is list of (text, size, color, bold, italic)."""
+    """runs: list of paragraphs; each paragraph is a list of run tuples.
+
+    A run tuple is (text, size, color, bold, italic) or, to make the run a
+    hyperlink, (text, size, color, bold, italic, url).
+    """
     tb = slide.shapes.add_textbox(l, t, w, h)
     tf = tb.text_frame
     tf.word_wrap = True
@@ -153,7 +157,9 @@ def _text(slide, l, t, w, h, runs, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
         p.alignment = align
         p.space_after = Pt(space_after)
         p.line_spacing = line_spacing
-        for (txt, size, color, bold, italic) in para:
+        for run in para:
+            txt, size, color, bold, italic = run[:5]
+            url = run[5] if len(run) > 5 else None
             r = p.add_run()
             r.text = txt
             r.font.size = Pt(size)
@@ -161,6 +167,8 @@ def _text(slide, l, t, w, h, runs, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
             r.font.bold = bold
             r.font.italic = italic
             r.font.name = "Segoe UI"
+            if url:
+                r.hyperlink.address = url
     return tb
 
 
@@ -506,7 +514,7 @@ _text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
       [[("Computed from the app's built-in Metrics benchmarks, on a single full-system ATO package.*", 16, SLATE, False, False)]])
 
 roi = [
-    ("$700 / control", 26, "manual A&A benchmark", "≈ $233 per CCI average — the app's Metrics reference rate"),
+    ("$700 / control", 26, "manual A&A benchmark", "≈ $233 per CCI average"),
     ("~$180K", 38, "saved per assessment", "manual A&A labor the tool auto-resolves at that rate"),
     ("~2,080 hrs", 34, "assessor time saved", "≈ 52 assessor work-weeks off the A&A effort"),
     ("~80%", 38, "less hands-on effort", "clear cases auto-resolve; experts review the rest"),
@@ -531,10 +539,12 @@ _grad_round(s, Inches(0.8), Inches(4.95), Inches(0.12), Inches(1.75), AMBER, RGB
 _text(s, Inches(1.1), Inches(5.08), Inches(11.2), Inches(1.62),
       [[("* Illustrative estimate, not a guarantee — uses the same benchmarks the app's Metrics tab ships with.", 12.5, NAVY, True, False)],
        [("Basis: a full-system FedRAMP Moderate ATO (~325 controls, ~975 CCIs). Manual A&A benchmark = $700/control "
-         "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, GAO-24-106591) "
-         "over ~325 controls, and the industry-standard 8 hr/control per NIST SP 800-53A. Deterministic auto-resolution "
-         "+ AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and ≈2,080 hrs of internal labor, against an "
-         "outsourced 3PAO engagement of $150–300K it largely replaces.",
+         "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, ", 11.5, INK, False, False),
+         ("GAO-24-106591", 11.5, BLUE, False, False, "https://www.gao.gov/products/GAO-24-106591"),
+         (") over ~325 controls, and the industry-standard 8 hr/control per ", 11.5, INK, False, False),
+         ("NIST SP 800-53A", 11.5, BLUE, False, False, "https://csrc.nist.gov/pubs/sp/800/53/a/r5/final"),
+         (". Deterministic auto-resolution + AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and "
+         "≈2,080 hrs of internal labor, against an outsourced 3PAO engagement of $150–300K it largely replaces.",
          11.5, INK, False, False)],
        [("Actual savings vary by system size, baseline, evidence quality, and team. Your numbers will differ — these are planning estimates only.",
          11.5, SLATE, False, True)]], line_spacing=1.1)
