@@ -402,17 +402,22 @@ def bump_hit(session: Session, cached: DecisionCache) -> None:
 
     Split from :func:`lookup` so the inspect-only path stays clean.
 
-    NO per-call commit (perf, 2026-06-19). hit_count/last_hit_at are pure
-    telemetry, so the staged change can ride the next ``store`` commit (or be
-    lost on session close — acceptable for a counter). Under the 8-worker batch
-    assess, committing on every cache HIT serialized all workers on SQLite's
-    single writer lock — the biggest local amplifier of LLM wall-clock at
-    1000-CCI scale. ``store`` keeps its commit so cache ENTRIES still persist
-    across batches; only the contention-heavy hit-counter write is deferred.
+    COMMITS immediately — and this is load-bearing, do NOT remove it (regression
+    2026-06-20). A prior "perf" change dropped the commit on the theory that the
+    staged counter could ride the next ``store`` commit. But the worker cache
+    Session has autoflush ON: the worker's NEXT ``lookup`` (session.get) flushes
+    this dirty UPDATE, acquiring SQLite's single write lock — and with no commit
+    the lock is HELD for the rest of the batch. Eight batch workers each holding
+    an uncommitted writer deadlock-contend on that lock → ``database is locked``
+    after busy_timeout → 500 (hit hard on re-assess-after-CRM-attach, which is
+    almost all cache hits). Committing here acquires AND releases the lock
+    instantly, which is the non-contending behavior. A per-hit commit is cheap;
+    a held lock is not.
     """
     cached.hit_count += 1
     cached.last_hit_at = datetime.now(timezone.utc)
     session.add(cached)
+    session.commit()
 
 
 def store(session: Session, fp: str, decision: "Decision") -> None:
