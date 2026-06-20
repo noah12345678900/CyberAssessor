@@ -506,10 +506,10 @@ _text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
       [[("Computed from the app's built-in Metrics benchmarks, on a single full-system ATO package.*", 16, SLATE, False, False)]])
 
 roi = [
-    ("~$180K", 38, "saved per assessment", "manual A&A labor the tool auto-resolves, at the app's $700/control benchmark"),
+    ("$700 / control", 26, "manual A&A benchmark", "≈ $233 per CCI average — the app's Metrics reference rate"),
+    ("~$180K", 38, "saved per assessment", "manual A&A labor the tool auto-resolves at that rate"),
     ("~2,080 hrs", 34, "assessor time saved", "≈ 52 assessor work-weeks off the A&A effort"),
     ("~80%", 38, "less hands-on effort", "clear cases auto-resolve; experts review the rest"),
-    ("$150–300K", 30, "3PAO engagement", "the outsourced FedRAMP Mod assessment it largely replaces"),
 ]
 rx = Inches(0.8)
 rw = Inches(2.85)
@@ -530,11 +530,11 @@ _round(s, Inches(0.8), Inches(4.95), Inches(11.73), Inches(1.75), SOFT, line=LIN
 _grad_round(s, Inches(0.8), Inches(4.95), Inches(0.12), Inches(1.75), AMBER, RGBColor(0xF2, 0xB1, 0x55), angle=90, radius=0.5)
 _text(s, Inches(1.1), Inches(5.08), Inches(11.2), Inches(1.62),
       [[("* Illustrative estimate, not a guarantee — uses the same benchmarks the app's Metrics tab ships with.", 12.5, NAVY, True, False)],
-       [("Basis: a full-system FedRAMP Moderate ATO (~325 controls, ~975 CCIs). The app benchmarks manual A&A at "
-         "$700/control and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, GAO-24-106591) over ~325 controls, "
-         "and the industry-standard 8 hr/control per NIST SP 800-53A. Deterministic auto-resolution + AI-assisted "
-         "assessment remove ~80% of hands-on effort: ≈$180K and ≈2,080 hrs of internal labor, against an outsourced "
-         "3PAO engagement of $150–300K it largely replaces.",
+       [("Basis: a full-system FedRAMP Moderate ATO (~325 controls, ~975 CCIs). Manual A&A benchmark = $700/control "
+         "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, GAO-24-106591) "
+         "over ~325 controls, and the industry-standard 8 hr/control per NIST SP 800-53A. Deterministic auto-resolution "
+         "+ AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and ≈2,080 hrs of internal labor, against an "
+         "outsourced 3PAO engagement of $150–300K it largely replaces.",
          11.5, INK, False, False)],
        [("Actual savings vary by system size, baseline, evidence quality, and team. Your numbers will differ — these are planning estimates only.",
          11.5, SLATE, False, True)]], line_spacing=1.1)
