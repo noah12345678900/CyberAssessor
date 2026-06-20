@@ -37,6 +37,7 @@ from ..models import (
     Assessment,
     AssessmentCitation,
     AssessmentEvidenceShown,
+    AssessmentImplementation,
     AssessmentRun,
     AssessmentTrace,
     Asset,
@@ -74,6 +75,7 @@ from ..models import (
     SweepHit,
     SweepRun,
     SystemContext,
+    TestOfControl,
     Workbook,
     WorkbookOverlay,
     WorkbookSyncEvent,
@@ -542,16 +544,16 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
         # than SQLITE_MAX_VARIABLES (32766) assessments/objectives — possible
         # once several frameworks/overlays multiply the CCI count on a large
         # enterprise — doesn't crash the delete with "too many SQL variables".
-        traces = shown = cites = 0
+        traces = shown = cites = impls = tocs = 0
         for batch in chunked(assessment_ids):
-            # ORDER MATTERS under PRAGMA foreign_keys=ON: AssessmentCitation
-            # has a NOT-NULL FK to AssessmentEvidenceShown
-            # (citation.evidence_shown_id), so the citation MUST be deleted
-            # BEFORE the evidence-shown row it points at. The previous order
-            # (shown before citation) raised a FK constraint failure → the
-            # whole workbook delete 500'd whenever any assessment had a
-            # self-cite. Trace has no children; order among trace/citation is
-            # free, but citation-before-shown is mandatory.
+            # ORDER MATTERS under PRAGMA foreign_keys=ON: every table that FKs
+            # to assessment.id must be cleared BEFORE the parent Assessment
+            # delete, and AssessmentCitation (FK → AssessmentEvidenceShown) must
+            # precede the evidence-shown row it points at. Assessment has FIVE
+            # children: Citation, Trace, EvidenceShown, AssessmentImplementation
+            # (per-scope CRM slices — created in bulk on reassess-with-CRMs, the
+            # exact flow that 500'd here), and TestOfControl. Missing the last
+            # two left orphan rows that blocked `DELETE FROM assessment`.
             r = s.exec(
                 delete(AssessmentCitation).where(
                     AssessmentCitation.assessment_id.in_(batch)
@@ -570,9 +572,23 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
                 )
             )
             shown += getattr(r, "rowcount", 0) or 0
+            r = s.exec(
+                delete(AssessmentImplementation).where(
+                    AssessmentImplementation.assessment_id.in_(batch)
+                )
+            )
+            impls += getattr(r, "rowcount", 0) or 0
+            r = s.exec(
+                delete(TestOfControl).where(
+                    TestOfControl.assessment_id.in_(batch)
+                )
+            )
+            tocs += getattr(r, "rowcount", 0) or 0
         counts["assessment_traces"] = traces
         counts["assessment_evidence_shown"] = shown
         counts["assessment_citations"] = cites
+        counts["assessment_implementations"] = impls
+        counts["tests_of_control"] = tocs
     r = s.exec(delete(Assessment).where(Assessment.workbook_id == workbook_id))
     counts["assessments"] = getattr(r, "rowcount", 0) or 0
 

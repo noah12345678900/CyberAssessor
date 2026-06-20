@@ -53,7 +53,27 @@ from ..engine.assessor import LlmProposal
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 1024
-DEFAULT_TEMPERATURE = 0.0  # deterministic — we want validator-passing output
+DEFAULT_TEMPERATURE = 0.0  # PERMANENT — schema-strict classification, no JSON mode.
+# This is the durable, cross-checked decision (do not revisit on intuition):
+#   * No JSON-mode enforcement here — output is recovered by a tolerant
+#     regex/brace parser (see _JSON_OBJECT_RE). Any temp > 0 risks the model
+#     wandering off the JSON envelope → "[parse_error] no JSON object". This
+#     was observed empirically: a 0.4 retry bump (2026-06-19) caused AC-17
+#     parse errors and was fully reverted (2026-06-20).
+#   * Retries do NOT need temperature entropy to escape a stuck "ambiguous"
+#     loop — the retry already feeds NEW corrective context (rejection reasons
+#     + prior proposal) into the prompt, which is the auditable, reproducible
+#     lever. Sampling noise is a hidden, non-auditable second source of variance.
+#   * Temperature is NOT part of the decision_cache fingerprint, so changing it
+#     would silently alter verdicts WITHOUT invalidating cached rows — a 3PAO
+#     replay could then disagree with the cache. If this ever changes, bump
+#     KERNEL_VERSION too.
+# CAVEAT: temp 0 is "stable", NOT bitwise-deterministic — MoE routing / batch
+# composition / silent provider model updates can still shift output. The real
+# reproducibility anchor is the content-addressed cache + a pinned model
+# snapshot, never the sampler. If ambiguous-exhaustion ever becomes common, the
+# fix is JSON-mode / tool-schema enforcement FIRST, then optionally a small
+# retry temp — NEVER a bare temperature bump.
 
 # Both passes of dual-pass now run at DEFAULT_TEMPERATURE; pass 1 is a
 # challenger review of pass 0 (different user message, same decoder).
@@ -1133,8 +1153,10 @@ class AnthropicClient:
             boundary_brief=boundary_brief,
         )
         # ``temperature`` override (None → client default). Both passes use the
-        # same temperature so the pair stays comparable; the assess retry loop
-        # raises it on attempt >= 1 to escape a stuck ambiguous output.
+        # same temperature so the pair stays comparable. The assess retry loop
+        # passes NO override — every attempt runs at the default (0.0); retries
+        # escape a stuck ambiguous output via changed corrective context, not
+        # entropy (see the DEFAULT_TEMPERATURE note above).
         effective_temp = self._temperature if temperature is None else temperature
         first = self._call_with_user_message(
             user_message=base_user_message,
