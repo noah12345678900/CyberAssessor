@@ -161,7 +161,27 @@ from .crm_context import CrmContext
 # compliant" claims the row Compliant before any NA recognizer runs. Cached
 # pre-0.11.0 decisions predate the Q/U NA lane and would replay ~0 NA verdicts
 # past the fix, so every cached CCI must re-run.
-KERNEL_VERSION = "0.11.0"
+#
+# 0.12.0 — two prompt-hardening fixes to assess_control.md (no kernel/code
+# change; both alter what the real LLM produces, so the cache must re-run):
+#   (C) No phantom cloud scopes. A control whose descriptive prose (col F/J/K)
+#       merely *mentions* cloud platforms ("differs by cloud: AWS GovCloud …
+#       Azure Government …") made the LLM invent those clouds as assessment
+#       scopes even with NO CRM and NO boundary block, then fault their absent
+#       evidence → a wrong Non-Compliant despite sufficient on-prem evidence
+#       (au-6 was the proven case). The prompt now states descriptive prose is
+#       context, not a scope directive: with no CRM and no boundary block there
+#       are no cloud scopes, so missing cloud evidence is not a finding.
+#   (B) Per-scope citation hygiene. The LLM sometimes cited one boundary's
+#       evidence inside another scope's narrative (e.g. an on-prem host STIG
+#       written into a cloud scope's text), misattributing evidence across the
+#       boundary seam in the stitched col-Q deliverable. The prompt now tells the
+#       model to determine each artifact's owning boundary from its own content
+#       and cite it only in that scope (shared enterprise-wide artifacts may span
+#       scopes only when their text actually covers each).
+# PROMPT_SHA already shifts from the file edits; the KERNEL_VERSION bump makes
+# the cache invalidation explicit so every cached CCI re-runs under both.
+KERNEL_VERSION = "0.12.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to

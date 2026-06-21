@@ -2485,19 +2485,12 @@ def apply_assessment_to_workbook(
     if a is None:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    # v0.2 precision-over-recall hard gate. UI's Apply-to-workbook button
-    # is disabled on needs_review rows; this 409 catches stale clients and
-    # direct curl. An abstained verdict must not silently land in the
-    # workbook — that would defeat the entire abstain mechanism.
-    if a.needs_review:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Assessment is flagged needs_review and cannot be applied to the "
-                "workbook. Resolve the review (manually edit the status/narrative "
-                "to clear the abstain) before applying."
-            ),
-        )
+    # Unconditional-write posture (owner directive 2026-06-21): a needs_review
+    # row is no longer 409'd. It is written with a BLANK Compliance Status
+    # (col N) — its narrative/date/tester land, but no unconfirmed verdict is
+    # baked into the eMASS re-import file (eMASS reads blank col N as "not
+    # assessed"). This keeps the single-row and bulk apply paths consistent.
+    apply_blank_status = bool(a.needs_review)
 
     wb = s.get(Workbook, a.workbook_id)
     if wb is None:
@@ -2518,7 +2511,9 @@ def apply_assessment_to_workbook(
         summary = ccis_writer.write_single(
             wb_path,
             excel_row=a.excel_row,
-            status=a.status,
+            # Blank col-N for an unconfirmed (needs_review) row; otherwise the
+            # assessed status. Narrative/date/tester always write.
+            status=None if apply_blank_status else a.status,
             date_tested=a.date_tested,
             tester=a.tester,
             results=a.narrative_q,
@@ -2596,13 +2591,15 @@ def apply_assessments_batch_to_workbook(
     open/save/close cycle instead of N — orders of magnitude faster on a
     50-CCI family rollup.
 
-    Precision-over-recall posture matches single-row apply but with bulk
-    semantics: ``needs_review`` rows are SILENTLY SKIPPED (not 409'd) because
-    "apply 47 of 52" is the expected outcome of a bulk operation; the
-    abstained-five just stay unwritten and surface in the returned
-    ``skipped_needs_review`` count. The UI already disables Apply on
-    needs_review rows in the per-control view, so the user has already seen
-    that gate before reaching here.
+    UNCONDITIONAL-WRITE posture (owner directive 2026-06-21): the button writes
+    the xlsx with EVERY row, every click. ``needs_review`` rows ARE written, but
+    with a BLANK Compliance Status (col N) so no unconfirmed verdict lands in the
+    eMASS re-import file (eMASS reads blank col N as "not assessed"); their
+    date/tester/narrative still write. Already-applied rows are no longer skipped
+    — re-clicking regenerates the full file, which also self-heals a deleted
+    working-copy folder. ``skipped_needs_review`` is now an INFO counter (how many
+    rows were written blank-status), not a drop count. The only true skip is a
+    row with no CCIS ``excel_row`` (non-CCIS objective), which can't be written.
     """
     wb = s.get(Workbook, body.workbook_id)
     if wb is None:
@@ -2624,33 +2621,47 @@ def apply_assessments_batch_to_workbook(
 
     candidates: list[Assessment] = list(s.exec(stmt))
 
-    # Partition into write / skip buckets so the response can explain
-    # exactly why each row was or wasn't applied. The UI toast surfaces
-    # these counters so the user knows "47 written, 3 abstained, 2 already
-    # applied" without opening Excel.
+    # Partition into write / skip buckets. UNCONDITIONAL-WRITE posture (owner
+    # directive 2026-06-21): the button must produce the xlsx with EVERY row
+    # every time — no silent skips between reassessments. The two former skips
+    # are gone:
+    #   * needs_review rows ARE written, but with a BLANK Compliance Status
+    #     (col N) so an unconfirmed verdict is never baked into the eMASS
+    #     re-import file (eMASS treats blank col N as "not assessed"). Their
+    #     date/tester/narrative still land so the row is present with context.
+    #   * already-written rows are NO LONGER skipped — re-clicking regenerates
+    #     the file in full. This also fixes the "no file after I deleted the
+    #     working-copy folder" bug: the DB stamp no longer suppresses the write,
+    #     and get_or_create_working_copy re-creates a missing file from the
+    #     original.
+    # The ONLY remaining skip is a genuinely unwritable row: no CCIS excel_row
+    # (e.g. a non-CCIS framework objective) — that can't be written anywhere.
     to_write: list[Assessment] = []
-    skipped_needs_review = 0
-    skipped_already_written = 0
+    skipped_needs_review = 0  # retained in the response as an INFO counter only
+    skipped_already_written = 0  # always 0 now; kept for response-shape stability
     skipped_no_excel_row = 0
     for a in candidates:
-        if a.needs_review:
-            skipped_needs_review += 1
-            continue
-        if body.skip_written and a.written_to_workbook_at is not None:
-            skipped_already_written += 1
-            continue
         if a.excel_row is None:
-            # Assessment was written against an Objective that never resolved
-            # to a CCIS row (e.g. SOC 1 / non-CCIS framework). Bulk-apply is
-            # CCIS-only — surface the skip rather than crashing the writer.
             skipped_no_excel_row += 1
             continue
+        if a.needs_review:
+            # Counted for the toast ("N written, M still in review") but STILL
+            # written below with a blank status.
+            skipped_needs_review += 1
         to_write.append(a)
 
+    # Always create/repair the working copy — even when there's nothing to
+    # write — so the user reliably gets a file every click. The working-copy
+    # helper re-creates the file from the original if the folder was deleted.
+    try:
+        wb_path = get_or_create_working_copy(wb, s)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=410, detail=str(e)) from e
+
     if not to_write:
-        # Nothing to do — return the diagnostics so the UI toast can say
-        # "0 written (3 abstained, 2 already applied)" instead of a generic
-        # success state that hides the no-op.
+        # No writable rows (e.g. every objective is non-CCIS). The working copy
+        # still exists/was repaired above, so the user has a file; report the
+        # no-op honestly.
         return {
             "ok": True,
             "workbook_id": body.workbook_id,
@@ -2658,24 +2669,23 @@ def apply_assessments_batch_to_workbook(
             "skipped_needs_review": skipped_needs_review,
             "skipped_already_written": skipped_already_written,
             "skipped_no_excel_row": skipped_no_excel_row,
+            "working_copy": str(wb_path),
             "summary": None,
         }
-
-    # Same working-copy redirect as the single-row endpoint — bulk writes
-    # MUST NOT touch the customer-supplied original. See
-    # excel/working_copy.py for the lazy-create / re-anchor rules.
-    try:
-        wb_path = get_or_create_working_copy(wb, s)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=410, detail=str(e)) from e
 
     writes = [
         ccis_writer.CcisWrite(
             excel_row=a.excel_row,  # type: ignore[arg-type]  -- partitioned above
-            status=a.status,
+            # needs_review rows get a BLANK status (None) so no unconfirmed
+            # verdict lands in col N; their narrative/date/tester still write.
+            status=None if a.needs_review else a.status,
             date_tested=a.date_tested,
             tester=a.tester,
             results=a.narrative_q,
+            # Pass needs_review=False so the writer's defensive inner skip
+            # (ccis_writer._build_row_cells) does NOT blank the whole row — the
+            # blank-status handling above is the intended behavior for these.
+            needs_review=False,
             rewrite_requested=getattr(a, "rewrite_requested", False),
             rewrite_requested_refs=getattr(a, "rewrite_requested_refs", None),
         )
@@ -2709,10 +2719,10 @@ def apply_assessments_batch_to_workbook(
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     # Stamp every assessment we handed to the writer. The writer's own
-    # ``skipped_needs_review`` defensive counter SHOULD be zero here because
-    # we already filtered, but if it isn't, only stamp the ones that
-    # actually wrote rows — we know that from ``summary["rows_written"]``
-    # matching ``len(to_write)`` minus the writer's defensive skips.
+    # ``skipped_needs_review`` defensive counter should be zero here because we
+    # pass needs_review=False on every CcisWrite (needs_review rows are written
+    # with a blank status, not dropped). If it's non-zero, fall back to the
+    # defensive count path below rather than over-stamping.
     writer_skipped = int(summary.get("skipped_needs_review", 0))  # type: ignore[arg-type]
     now = _utcnow()
     applied = 0

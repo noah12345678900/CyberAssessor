@@ -433,27 +433,24 @@ export function Controls() {
     onError: (err) => toast.error("Working-view export failed", humanize(err)),
   });
 
-  // Bulk "Apply all to workbook" — one xlwings session for every writable
-  // assessment that's still pending writeback. Backend silently skips
-  // needs_review rows (precision-over-recall) and already-written rows
-  // (idempotent rerun), surfacing both counters in the success toast so
-  // the user can spot the gap between "N assessed" and "M written".
-  // Respects the current family filter so the button matches what the
-  // user can see in the grid.
+  // Bulk "Apply all to workbook" — one xlwings session that writes EVERY
+  // assessed row (unconditional-write posture). needs_review rows ARE written,
+  // but with a blank Compliance Status (col N) so no unconfirmed verdict lands
+  // in the eMASS re-import file; ``skipped_needs_review`` is now an INFO count
+  // of those blank-status writes, not a drop count. The only true skip is a row
+  // with no CCIS excel_row. Respects the current family filter.
   const applyAllMut = useApplyAllToWorkbook({
     onSuccess: (r) => {
-      const skipBits: string[] = [];
+      const noteBits: string[] = [];
       if (r.skipped_needs_review > 0)
-        skipBits.push(`${r.skipped_needs_review} needs_review`);
-      if (r.skipped_already_written > 0)
-        skipBits.push(`${r.skipped_already_written} already written`);
+        noteBits.push(`${r.skipped_needs_review} written blank (needs review)`);
       if (r.skipped_no_excel_row > 0)
-        skipBits.push(`${r.skipped_no_excel_row} no excel row`);
-      const skipTail = skipBits.length > 0 ? ` · skipped ${skipBits.join(", ")}` : "";
+        noteBits.push(`${r.skipped_no_excel_row} skipped (no excel row)`);
+      const noteTail = noteBits.length > 0 ? ` · ${noteBits.join(", ")}` : "";
       const target = r.summary?.workbook ?? "";
       toast.success(
         "Workbook updated",
-        `${r.applied} row${r.applied === 1 ? "" : "s"} written${target ? ` → ${target}` : ""}${skipTail}`,
+        `${r.applied} row${r.applied === 1 ? "" : "s"} written${target ? ` → ${target}` : ""}${noteTail}`,
       );
     },
     onError: (err) => toast.error("Apply to workbook failed", humanize(err)),
@@ -642,7 +639,10 @@ export function Controls() {
           if (rollup.status) continue;
         } else if (rollup.status !== statusFilter) continue;
       }
-      const writable = rollup.total_assessed - rollup.needs_review;
+      // Unconditional-write: needs_review rows ARE written now (blank col N),
+      // so they count toward the writable total — the button writes every
+      // assessed row, not just the trusted ones.
+      const writable = rollup.total_assessed;
       if (writable > 0) n += writable;
     }
     return n;
@@ -1599,13 +1599,17 @@ export function Controls() {
                   applyAllMut.mutate({
                     workbookId,
                     family: familyFilter !== "__all__" ? familyFilter : undefined,
+                    // Explicit button = unconditional write: regenerate the
+                    // file with every row, even already-applied ones (also
+                    // self-heals a deleted working-copy folder).
+                    skipWritten: false,
                   });
                 }}
                 disabled={!workbookId}
                 title={
                   !workbookId
                     ? "Pick a workbook in the Workbook dropdown below — the export targets that workbook's assessments."
-                    : "Writes Compliance Status (col N) + Test Results (col Q) into the CCIS workbook copy in Downloads (the eMASS re-import file). One click, no prompts. Skips needs_review rows."
+                    : "Writes Compliance Status (col N) + Test Results (col Q) into the CCIS workbook copy in Downloads (the eMASS re-import file). One click, no prompts. Writes every row each time; needs_review rows get a blank status."
                 }
               >
                 <FileSpreadsheet className="h-4 w-4" />
@@ -1650,6 +1654,8 @@ export function Controls() {
               applyAllMut.mutate({
                 workbookId,
                 family: familyFilter !== "__all__" ? familyFilter : undefined,
+                // Unconditional write: every row, every click.
+                skipWritten: false,
               });
             }}
             disabled={
@@ -1659,10 +1665,10 @@ export function Controls() {
               !workbookId
                 ? "Pick a workbook in the Workbook dropdown below — bulk apply targets that workbook."
                 : writableUpperBound === 0
-                  ? "No assessed rows are ready to write. Run Assess all first, or clear the family filter to widen the scope."
+                  ? "No assessed rows yet. Run Assess all first, or clear the family filter to widen the scope."
                   : familyFilter !== "__all__"
-                    ? `Write every assessed ${familyFilter} CCI to the workbook in one pass. Silently skips needs_review and already-written rows.`
-                    : "Write every assessed CCI to the workbook in one pass. Silently skips needs_review and already-written rows."
+                    ? `Write every assessed ${familyFilter} CCI to the workbook in one pass. needs_review rows write with a blank status.`
+                    : "Write every assessed CCI to the workbook in one pass. needs_review rows write with a blank status."
             }
           >
             {applyAllMut.isPending ? (
