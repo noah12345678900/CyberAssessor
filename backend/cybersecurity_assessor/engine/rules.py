@@ -489,8 +489,13 @@ def _format_prefilled_na_narrative(row: "CcisRow") -> str:
     """
     rationale = (row.results or row.previous_results or "").strip()
     if rationale:
-        # Trim to a sentence-ish excerpt so the narrative stays tight.
-        excerpt = rationale.split("\n", 1)[0][:240]
+        # Use the first line of the assessor's rationale verbatim. We take only
+        # the first line (so a multi-paragraph col-Q/col-U entry doesn't bloat
+        # the NA narrative) but DO NOT character-truncate it — a hard [:240]
+        # cap clipped real rationales mid-word (e.g. "...PE-10 does ") in the
+        # official record. The full first line is the assessor's own words and
+        # belongs in the deliverable intact.
+        excerpt = rationale.split("\n", 1)[0].strip()
         return (
             "Not applicable — the assessor recorded a Not Applicable verdict "
             "for this control in the workbook (Compliance Status, col N); "
