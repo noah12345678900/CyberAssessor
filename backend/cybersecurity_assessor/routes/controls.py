@@ -2802,18 +2802,19 @@ def export_controls_emass(
 ) -> ControlExportResultDto:
     """Write in-scope controls into a copy of the user's eMASS template.
 
-    Copies ``template_path`` → ``output_path``, inserts a Program-Specific
-    Controls column right after Control Acronym (idempotent — re-export
-    onto the same file detects the existing header and skips the insert),
-    and writes one row per in-scope control with the multi-line status
-    rollup. Stamps ``Workbook.exported_at`` on success so the Controls
-    list header can render the "Exported <timestamp>" badge.
+    HEADLESS (openpyxl, no Excel/COM — the previous xlwings path froze on
+    the second export and corrupted the template's per-acronym formula rows).
+    Copies ``template_path`` → ``output_path``, matches each in-scope control
+    to its EXISTING row by Control Acronym, and writes the status rollup into
+    that row (never repositions rows, never overwrites the template's
+    ``=N<row>`` narrative / array-formula columns). Every in-scope control is
+    written — needs_review controls get the "Needs Review" status rather than
+    being silently dropped. Stamps ``Workbook.exported_at`` on success.
 
     Maps exporter exceptions:
       - ``Workbook`` lookup miss → 404
       - missing template / unreachable output dir → 410
-      - workbook has no Baseline → 422
-      - xlwings/Excel unavailable → 503
+      - workbook has no Baseline / template missing Acronym column → 422
     """
     try:
         result = export_controls_to_emass(
@@ -2831,9 +2832,6 @@ def export_controls_emass(
         detail = str(e)
         status = 404 if "not found" in detail.lower() else 422
         raise HTTPException(status_code=status, detail=detail) from e
-    except RuntimeError as e:
-        # xlwings raises RuntimeError when Excel isn't installed/reachable.
-        raise HTTPException(status_code=503, detail=str(e)) from e
 
     return ControlExportResultDto(
         output_path=result.output_path,
