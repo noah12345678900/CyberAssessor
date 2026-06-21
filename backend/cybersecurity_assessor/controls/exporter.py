@@ -39,6 +39,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
+from ..excel.ccis_reader import _ccis_to_oscal_control_id
 from ..models import (
     Assessment,
     Baseline,
@@ -72,7 +73,6 @@ _CONTROL_ACRONYM_HEADERS: tuple[str, ...] = (
     "control id",
     "controls / aps",
 )
-_PSC_HEADER = "Program-Specific Controls"
 
 # eMASS Controls tab — also matches the working-view templates we've seen.
 _DEFAULT_SHEET_NAME = "Controls"
@@ -532,41 +532,46 @@ def export_controls_to_emass(
 ) -> ControlExportResult:
     """Copy ``template_path`` → ``output_path``, fill the Controls tab.
 
-    1. Loads in-scope controls + objectives + CRM responsibility from
-       the workbook's primary baseline.
-    2. Computes the multi-line Status cell per ``_rollup_status``.
-    3. Inserts a "Program-Specific Controls" column right after the
-       Control Acronym column (idempotent — re-export onto the same file
-       reuses the existing column).
-    4. Writes one row per in-scope control. Stamps ``Workbook.exported_at``
-       (via ``poam`` precedent: tracked on the workbook so the UI can
-       show "last exported" alongside last-opened).
+    HEADLESS (openpyxl, no Excel/COM). The previous implementation drove
+    Excel via xlwings, which (a) FROZE on the second export — a sync route
+    runs on FastAPI's threadpool with no COM init, so the 2nd ``xw.App()``
+    in the long-lived sidecar hung — and (b) wrote controls top-down from
+    row 2, OVERWRITING the template's pre-populated, per-acronym formula
+    rows (``=N<row>`` narrative pulls, array-formula CCI/References/STIG
+    columns), which corrupted the file on re-export. This rewrite matches
+    the app's headless convention (POAM export, CCIS writer, working view).
 
-    Raises:
-        HTTPException-style errors are the caller's job to map; we raise
-        plain ``ValueError`` / ``FileNotFoundError`` / ``RuntimeError``
-        and let ``routes/controls.py`` translate.
+    Behavior:
+      1. Loads in-scope controls + objectives + CRM responsibility from
+         the workbook's primary baseline.
+      2. Matches each control to its EXISTING row in the template by
+         Control Acronym (the template ships pre-populated with one row per
+         control, each carrying its own formulas). We write ONLY the Status
+         / Program-Specific-Controls cells into that row and never reposition
+         rows — so the template's formula scaffolding stays intact and
+         re-export is stable (same control → same row every time).
+      3. NO SILENT SKIP: every in-scope control that has a template row is
+         written. Controls whose CCIs are still ``needs_review`` get the
+         "Needs Review" status bucket (via ``_rollup_status``) rather than
+         being dropped — an in-scope control silently missing from a
+         compliance deliverable is the failure mode RMF artifacts exist to
+         prevent. Controls with no matching template row are reported in
+         ``skipped`` (a template-roster mismatch the operator should know
+         about), not dropped silently.
+      4. Writes ONLY the Status column. The eMASS deliverable does not carry a
+         Program-Specific Controls column (that lives in the working view),
+         and the Implementation Narrative is pulled by the template's own
+         ``=N<row>`` formula from the CCIS workbook — so we never overwrite it.
+         If the template has no Status column we append one (reused, never
+         duplicated, on re-export).
+      5. Stamps ``Workbook.exported_at``.
+
+    Raises plain ``ValueError`` / ``FileNotFoundError``; ``routes/controls.py``
+    maps them to HTTP status codes.
     """
     import shutil
 
-    # The eMASS controls-export path still needs COM for the idempotent
-    # column-insert (xlsx_surgery exposes row-insert but not column-insert
-    # yet — column-insert has to bump every <c r="L<N>">, mergeCell, named
-    # range, defined name, and conditional-format sqref across every sheet,
-    # which we haven't built out). xlwings is now an optional dep; users
-    # who want this export path must `pip install -e .[excel]` and have
-    # Excel installed. CCIS writes and POAM export both went headless and
-    # do NOT trigger this import.
-    try:
-        import xlwings as xw
-    except ImportError as exc:  # pragma: no cover — env-dependent
-        raise RuntimeError(
-            "The eMASS controls export uses xlwings + Excel COM (for the "
-            "Program-Specific Controls column-insert). Install the `excel` "
-            "extra (`pip install -e .[excel]`) and ensure Excel is "
-            "installed locally. CCIS assessments and POAM export work "
-            "without Excel; only this controls-template path needs it."
-        ) from exc
+    import openpyxl
 
     wb = session.get(Workbook, workbook_id)
     if wb is None:
@@ -585,125 +590,82 @@ def export_controls_to_emass(
     if not src.exists():
         raise FileNotFoundError(f"Controls template not found: {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    # Idempotent re-export: operator points template_path at the previous
-    # output to refresh status rollups in place. shutil.copyfile() raises
-    # SameFileError on identical paths, so skip the copy when src == dst —
-    # the file is already at its destination and the open-modify-save pass
-    # below handles the rewrite.
+    # Idempotent re-export: operator may point template_path at the previous
+    # output to refresh in place. Skip the copy when src == dst — the
+    # open-modify-save pass below handles the rewrite.
     if not (dst.exists() and src.resolve() == dst.resolve()):
         shutil.copyfile(src, dst)
 
     pairs = _load_in_scope_controls(session, baseline)
-    control_ids = [c.id for c, _ in pairs]
-    psc_map = fetch_psc_rows_bulk(session, baseline.framework_id, control_ids)
-
-    # Only inject a Program-Specific Controls column when an overlay is
-    # actually loaded for this framework — otherwise we silently mutate
-    # the user's template by inserting an empty column and shifting any
-    # columns they added rightward. Users who don't run a PSC overlay
-    # were complaining that the export "inserts Program-Specific Controls"
-    # and blocks them from adding their own columns; gating on real
-    # content keeps the exporter a no-op on column shape for those flows.
-    # The map is keyed by control_id; if *any* control has at least one
-    # PSC row, we still need the column so the values land somewhere.
-    has_psc_overlay = any(rows for rows in psc_map.values())
 
     rows_written = 0
-    controls_with_psc = 0
     skipped: list[tuple[str, str]] = []
     warnings: list[str] = []
 
-    app = xw.App(visible=False, add_book=False)
-    try:
-        book = app.books.open(str(dst))
-        try:
-            try:
-                sh = book.sheets[sheet_name]
-            except Exception as e:  # noqa: BLE001 — xlwings raises generic Exception
-                raise ValueError(
-                    f"Template missing required sheet '{sheet_name}': {e}"
-                ) from e
+    # data_only=False (default): preserve the template's formulas (the
+    # Implementation Narrative =N<row> pulls and the array-formula
+    # CCI/References/STIG columns) so re-saving doesn't strip them. Excel
+    # recalculates them when the operator opens the file.
+    book = openpyxl.load_workbook(str(dst))
+    if sheet_name not in book.sheetnames:
+        raise ValueError(f"Template missing required sheet '{sheet_name}'")
+    sh = book[sheet_name]
 
-            # Locate header row + Control Acronym column. Templates we've
-            # seen put the header on row 1; we still scan rows 1-5 to be
-            # forgiving of banner-decorated copies.
-            header_row, acronym_col = _find_control_acronym_column(sh, warnings)
-            # PSC column is inserted only when (a) we have overlay rows to
-            # write, OR (b) the template already declares a
-            # "Program-Specific Controls" column from a prior export — in
-            # which case _ensure_psc_column finds it and returns its index
-            # without inserting. Templates without an existing PSC column
-            # and no overlay data get psc_col=None and we skip the write.
-            psc_col: int | None = None
-            if has_psc_overlay:
-                psc_col = _ensure_psc_column(
-                    sh, header_row=header_row, after_col=acronym_col
-                )
-            else:
-                psc_col = _find_existing_psc_column(sh, header_row)
+    header_row, acronym_col = _find_control_acronym_column_opx(sh, warnings)
 
-            # Data starts the row after the header.
-            data_row = header_row + 1
-            for control, bc in pairs:
-                objectives = _load_objectives_for_control(
-                    session, workbook_id, baseline, control, bc
-                )
+    # Build acronym -> row index from the template's pre-populated rows.
+    # Key on the OSCAL-normalized form (ac-2.1) so 'AC-2(1)' in the template
+    # matches Control.control_id regardless of the template's delimiter style.
+    row_by_control: dict[str, int] = {}
+    for r in range(header_row + 1, sh.max_row + 1):
+        raw = sh.cell(r, acronym_col).value
+        if raw is None:
+            continue
+        key = _ccis_to_oscal_control_id(str(raw))
+        # First occurrence wins (templates list each control once); ignore
+        # any accidental duplicates rather than letting a later blank win.
+        row_by_control.setdefault(key, r)
 
-                # Precision-over-recall gate: any objective whose row
-                # would land in the Needs Review bucket disqualifies the
-                # whole control from the eMASS export.
-                if _has_untrusted_verdict(objectives):
-                    skipped.append(
-                        (
-                            control.control_id,
-                            "needs_review verdict — clear in UI before re-exporting",
-                        )
-                    )
-                    continue
+    status_col = _find_header_col_opx(
+        sh, header_row, ("status", "compliance status", "implementation status")
+    )
+    if status_col is None:
+        # This template variant has no Status column (it's a formula-driven
+        # view). Append one so the rollup has a home — without it the export
+        # would silently write nothing meaningful, the original complaint.
+        # _find_header_col_opx scans past max_column, so a re-export finds and
+        # reuses this appended column instead of appending a duplicate.
+        status_col = sh.max_column + 1
+        sh.cell(header_row, status_col).value = "Implementation Status"
+        warnings.append(
+            "Template had no Status column; appended 'Implementation Status' "
+            "as the last column for the rollup."
+        )
 
-                status_text = _rollup_status(objectives)
-                psc_rows = psc_map.get(control.id, [])
-                psc_text = _format_psc_column(psc_rows)
-                if psc_text:
-                    controls_with_psc += 1
+    for control, bc in pairs:
+        objectives = _load_objectives_for_control(
+            session, workbook_id, baseline, control, bc
+        )
+        key = _ccis_to_oscal_control_id(control.control_id)
+        target_row = row_by_control.get(key)
+        if target_row is None:
+            # The control is in scope but the template has no row for it —
+            # a roster mismatch (e.g. template predates a control's addition).
+            # Report it so the operator can reconcile; do NOT append a bare
+            # row, which would have no formulas and look broken in eMASS.
+            skipped.append(
+                (control.control_id, "no matching row in template roster")
+            )
+            continue
 
-                # Acronym is the only guaranteed column. PSC is written
-                # only when we located/inserted a PSC column above —
-                # templates without a PSC column (and no overlay loaded)
-                # skip the write entirely so the export stays
-                # column-shape-preserving. Status / narrative columns are
-                # looked up by header text; missing column logs a
-                # one-time warning and the export continues without
-                # writing that field.
-                sh.cells(data_row, acronym_col).value = control.control_id
-                if psc_col is not None:
-                    sh.cells(data_row, psc_col).value = psc_text
+        # NO SILENT SKIP: needs_review controls are written with the
+        # "Needs Review" status bucket (via _rollup_status) so every in-scope
+        # control appears in the deliverable and the gap is visible.
+        status_text = _rollup_status(objectives)
+        sh.cell(target_row, status_col).value = status_text
+        rows_written += 1
 
-                status_col = _find_header_col(
-                    sh, header_row, ("status", "compliance status"), warnings
-                )
-                if status_col:
-                    sh.cells(data_row, status_col).value = status_text
-
-                narrative_col = _find_header_col(
-                    sh,
-                    header_row,
-                    ("narrative", "implementation narrative", "control narrative"),
-                    warnings,
-                )
-                if narrative_col:
-                    sh.cells(data_row, narrative_col).value = (
-                        _rollup_narrative(objectives)
-                    )
-
-                data_row += 1
-                rows_written += 1
-
-            book.save()
-        finally:
-            book.close()
-    finally:
-        app.quit()
+    book.save(str(dst))
 
     wb.exported_at = _utcnow()
     session.add(wb)
@@ -712,56 +674,31 @@ def export_controls_to_emass(
     return ControlExportResult(
         output_path=str(dst),
         rows_written=rows_written,
-        controls_with_psc=controls_with_psc,
+        # PSC column intentionally not written to the eMASS deliverable.
+        controls_with_psc=0,
         skipped=skipped,
         template_warnings=warnings,
     )
 
 
-def _has_untrusted_verdict(objectives: list[ObjectiveAssessment]) -> bool:
-    """Any needs_review row keeps the control out of the eMASS export."""
-    return any(o.needs_review for o in objectives)
-
-
-def _rollup_narrative(objectives: list[ObjectiveAssessment]) -> str:
-    """Concatenate per-objective narratives for the Narrative column.
-
-    Single-objective controls emit just the narrative; multi-objective
-    controls prefix each non-empty narrative with its objective code so
-    the eMASS reviewer can trace verdicts back to CCIs.
-    """
-    if not objectives:
-        return ""
-    if len(objectives) == 1:
-        return (objectives[0].narrative_q or "").strip()
-    parts: list[str] = []
-    for oa in objectives:
-        n = (oa.narrative_q or "").strip()
-        if not n:
-            continue
-        parts.append(f"{oa.objective_code}: {n}")
-    return "\n\n".join(parts)
-
-
 # ---------------------------------------------------------------------------
-# eMASS template helpers (column discovery + idempotent PSC insert)
+# eMASS template helpers — openpyxl (headless) column discovery
 # ---------------------------------------------------------------------------
 
 
-def _find_control_acronym_column(sh, warnings: list[str]) -> tuple[int, int]:
-    """Scan rows 1-5 for the header row containing a Control Acronym
-    column. Returns ``(header_row, col_1based)``.
+def _find_control_acronym_column_opx(sh, warnings: list[str]) -> tuple[int, int]:
+    """openpyxl twin of the acronym-column finder.
 
-    Raises ``ValueError`` if no recognizable header is found — the
-    template is too far off-spec to write into safely.
+    Scans rows 1-5 for the header row containing a Control Acronym column.
+    Returns ``(header_row, col_1based)``. Raises ``ValueError`` if no
+    recognizable header is found.
     """
     for header_row in range(1, 6):
-        col = _find_header_col(sh, header_row, _CONTROL_ACRONYM_HEADERS, warnings=None)
+        col = _find_header_col_opx(sh, header_row, _CONTROL_ACRONYM_HEADERS)
         if col:
             if header_row != 1:
                 warnings.append(
-                    f"Header row detected at row {header_row} (not row 1); "
-                    "data will be written starting at the next row."
+                    f"Header row detected at row {header_row} (not row 1)."
                 )
             return header_row, col
     raise ValueError(
@@ -770,35 +707,24 @@ def _find_control_acronym_column(sh, warnings: list[str]) -> tuple[int, int]:
     )
 
 
-def _find_header_col(
-    sh,
-    header_row: int,
-    candidates: tuple[str, ...],
-    warnings: list[str] | None,
+def _find_header_col_opx(
+    sh, header_row: int, candidates: tuple[str, ...]
 ) -> int | None:
-    """Case-insensitive header lookup across the candidate phrases.
+    """openpyxl twin of ``_find_header_col``. Case/whitespace-insensitive
+    header lookup across candidate phrases.
 
-    Header cells in real-world templates often contain embedded whitespace
-    (e.g. ``'Control \\nAcronym'`` in the enterprise services template, or
-    ``'COMMON  CONTROL'`` with a double space). ``_norm`` collapses all
-    interior whitespace runs to a single space before comparing so cosmetic
-    line-wrap formatting in the header doesn't break header discovery.
-
-    Scans up to 100 columns. None if no header matches — logs a one-time
-    warning (when ``warnings`` is not None) so the export modal can show
-    "Status column not found, status rollup not written."
+    Scans the full used width (``max_column``, +8 slack for columns we may
+    have appended on a prior export — e.g. a previously-appended status or
+    PSC column. A fixed cap would miss those on re-export and append a
+    DUPLICATE column each run.)
     """
     candidates_norm = {_norm_header(c) for c in candidates}
-    for col in range(1, 101):
-        v = sh.cells(header_row, col).value
+    for col in range(1, sh.max_column + 9):
+        v = sh.cell(header_row, col).value
         if not v:
             continue
         if _norm_header(str(v)) in candidates_norm:
             return col
-    if warnings is not None:
-        warnings.append(
-            f"Header column for '{candidates[0]}' not found; skipping that field."
-        )
     return None
 
 
@@ -810,53 +736,6 @@ def _norm_header(s: str) -> str:
     run of whitespace — including embedded newlines — to a single space.
     """
     return " ".join(str(s).split()).lower()
-
-
-def _find_existing_psc_column(sh, header_row: int) -> int | None:
-    """Return the 1-based column index of an existing PSC header, or None.
-
-    Read-only twin of ``_ensure_psc_column``: looks for a column whose
-    header already reads "Program-Specific Controls" but never inserts.
-    Used by the eMASS export to detect "user has a PSC column from a
-    prior export — keep writing into it" without forcing the column on
-    templates that don't carry one.
-    """
-    existing_norm = _norm_header(_PSC_HEADER)
-    for col in range(1, 101):
-        v = sh.cells(header_row, col).value
-        if v and _norm_header(str(v)) == existing_norm:
-            return col
-    return None
-
-
-def _ensure_psc_column(sh, header_row: int, after_col: int) -> int:
-    """Return the 1-based column index of the PSC column.
-
-    Idempotent:
-      - If a column header already reads "Program-Specific Controls"
-        (case-insensitive), return its index without inserting.
-      - Otherwise insert a new column at ``after_col + 1``, write the
-        header, and return that index.
-
-    Insert is via Excel COM (``EntireColumn.Insert``) because xlwings
-    has no native insert-column API. Existing data validation and
-    column widths shift right with the insert — that's Excel's default
-    behavior and the desired one here.
-
-    Only call this when there is real PSC content to write — for the
-    "no PSC overlay loaded" path use ``_find_existing_psc_column``
-    instead so we don't silently mutate the user's template.
-    """
-    existing = _find_existing_psc_column(sh, header_row)
-    if existing is not None:
-        return existing
-
-    insert_at = after_col + 1
-    # xlwings exposes the COM Range object via .api; Insert shifts the
-    # existing column at insert_at to the right.
-    sh.range((1, insert_at)).api.EntireColumn.Insert()
-    sh.cells(header_row, insert_at).value = _PSC_HEADER
-    return insert_at
 
 
 # ---------------------------------------------------------------------------

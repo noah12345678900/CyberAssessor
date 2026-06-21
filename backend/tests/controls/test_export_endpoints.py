@@ -1,10 +1,7 @@
 """Endpoint tests for /api/controls/export/{emass,working}.
 
-The eMASS endpoint requires Excel (xlwings), so the happy-path test is
-gated behind ``requires_excel``. Validation / 404 / 422 paths run on any
-machine because they fail before xlwings is touched.
-
-The working endpoint uses openpyxl — full happy-path coverage here.
+Both endpoints are headless (openpyxl) — the eMASS path was migrated off
+xlwings/COM, so the happy-path tests run in CI without Excel.
 """
 
 from __future__ import annotations
@@ -117,8 +114,8 @@ class TestWorkingEndpoint:
 
 class TestEmassEndpointValidation:
     def test_missing_template_410(self, client, controls_catalog, tmp_path):
-        """A bogus template_path bails with FileNotFoundError before
-        xlwings is imported — mapped to 410 (Gone) per the routes layer."""
+        """A bogus template_path bails with FileNotFoundError —
+        mapped to 410 (Gone) per the routes layer."""
         resp = client.post(
             "/api/controls/export/emass",
             json={
@@ -155,18 +152,16 @@ class TestEmassEndpointValidation:
 
 
 # ---------------------------------------------------------------------------
-# /export/emass — full path requires Excel
+# /export/emass — full path (headless openpyxl, runs in CI)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.requires_excel
 class TestEmassEndpointHappyPath:
     def test_returns_dto_and_stamps_exported_at(
         self, client, session, controls_catalog, assess, tmp_path
     ):
-        """The eMASS endpoint must (a) write the xlsx via xlwings and
-        (b) stamp Workbook.exported_at so the UI's "Last exported"
-        badge refreshes."""
+        """The eMASS endpoint writes the xlsx headlessly and stamps
+        Workbook.exported_at so the UI's "Last exported" badge refreshes."""
         from cybersecurity_assessor.models import Workbook
         from openpyxl import Workbook as PyXlWorkbook
 
@@ -175,8 +170,8 @@ class TestEmassEndpointHappyPath:
         assess(wb_id, objs["CCI-000015"].id, ComplianceStatus.COMPLIANT)
         assess(wb_id, objs["CCI-000016"].id, ComplianceStatus.COMPLIANT)
 
-        # Build a minimal template the exporter can parse: one sheet
-        # named "Controls" with a "Control Acronym" header at row 1.
+        # Template pre-populated with one row per control (the shape the
+        # row-match exporter expects), header at row 1.
         tpl = tmp_path / "tpl.xlsx"
         pwb = PyXlWorkbook()
         ws = pwb.active
@@ -184,6 +179,8 @@ class TestEmassEndpointHappyPath:
         ws.cell(1, 1, "Control Acronym")
         ws.cell(1, 2, "Status")
         ws.cell(1, 3, "Narrative")
+        for i, acr in enumerate(("AC-2", "AC-3", "AC-4", "AC-5"), start=2):
+            ws.cell(i, 1, acr)
         pwb.save(str(tpl))
 
         out_path = tmp_path / "emass_out.xlsx"
@@ -197,9 +194,9 @@ class TestEmassEndpointHappyPath:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        # AC-5 has needs_review=False here (we didn't seed it) so all 4
-        # controls land. AC-4 inherits via CRM (no needs_review).
-        assert body["rows_written"] >= 2
+        # All 4 in-scope controls land (no silent skip), matched to their rows.
+        assert body["rows_written"] == 4
+        assert body["skipped"] == []
         assert out_path.exists()
 
         # exported_at stamped.

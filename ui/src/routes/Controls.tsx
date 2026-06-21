@@ -824,6 +824,9 @@ export function Controls() {
         "cci_status",
         "cci_tester",
         "cci_date_tested",
+        "cci_narrative",
+        "cci_narrative_on_prem",
+        "cci_narrative_cloud",
         "cci_excel_row",
       ];
 
@@ -880,7 +883,7 @@ export function Controls() {
           // Control has no CCIs mapped (DISA CCI overlay not loaded, or a
           // bespoke framework). Still emit the control row so the export
           // doesn't silently drop it — CCI + req + assessment columns stay
-          // blank (3 req cols + 4 assessment cols = 7 trailing empties).
+          // blank (3 cci + 3 req + 7 assessment cols = 13 trailing empties).
           controlsWithNoCcis += 1;
           lines.push(
             [
@@ -894,6 +897,9 @@ export function Controls() {
               "", // cci_status
               "", // cci_tester
               "", // cci_date_tested
+              "", // cci_narrative
+              "", // cci_narrative_on_prem
+              "", // cci_narrative_cloud
               "", // cci_excel_row
             ]
               .map(esc)
@@ -925,6 +931,9 @@ export function Controls() {
                 a?.status ?? "",
                 a?.tester ?? "",
                 a?.date_tested ?? "",
+                a?.narrative_q ?? "",
+                a?.narrative_on_prem ?? "",
+                a?.narrative_cloud ?? "",
                 a?.excel_row ?? "",
               ]
                 .map(esc)
@@ -945,6 +954,9 @@ export function Controls() {
                   a?.status ?? "",
                   a?.tester ?? "",
                   a?.date_tested ?? "",
+                  a?.narrative_q ?? "",
+                  a?.narrative_on_prem ?? "",
+                  a?.narrative_cloud ?? "",
                   a?.excel_row ?? "",
                 ]
                   .map(esc)
