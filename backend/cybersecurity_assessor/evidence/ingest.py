@@ -264,15 +264,39 @@ def _title_fallback(name: str) -> str:
     return PurePosixPath(name).stem or name
 
 
+def _looks_like_ip(token: str) -> bool:
+    """True if ``token`` parses as an IPv4 or IPv6 address.
+
+    Used to suppress dot-domain stripping for IP literals — the dots in
+    ``172.20.8.86`` are address octets, not a DNS suffix. Kept local to
+    this module (mirrors the same helper in asset_crosscheck) to avoid an
+    import cycle, per the duplication note on the suffix allowlists.
+    """
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(token.strip())
+        return True
+    except ValueError:
+        return False
+
+
 def _normalize_host(name: str) -> str:
     """Same normalization rule asset_crosscheck applies at query time.
 
     Lowercase + strip dot-domain suffix so a CKL ``Server01.dom.mil`` and
     an HW/SW row ``server01`` collapse to the same key. Empty / whitespace
     input returns empty string (caller filters).
+
+    IP guard: an IPv4/IPv6 literal is returned whole — the dots in an
+    address are NOT a domain suffix. Without this, ``172.20.8.86`` was
+    truncated to ``172`` and every scanned IP in a Nessus/ACAS subnet
+    sweep collapsed to a single bogus "172" host (Asset Coverage showed
+    "1 host"). Mirror the same guard in ``asset_crosscheck._normalize`` so
+    ingest-time and query-time keys stay identical.
     """
     n = (name or "").strip().lower()
-    if "." in n:
+    if "." in n and not _looks_like_ip(n):
         n = n.split(".", 1)[0]
     return n
 
@@ -366,6 +390,90 @@ def _build_tagger_llm() -> tuple[Any | None, str | None]:
         return None, None
 
 
+def _vision_enabled() -> bool:
+    """Whether the per-image vision describe step should run (config gate)."""
+    try:
+        return bool(getattr(load_config(), "vision_enabled", True))
+    except Exception:  # pragma: no cover - never let config wedge an ingest
+        return True
+
+
+# Map image suffixes → the media_type the vision API expects.
+_VISION_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+}
+
+
+def _apply_vision(
+    doc: ExtractedDoc,
+    source_file: SourceFile,
+    name: str,
+    client: Any,
+) -> ExtractedDoc:
+    """Augment an IMAGE doc's text with a vision description (OCR kept).
+
+    The OCR text (from the image extractor) is preserved verbatim — both in the
+    combined ``text`` under an ``[ocr]`` section AND in ``metadata["ocr_verbatim"]``
+    — while the vision description is the PRIMARY tagging text under ``[vision]``.
+
+    Why keep OCR separately: a VLM paraphrase can flip ``enforcing``/``permissive``
+    or an IP octet, so it must never be QUOTED to a 3PAO. The ``ocr_verbatim``
+    key is the clean citation surface for a future narrative-validator rule
+    ("any quoted string must appear in OCR text"). That validator rule is NOT
+    yet implemented — today the key is forward-looking provenance, and the OCR
+    text is in any case still present in ``text`` so nothing is lost. Persisting
+    it now means the validator can be added later without re-ingesting.
+
+    Best-effort: any failure leaves ``doc`` exactly as OCR produced it (degrade
+    to OCR-only, never abort the ingest).
+    """
+    suffix = PurePosixPath(name).suffix.lower()
+    media_type = _VISION_MEDIA_TYPES.get(suffix)
+    if media_type is None:
+        return doc
+    try:
+        with source_file.open() as stream:
+            raw = stream.read()
+    except Exception:  # noqa: BLE001
+        return doc
+    description = ""
+    try:
+        # Deliberately uses the client's MAIN model (Opus), not the judge
+        # model: describing a pure-graphics screenshot accurately is a
+        # reasoning-heavy vision task where model strength matters, and the
+        # step is gated to images only (bounded volume) — accuracy over cost,
+        # consistent with the owner's "best final product" directive. (The
+        # text-only HyDE/judge hops use the cheaper judge model.)
+        description = client.describe_image(raw, media_type=media_type) or ""
+    except Exception:  # noqa: BLE001 — degrade to OCR-only
+        log.debug("vision describe failed for %s; OCR-only", name, exc_info=True)
+        return doc
+    if not description.strip():
+        return doc
+    ocr_text = doc.text or ""
+    new_meta = dict(doc.metadata or {})
+    new_meta["vision"] = True
+    # Preserve the OCR body verbatim for citation enforcement.
+    new_meta["ocr_verbatim"] = ocr_text
+    combined = f"[vision] {description}"
+    if ocr_text.strip():
+        combined += f"\n\n[ocr] {ocr_text}"
+    return ExtractedDoc(
+        text=combined,
+        title=doc.title,
+        doc_number=doc.doc_number,
+        kind=doc.kind,
+        metadata=new_meta,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -430,6 +538,13 @@ def ingest_source(
     # construction fails (no key, offline), tag_evidence falls back to the
     # deterministic TF-IDF Tier 5 — so a missing client never aborts an ingest.
     tagger_client, tagger_judge_model = _build_tagger_llm()
+    # Resolve the vision + corpus-augmentation gates ONCE for the whole walk
+    # (config knobs, not per-file properties).
+    vision_on = _vision_enabled()
+    try:
+        augment_corpus_on = bool(getattr(load_config(), "corpus_augmentation_enabled", True))
+    except Exception:  # pragma: no cover - never let config wedge an ingest
+        augment_corpus_on = True
 
     # Resolve the per-file text byte-cap ONCE for the whole walk. The cap is a
     # process-wide config knob, not a per-file property, so re-reading it inside
@@ -559,6 +674,19 @@ def ingest_source(
                 metadata={"unexpected_error": f"{type(exc).__name__}: {exc}"},
             )
             summary.errors.append({"path": uri, "error": f"unexpected: {exc}"})
+
+        # Vision augmentation for images (2026-06-22). Every IMAGE gets a
+        # multimodal description in addition to OCR when a client is available
+        # and the gate is on — fixes pure-graphics screenshots that OCR can't
+        # read AND raises tagging quality on OCR label-soup. OCR text is kept
+        # verbatim in metadata for citation. Gated identically to the tagger
+        # client (offline/disabled → OCR-only, unchanged).
+        if (
+            doc.kind == EvidenceKind.IMAGE
+            and tagger_client is not None
+            and vision_on
+        ):
+            doc = _apply_vision(doc, sf, name, tagger_client)
 
         size_bytes = sf.size if sf.size is not None else 0
 
@@ -695,6 +823,7 @@ def ingest_source(
                 framework_id=framework_id,
                 client=tagger_client,
                 judge_model=tagger_judge_model,
+                augment_corpus=augment_corpus_on,
             )
             summary.tags_created += tag_result.tags_created
             # Verdict-neutral gate metrics (see IngestSummary docstring).

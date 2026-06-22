@@ -1,0 +1,33 @@
+{
+  "name": "recall_auditd_rules_maps_au",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 02.AU/: a script(1) capture of `auditctl -l` and `systemctl status auditd`. Audit record generation and the auditd rule set is AU-2 (Audit Events) and AU-12 (Audit Generation). Body has NO control ID / CCI / doc number; auditd syscall-rule vocabulary ('-w /etc/passwd -p wa -k identity', '-a always,exit') has near-zero overlap with 'audit events' / 'audit generation'. Current tagger → zero tags. Distractor AU-9 (protection of audit info) present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "au-2", "title": "Audit Events", "family": "AU"},
+      {"control_id": "au-12", "title": "Audit Generation", "family": "AU"},
+      {"control_id": "au-9", "title": "Protection of Audit Information", "family": "AU"}
+    ],
+    "objectives": [
+      {"control_id": "au-2", "objective_id": "CCI-000130", "text": "The information system generates audit records for the events the organization determines to be auditable.", "implementation_guidance": "Configure the audit subsystem to capture defined auditable events.", "assessment_procedures": "Examine the list of audited events."},
+      {"control_id": "au-12", "objective_id": "CCI-000169", "text": "The information system provides audit record generation capability for the auditable events at all information system components where audit capability is deployed.", "implementation_guidance": "Enable the audit daemon on all in-scope hosts.", "assessment_procedures": "Examine the audit generation capability."},
+      {"control_id": "au-9", "objective_id": "CCI-000162", "text": "The information system protects audit information from unauthorized access, modification, and deletion.", "implementation_guidance": "Restrict permissions on audit logs.", "assessment_procedures": "Examine audit log permissions."}
+    ]
+  },
+  "evidence": {
+    "filename": "auditd_rules.txt",
+    "title": "auditd rule set capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-08 09:00:00-0500\n[root@app01 ~]# systemctl status auditd --no-pager\n  auditd.service - Security Auditing Service\n     Active: active (running) since Mon 2026-03-02 06:14:55 EST\n[root@app01 ~]# auditctl -l\n-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity\n-w /etc/sudoers -p wa -k scope\n-a always,exit -F arch=b64 -S execve -k exec\n-a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time-change\n-w /var/log/lastlog -p wa -k logins\n[root@app01 ~]# auditctl -s\nenabled 2\nfailure 1\nbacklog_limit 8192\n[root@app01 ~]# exit\nScript done on 2026-03-08 09:01:33-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000130"},
+      {"objective_id": "CCI-000169"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000162"}
+    ]
+  }
+}

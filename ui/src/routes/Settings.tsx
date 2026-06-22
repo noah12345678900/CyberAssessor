@@ -821,7 +821,7 @@ function DefaultsCard({
             <Input
               value={aModel}
               onChange={(e) => setAModel(e.target.value)}
-              placeholder="claude-opus-4-6"
+              placeholder="claude-4-8-opus"
               disabled={loading}
             />
           )}

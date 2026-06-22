@@ -559,3 +559,180 @@ def test_image_extractor_degrades_when_convert_raises(tmp_path, monkeypatch):
     assert doc.kind == EvidenceKind.IMAGE
     # OCR ran (available) but produced nothing usable -> found-no-text marker.
     assert "ocr found no text" in doc.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# .json + .pcap/.pcapng support (Bug C)
+# ---------------------------------------------------------------------------
+
+
+def test_infer_kind_json_and_pcap():
+    assert infer_kind(Path("config.json")) == EvidenceKind.TEXT
+    assert infer_kind(Path("cap.pcap")) == EvidenceKind.PCAP
+    assert infer_kind(Path("cap.pcapng")) == EvidenceKind.PCAP
+    assert infer_kind(Path("cap.cap")) == EvidenceKind.PCAP
+    # .arf drift fix: zip allowlist + dispatcher both know it.
+    assert infer_kind(Path("scan.arf")) == EvidenceKind.STIG_XCCDF
+
+
+def test_json_extractor_prettyprints_for_tokenization(tmp_path):
+    from cybersecurity_assessor.evidence.extractors import extract_path
+
+    p = tmp_path / "selinux.json"
+    p.write_text('{"selinux":"enforcing","fips":true}', encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.TEXT
+    # Minified input becomes multi-line so keys/values tokenize.
+    assert "selinux" in doc.text and "enforcing" in doc.text
+    assert "\n" in doc.text  # pretty-printed, not one line
+
+
+def test_json_extractor_invalid_json_falls_back_to_raw(tmp_path):
+    from cybersecurity_assessor.evidence.extractors import extract_path
+
+    p = tmp_path / "broken.json"
+    p.write_text("not valid json {", encoding="utf-8")
+    doc = extract_path(p)
+    assert "not valid json" in doc.text  # raw text preserved
+
+
+def _synth_classic_pcap() -> bytes:
+    import socket
+    import struct
+
+    eth = b"\xaa" * 6 + b"\xbb" * 6 + struct.pack("!H", 0x0800)
+    ip = (
+        bytes([0x45, 0, 0, 40])
+        + b"\x00" * 5
+        + bytes([6])
+        + b"\x00\x00"
+        + socket.inet_aton("172.20.8.86")
+        + socket.inet_aton("10.0.0.5")
+    )
+    tcp = struct.pack("!HH", 51000, 443) + b"\x00" * 16
+    pkt = eth + ip + tcp
+    gh = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+    rec = struct.pack("<IIII", 1700000000, 0, len(pkt), len(pkt)) + pkt
+    return gh + rec
+
+
+def _synth_pcapng() -> bytes:
+    import socket
+    import struct
+
+    def blk(btype, body):
+        body = body + b"\x00" * ((-len(body)) % 4)
+        total = 12 + len(body)
+        return struct.pack("<II", btype, total) + body + struct.pack("<I", total)
+
+    eth = b"\xaa" * 6 + b"\xbb" * 6 + struct.pack("!H", 0x0800)
+    ip = (
+        bytes([0x45, 0, 0, 40])
+        + b"\x00" * 5
+        + bytes([6])
+        + b"\x00\x00"
+        + socket.inet_aton("172.20.4.9")
+        + socket.inet_aton("10.0.0.5")
+    )
+    tcp = struct.pack("!HH", 5000, 80) + b"\x00" * 16
+    pkt = eth + ip + tcp
+    shb = blk(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))
+    idb = blk(0x00000001, struct.pack("<HHI", 1, 0, 65535))
+    epb = blk(0x00000006, struct.pack("<IIIII", 0, 0, 0, len(pkt), len(pkt)) + pkt)
+    return shb + idb + epb
+
+
+def test_pcap_classic_digest(tmp_path):
+    from cybersecurity_assessor.evidence.extractors import extract_path
+
+    p = tmp_path / "classic.pcap"
+    p.write_bytes(_synth_classic_pcap())
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.PCAP
+    assert "libpcap (classic)" in doc.text
+    assert "172.20.8.86" in doc.text  # talker preserved (IP not truncated)
+    assert "443" in doc.text  # dst port
+    assert "TCP" in doc.text
+
+
+def test_pcapng_digest(tmp_path):
+    from cybersecurity_assessor.evidence.extractors import extract_path
+
+    p = tmp_path / "modern.pcapng"
+    p.write_bytes(_synth_pcapng())
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.PCAP
+    assert "pcapng" in doc.text
+    assert "172.20.4.9" in doc.text
+    assert "80" in doc.text
+    assert "TCP" in doc.text
+
+
+# ---------------------------------------------------------------------------
+# Drift-guard tests (the .arf drift + IP-guard duplication proved these
+# hand-maintained parallel structures DO drift — pin them so they can't again)
+# ---------------------------------------------------------------------------
+
+
+def test_suffix_allowlists_stay_in_sync():
+    """The three hand-maintained suffix tables must agree.
+
+    `_KIND_BY_SUFFIX` (dispatcher), local-folder allowlist, and zip-source
+    allowlist are separate copies (deliberately, to avoid an import cycle).
+    The `.arf`-missing-from-zip drift proves they fall out of sync silently.
+    Every ingestible suffix must have a kind mapping, and the two walker
+    allowlists must be identical.
+    """
+    from cybersecurity_assessor.evidence.extractors.dispatcher import _KIND_BY_SUFFIX
+    from cybersecurity_assessor.evidence.sources.local import (
+        _INGESTIBLE_SUFFIXES as local_set,
+    )
+    from cybersecurity_assessor.evidence.sources.zip_source import (
+        _INGESTIBLE_SUFFIXES as zip_set,
+    )
+
+    # The two walkers admit the exact same suffix set.
+    assert local_set == zip_set, (
+        f"walker allowlists drifted: only-local={local_set - zip_set}, "
+        f"only-zip={zip_set - local_set}"
+    )
+    # Every admitted suffix has a kind mapping (so it doesn't fall to OTHER).
+    kinds = set(_KIND_BY_SUFFIX)
+    missing_kind = local_set - kinds
+    assert not missing_kind, f"suffixes with no kind mapping: {missing_kind}"
+
+
+def test_ip_guard_normalizers_agree():
+    """ingest._normalize_host and asset_crosscheck._normalize must be identical.
+
+    They run at ingest-time and query-time respectively; if their IP guard
+    diverges, host keys won't join (the 172.20.8.86 -> 172 bug). Pin agreement
+    across IPs, FQDNs, plain hostnames, and edge cases.
+    """
+    from cybersecurity_assessor.evidence.asset_crosscheck import _normalize
+    from cybersecurity_assessor.evidence.ingest import _normalize_host
+
+    for h in (
+        "172.20.8.86", "10.0.0.5", "192.168.1.1", "fe80::1", "::1",
+        "Server01.dom.mil", "PaaS-VDI-01.sda-es.internal", "host", "HOST",
+        "", "   ", "weird.name.with.dots",
+    ):
+        assert _normalize(h) == _normalize_host(h), f"divergence on {h!r}"
+
+
+def test_control_family_gloss_terms_are_family_exclusive():
+    """No gloss term may appear in two families' glosses.
+
+    A cross-family term erodes TF-IDF discrimination and causes control
+    cross-tagging as the catalog grows. The reviewer found aide/baseline/
+    yum dnf/scap oscap/vulnerability duplicated; this pins that they (and any
+    future addition) stay family-exclusive.
+    """
+    from cybersecurity_assessor.evidence.tagger import _CONTROL_FAMILY_GLOSS
+
+    term_to_families: dict[str, set[str]] = {}
+    for fam, gloss in _CONTROL_FAMILY_GLOSS.items():
+        for term in gloss.split():
+            term_to_families.setdefault(term, set()).add(fam)
+    dupes = {t: sorted(f) for t, f in term_to_families.items() if len(f) > 1}
+    assert not dupes, f"cross-family gloss terms (cause cross-tagging): {dupes}"

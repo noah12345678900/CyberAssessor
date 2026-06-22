@@ -1,0 +1,33 @@
+{
+  "name": "recall_vault_seal_maps_sc28",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 10.SC/: a script(1) capture of `vault status` showing a sealed/auto-unseal HashiCorp Vault. Encrypted secret storage at rest is SC-28 (Protection of Information at Rest); the seal/unseal key management is SC-12 (Cryptographic Key Establishment and Management). Body has NO control ID / CCI / doc number; Vault vocabulary ('Sealed false', 'Seal Type awskms', 'Unseal Progress') has near-zero overlap with 'protection of information at rest'. Current tagger → zero tags. Distractor IA-5 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "sc-28", "title": "Protection of Information at Rest", "family": "SC"},
+      {"control_id": "sc-12", "title": "Cryptographic Key Establishment and Management", "family": "SC"},
+      {"control_id": "ia-5", "title": "Authenticator Management", "family": "IA"}
+    ],
+    "objectives": [
+      {"control_id": "sc-28", "objective_id": "CCI-001199", "text": "The information system protects the confidentiality and integrity of information at rest.", "implementation_guidance": "Encrypt stored secrets and sensitive data at rest.", "assessment_procedures": "Examine the at-rest encryption configuration."},
+      {"control_id": "sc-12", "objective_id": "CCI-001199b", "text": "The organization establishes and manages cryptographic keys for required cryptography employed within the information system.", "implementation_guidance": "Manage key establishment, storage, and rotation.", "assessment_procedures": "Examine cryptographic key management."},
+      {"control_id": "ia-5", "objective_id": "CCI-000192", "text": "The information system enforces password complexity.", "implementation_guidance": "Configure password policy.", "assessment_procedures": "Examine the password policy."}
+    ]
+  },
+  "evidence": {
+    "filename": "vault_status.txt",
+    "title": "Vault seal status capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-11 10:15:00-0500\n[root@app01 ~]# vault status\nKey                      Value\n---                      -----\nSeal Type                awskms\nRecovery Seal Type       shamir\nInitialized              true\nSealed                   false\nTotal Recovery Shares    5\nThreshold                3\nVersion                  1.15.2\nStorage Type             raft\nHA Enabled               true\nHA Mode                  active\n[root@app01 ~]# vault secrets list\nPath          Type         Description\n----          ----         -----------\nkv/           kv           key/value store\ntransit/      transit      encryption as a service\n[root@app01 ~]# exit\nScript done on 2026-03-11 10:15:39-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-001199"},
+      {"objective_id": "CCI-001199b"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000192"}
+    ]
+  }
+}

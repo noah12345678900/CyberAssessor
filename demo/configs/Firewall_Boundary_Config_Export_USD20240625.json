@@ -1,0 +1,49 @@
+{
+  "_control_reference": "SC-7 boundary protection; CCI-001097",
+  "system": "example-system-demo-ws01.demo.local",
+  "host_ip": "10.10.5.21",
+  "firewall": {
+    "engine": "firewalld",
+    "default_zone": "drop",
+    "panic_mode": false,
+    "zones": [
+      {
+        "name": "public",
+        "interfaces": [
+          "eth0"
+        ],
+        "target": "DROP",
+        "services": [
+          "https"
+        ],
+        "ports": [
+          "443/tcp"
+        ],
+        "description": "Internet-facing boundary; deny-by-default."
+      },
+      {
+        "name": "internal",
+        "interfaces": [
+          "eth1"
+        ],
+        "target": "default",
+        "services": [
+          "ssh",
+          "ntp"
+        ],
+        "ports": [
+          "22/tcp"
+        ],
+        "source_subnets": [
+          "10.10.5.0/24"
+        ]
+      }
+    ],
+    "logging": {
+      "denied_packets": "all",
+      "forward_to": "siem-collector"
+    }
+  },
+  "managed_interface_deny_all": true,
+  "notes": "Boundary protection enforced at the managed interface; deny-all default with explicit allow-list per SC-7."
+}

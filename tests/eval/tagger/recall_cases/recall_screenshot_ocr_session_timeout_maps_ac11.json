@@ -1,0 +1,30 @@
+{
+  "name": "recall_screenshot_ocr_session_timeout_maps_ac11",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file: a GUI screenshot (.png) of a Windows Group Policy / screensaver lock dialog, run through OCR. Session lock after inactivity is AC-11 (Session Lock). Modeled as a TEXT-kind evidence row holding the OCR transcript (the screenshot itself is image; OCR text is what the tagger sees). The OCR text is short, label-fragmented ('Screen saver', 'Wait: 15 minutes', 'On resume, display logon screen'), carries OCR noise, names NO control ID / CCI / doc number, and has near-zero overlap with 'session lock'. Also too few distinct tokens to clear the Tier-5 body-token floor. Current tagger → zero tags. Distractor AC-7 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-11", "title": "Session Lock", "family": "AC"},
+      {"control_id": "ac-7", "title": "Unsuccessful Logon Attempts", "family": "AC"}
+    ],
+    "objectives": [
+      {"control_id": "ac-11", "objective_id": "CCI-000057", "text": "The information system prevents further access to the system by initiating a session lock after a defined time period of inactivity.", "implementation_guidance": "Configure an inactivity timeout that locks the session.", "assessment_procedures": "Examine the session lock configuration."},
+      {"control_id": "ac-7", "objective_id": "CCI-000044", "text": "The information system enforces a limit of consecutive invalid logon attempts.", "implementation_guidance": "Lock accounts after failed logons.", "assessment_procedures": "Examine the lockout configuration."}
+    ]
+  },
+  "evidence": {
+    "filename": "gpo_screensaver_lock.png",
+    "title": "Screensaver lock GPO screenshot (OCR)",
+    "kind": "image",
+    "text": "Screen Saver Settings\nScreen saver\n(None)  Ribbons  v\nWait: 15 minutes\nOn resume, display logon screen\nPower management\nApply  OK  Cancel\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000057"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000044"}
+    ]
+  }
+}

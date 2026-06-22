@@ -15,8 +15,9 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Union
 from urllib.parse import unquote, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from ..catalogs.crosswalk_resolver import (
@@ -306,9 +307,18 @@ def list_evidence(
     asset_id: int | None = None,
     boundary_id: int | None = None,
     limit: int = 3000,
+    offset: int = 0,
+    response: Response = None,  # type: ignore[assignment]  # injected by FastAPI
     s: Session = Depends(get_session),
 ) -> list[dict]:
     """List recently ingested evidence.
+
+    Pagination (added for the Evidence page, which previously showed only a
+    truncated window): ``offset`` + ``limit`` page the ``ingested_at DESC``
+    ordering. The TOTAL matching-row count (pre-limit) is returned in the
+    ``X-Total-Count`` response header so the UI can render "page N of M"
+    without changing the bare-list response shape every existing consumer
+    expects. Same total semantics on both query paths (simple + id-filter).
 
     ``archive_uri`` filters to members of one zip / container so the UI
     can render the disclosure-triangle expansion.
@@ -464,14 +474,28 @@ def list_evidence(
 
     stmt = stmt.order_by(Evidence.ingested_at.desc())
 
+    def _set_total(n: int) -> None:
+        if response is not None:
+            response.headers["X-Total-Count"] = str(n)
+
     # No id-based filter → the kind/archive/workbook predicates are bounded,
-    # so a single limited query is safe.
+    # so a single limited query is safe. Count the full match set (pre-limit)
+    # for the pagination header via SQL COUNT(*) — NOT by materializing every
+    # id into Python (a perf cliff on a 100k-row enterprise DB) — then page
+    # with offset+limit. The count reuses the same WHERE predicates by wrapping
+    # the built statement (minus ordering) in a subquery.
     if id_filter is None:
-        rows = s.exec(stmt.limit(limit)).all()
+        count_stmt = select(func.count()).select_from(
+            stmt.order_by(None).subquery()
+        )
+        total = s.exec(count_stmt).one()
+        _set_total(int(total))
+        rows = s.exec(stmt.offset(offset).limit(limit)).all()
         return [_serialize(e) for e in rows]
 
     # An id filter ran and matched nothing (the intersection emptied out).
     if not id_filter:
+        _set_total(0)
         return []
 
     # Chunk the id IN-clause: the intersected set can still exceed
@@ -491,7 +515,8 @@ def list_evidence(
         key=lambda e: (e.ingested_at is not None, e.ingested_at),
         reverse=True,
     )
-    return [_serialize(e) for e in collected[:limit]]
+    _set_total(len(collected))
+    return [_serialize(e) for e in collected[offset : offset + limit]]
 
 
 @router.delete("")

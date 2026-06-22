@@ -1,0 +1,30 @@
+{
+  "name": "recall_stig_xlsx_rhel_maps_cm6",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. One of the two real STIG .xlsx files in the BoE that tagged to ZERO. This is a STIG checklist EXPORTED TO XLSX (not a .ckl/.cklb), so it arrives as kind=xlsx with NO structured stig_findings list — just spreadsheet-extracted text (rule titles, status column). The hardening rules map to CM-6 (Configuration Settings). The failure mode: the tagger's inline CCI scrape (Tier 2) is gated to _STRUCTURED_FINDING_KINDS, which XLSX is NOT, so even though a 'CCI-000366' token literally appears in the extracted text it is never scraped; Tier 3 _CONTROL_ID_RE only matches uppercase IDs and there is no 'CM-6' string in the body; Tier 4 needs an evidence_type that wasn't classified. Result: zero tags. Distractor SI-2 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-6", "title": "Configuration Settings", "family": "CM"},
+      {"control_id": "si-2", "title": "Flaw Remediation", "family": "SI"}
+    ],
+    "objectives": [
+      {"control_id": "cm-6", "objective_id": "CCI-000366", "text": "The organization establishes and documents configuration settings for information technology products employed within the information system using security configuration checklists that reflect the most restrictive mode consistent with operational requirements.", "implementation_guidance": "Apply a DISA STIG hardening baseline and remediate open findings.", "assessment_procedures": "Examine the STIG compliance results."},
+      {"control_id": "si-2", "objective_id": "CCI-002605", "text": "The organization installs security-relevant software updates within the organization-defined time period of the release of the updates.", "implementation_guidance": "Apply patches within the policy window.", "assessment_procedures": "Examine the patch status."}
+    ]
+  },
+  "evidence": {
+    "filename": "RHEL8_STIG_results.xlsx",
+    "title": "RHEL 8 STIG results export",
+    "kind": "xlsx",
+    "text": "Vuln ID\tRule Title\tStatus\tCCI\tSeverity\nV-230221\tRHEL 8 must enable the SELinux targeted policy\tNotAFinding\tCCI-000366\tmedium\nV-230264\tRHEL 8 must disable kernel core dumps\tNotAFinding\tCCI-000366\tlow\nV-230311\tRHEL 8 must set the umask to 077 for interactive users\tNotAFinding\tCCI-000366\tmedium\nV-230502\tRHEL 8 file permissions must be configured to protect log files\tOpen\tCCI-000366\tmedium\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000366"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-002605"}
+    ]
+  }
+}

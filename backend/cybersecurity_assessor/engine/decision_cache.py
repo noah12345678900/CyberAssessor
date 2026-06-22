@@ -179,9 +179,15 @@ from .crm_context import CrmContext
 #       model to determine each artifact's owning boundary from its own content
 #       and cite it only in that scope (shared enterprise-wide artifacts may span
 #       scopes only when their text actually covers each).
+#   0.13.0 (2026-06-22): hybrid-RAG evidence tagging. The Tier-5 candidate
+#       selector was replaced (TF-IDF-only → sparse+HyDE+dense+triage+folder
+#       fused by RRF) and images now get a vision description in addition to
+#       OCR. Both change which evidence reaches which control — i.e. the tagged
+#       evidence bundle a cached assessment was computed against — so every
+#       cached decision must re-run against the new tag set.
 # PROMPT_SHA already shifts from the file edits; the KERNEL_VERSION bump makes
 # the cache invalidation explicit so every cached CCI re-runs under both.
-KERNEL_VERSION = "0.12.0"
+KERNEL_VERSION = "0.13.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to

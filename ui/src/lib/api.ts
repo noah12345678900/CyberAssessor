@@ -4150,6 +4150,7 @@ export const api = {
       asset_id?: number;
       boundary_id?: number;
       limit?: number;
+      offset?: number;
     } = {},
   ) => {
     const q = new URLSearchParams();
@@ -4162,7 +4163,51 @@ export const api = {
     if (opts.asset_id != null) q.set("asset_id", String(opts.asset_id));
     if (opts.boundary_id != null) q.set("boundary_id", String(opts.boundary_id));
     q.set("limit", String(opts.limit ?? 200));
+    if (opts.offset != null) q.set("offset", String(opts.offset));
     return request<Evidence[]>(`/api/evidence?${q.toString()}`);
+  },
+  // Paginated variant — returns the page of rows PLUS the pre-limit total
+  // (from the X-Total-Count header) so the Evidence page can render "page N
+  // of M". Reads the header directly via fetch because the shared `request`
+  // helper discards headers; kept separate so existing listEvidence callers
+  // are untouched.
+  listEvidencePaged: async (
+    opts: {
+      kind?: string;
+      archive_uri?: string;
+      workbook_id?: number;
+      framework_id?: number;
+      control_id?: number;
+      component_id?: number;
+      asset_id?: number;
+      boundary_id?: number;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): Promise<{ items: Evidence[]; total: number }> => {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.archive_uri) q.set("archive_uri", opts.archive_uri);
+    if (opts.workbook_id != null) q.set("workbook_id", String(opts.workbook_id));
+    if (opts.framework_id != null) q.set("framework_id", String(opts.framework_id));
+    if (opts.control_id != null) q.set("control_id", String(opts.control_id));
+    if (opts.component_id != null) q.set("component_id", String(opts.component_id));
+    if (opts.asset_id != null) q.set("asset_id", String(opts.asset_id));
+    if (opts.boundary_id != null) q.set("boundary_id", String(opts.boundary_id));
+    q.set("limit", String(opts.limit ?? 100));
+    q.set("offset", String(opts.offset ?? 0));
+    const res = await fetch(`${baseUrl()}/api/evidence?${q.toString()}`, {
+      headers: { "content-type": "application/json" },
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, res.statusText, null, `${res.status} ${res.statusText}`);
+    }
+    const items = (await res.json()) as Evidence[];
+    const totalHeader = res.headers.get("X-Total-Count");
+    // Fall back to the page length if the header is missing (e.g. an older
+    // sidecar) so the UI still functions, just without a true total.
+    const total = totalHeader != null ? parseInt(totalHeader, 10) : items.length;
+    return { items, total: Number.isFinite(total) ? total : items.length };
   },
   getEvidence: (id: number) =>
     request<Evidence & { tags: EvidenceTag[] }>(`/api/evidence/${id}`),

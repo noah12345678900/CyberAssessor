@@ -28,6 +28,7 @@ from . import diagram as _diagram  # noqa: F401
 from . import docx as _docx  # noqa: F401
 from . import image as _image  # noqa: F401
 from . import nessus as _nessus  # noqa: F401
+from . import pcap as _pcap  # noqa: F401
 from . import pdf as _pdf  # noqa: F401
 from . import pptx as _pptx  # noqa: F401
 from . import stig_ckl as _stig_ckl  # noqa: F401
@@ -56,6 +57,11 @@ _KIND_BY_SUFFIX = {
     ".md": EvidenceKind.TEXT,
     ".log": EvidenceKind.TEXT,
     ".csv": EvidenceKind.TEXT,
+    ".json": EvidenceKind.TEXT,
+    # Packet captures — summary digest extractor (stdlib, dependency-free).
+    ".pcap": EvidenceKind.PCAP,
+    ".pcapng": EvidenceKind.PCAP,
+    ".cap": EvidenceKind.PCAP,
     # Raster images (no OCR — filename/metadata tagging only).
     ".png": EvidenceKind.IMAGE,
     ".jpg": EvidenceKind.IMAGE,

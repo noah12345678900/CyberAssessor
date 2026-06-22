@@ -167,10 +167,31 @@ class AssetCoverageReport:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_ip(token: str) -> bool:
+    """True if ``token`` parses as an IPv4/IPv6 address.
+
+    Mirrors ``ingest._looks_like_ip`` (kept local to avoid an import
+    cycle). An IP literal's dots are address octets, not a DNS suffix, so
+    it must not be truncated — otherwise ``172.20.8.86`` → ``172`` and a
+    whole scanned subnet collapses to one bogus host key.
+    """
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(token.strip())
+        return True
+    except ValueError:
+        return False
+
+
 def _normalize(name: str) -> str:
-    """Lower-case, strip dot-domain suffix, drop surrounding whitespace."""
+    """Lower-case, strip dot-domain suffix, drop surrounding whitespace.
+
+    IP guard mirrors ``ingest._normalize_host``: an IPv4/IPv6 literal is
+    returned whole so ingest-time and query-time host keys stay identical.
+    """
     n = (name or "").strip().lower()
-    if "." in n:
+    if "." in n and not _looks_like_ip(n):
         n = n.split(".", 1)[0]
     return n
 

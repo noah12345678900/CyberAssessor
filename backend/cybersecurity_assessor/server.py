@@ -173,6 +173,11 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Pagination total — JS can only read this cross-origin if it's
+        # explicitly exposed (allow_headers governs the REQUEST side, not
+        # the response side). The Evidence list returns the pre-limit count
+        # here so the UI can render "page N of M".
+        expose_headers=["X-Total-Count"],
     )
 
     @app.get("/healthz", tags=["meta"])

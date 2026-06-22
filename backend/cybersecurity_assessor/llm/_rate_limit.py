@@ -78,6 +78,57 @@ _semaphore: threading.Semaphore | None = None
 _semaphore_disabled = False
 _semaphore_lock = threading.Lock()
 
+# Global forward-propagated 429 cooldown. When ANY worker eats a 429, the
+# server's backpressure applies to the whole endpoint, not just that one
+# call — but the SDK's per-call retry only pauses the offending thread while
+# every sibling worker keeps hammering, re-tripping the limit (the
+# self-inflicted thundering-herd seen during bulk ingest: one thread sleeps
+# out its Retry-After while 15 others 429 again). Publishing the cooldown
+# deadline here makes EVERY admission (new dispatch + retry) hold until it
+# passes, so the herd pauses ONCE on the server's own signal and resumes
+# together. This is the research-backed fix (honor Retry-After globally) —
+# NOT predictive AIMD / token-bucket, which is over-engineering for a single
+# process whose retries already recover. Monotonic clock so a wall-clock
+# adjustment can't wedge the gate. ``0.0`` = no active cooldown.
+_cooldown_until: float = 0.0
+_cooldown_lock = threading.Lock()
+# Cap how long a single published cooldown can park the fleet — defense
+# against a gateway returning an absurd Retry-After. Mirrors the per-call
+# MAX_SINGLE_SLEEP_SECONDS guard so the global gate can't hang an ingest.
+MAX_COOLDOWN_SECONDS = MAX_SINGLE_SLEEP_SECONDS
+
+
+def _publish_cooldown(seconds: float) -> None:
+    """Extend the global cooldown deadline to at least ``now + seconds``.
+
+    Called from the 429 retry path with the same delay the offending thread
+    is about to sleep (server ``Retry-After`` when present, else backoff).
+    ``max`` so a longer in-flight cooldown is never shortened by a smaller
+    later one. Bounded by ``MAX_COOLDOWN_SECONDS``.
+    """
+    if seconds <= 0:
+        return
+    seconds = min(seconds, MAX_COOLDOWN_SECONDS)
+    deadline = time.monotonic() + seconds
+    global _cooldown_until
+    with _cooldown_lock:
+        if deadline > _cooldown_until:
+            _cooldown_until = deadline
+
+
+def _await_cooldown() -> None:
+    """Block until any active global cooldown has elapsed.
+
+    Cheap fast-path: a single unlocked read of the deadline; only sleeps
+    when a cooldown is actually pending. Re-checks after sleeping in case a
+    fresh 429 extended the deadline while we waited.
+    """
+    while True:
+        remaining = _cooldown_until - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, MAX_COOLDOWN_SECONDS))
+
 
 def _get_semaphore() -> threading.Semaphore | None:
     """Return the shared admission semaphore, or None when capping is off.
@@ -116,6 +167,12 @@ def _admit() -> Iterator[None]:
     No-op context when capping is disabled, so the call path is identical
     whether or not a cap is configured.
     """
+    # Honor any active global 429 cooldown BEFORE taking a semaphore slot —
+    # waiting here (not while holding a slot) keeps the concurrency cap
+    # meaningful and pauses the whole fleet on the server's backpressure.
+    # Runs on both the gated and disabled paths so the cooldown holds even
+    # when admission control is off.
+    _await_cooldown()
     sem = _get_semaphore()
     if sem is None:
         yield
@@ -248,6 +305,13 @@ def run_with_rate_limit_retry(
                 )
                 raise
             sleep_for = _compute_sleep(attempt, exc)
+            # Publish the delay globally so sibling workers (and new
+            # dispatches) hold too — one thread's 429 pauses the whole fleet
+            # once, instead of each worker independently discovering the wall
+            # and re-tripping it (thundering herd). This thread still sleeps
+            # the same duration below; _await_cooldown() in _admit() makes the
+            # others wait. Cheap no-op once the deadline passes.
+            _publish_cooldown(sleep_for)
             log.warning(
                 "%s: rate-limit (attempt %d/%d); sleeping %.1fs before retry",
                 label,

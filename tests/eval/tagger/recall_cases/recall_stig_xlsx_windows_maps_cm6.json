@@ -1,0 +1,30 @@
+{
+  "name": "recall_stig_xlsx_windows_maps_cm6",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. The second real STIG .xlsx file in the BoE that tagged to ZERO — a Windows Server STIG checklist exported to XLSX. Same failure mechanics as recall_stig_xlsx_rhel_maps_cm6: kind=xlsx, no structured stig_findings list, CCI token present in extracted text but never scraped because XLSX is outside _STRUCTURED_FINDING_KINDS, and no uppercase 'CM-6' control-ID string in the body for Tier 3. Maps to CM-6 (Configuration Settings). Result: zero tags today. Distractor AC-2 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-6", "title": "Configuration Settings", "family": "CM"},
+      {"control_id": "ac-2", "title": "Account Management", "family": "AC"}
+    ],
+    "objectives": [
+      {"control_id": "cm-6", "objective_id": "CCI-000366", "text": "The organization establishes and documents configuration settings for information technology products employed within the information system using security configuration checklists that reflect the most restrictive mode consistent with operational requirements.", "implementation_guidance": "Apply a DISA STIG hardening baseline and remediate open findings.", "assessment_procedures": "Examine the STIG compliance results."},
+      {"control_id": "ac-2", "objective_id": "CCI-000015", "text": "The organization manages information system accounts including establishing, activating, modifying, disabling, and removing accounts.", "implementation_guidance": "Manage the account lifecycle.", "assessment_procedures": "Examine account management procedures."}
+    ]
+  },
+  "evidence": {
+    "filename": "WindowsServer2022_STIG_results.xlsx",
+    "title": "Windows Server 2022 STIG results export",
+    "kind": "xlsx",
+    "text": "Vuln ID\tRule Title\tStatus\tCCI\tSeverity\nV-254238\tWindows Server must require a screen lock after 15 minutes\tNotAFinding\tCCI-000366\tmedium\nV-254265\tWindows Server must disable the SMBv1 protocol\tNotAFinding\tCCI-000366\thigh\nV-254290\tWindows Server audit policy must capture logon events\tNotAFinding\tCCI-000366\tmedium\nV-254441\tWindows Server must restrict anonymous SID enumeration\tOpen\tCCI-000366\tmedium\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000366"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000015"}
+    ]
+  }
+}

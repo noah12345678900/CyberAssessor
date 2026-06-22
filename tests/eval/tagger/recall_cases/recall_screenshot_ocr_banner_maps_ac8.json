@@ -1,0 +1,30 @@
+{
+  "name": "recall_screenshot_ocr_banner_maps_ac8",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file: a GUI screenshot (.png) of a system logon warning banner, run through OCR. A DoD-consent / use-notification banner is AC-8 (System Use Notification). Modeled as image-kind evidence holding the OCR transcript. The OCR text is the verbatim banner — note it does NOT contain the literal phrase 'system use notification' or 'AC-8' or any CCI, so the deterministic tiers miss it; the banner's legal boilerplate has near-zero TF-IDF overlap with the terse NIST control objective text. Current tagger → zero tags. Distractor AC-11 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-8", "title": "System Use Notification", "family": "AC"},
+      {"control_id": "ac-11", "title": "Session Lock", "family": "AC"}
+    ],
+    "objectives": [
+      {"control_id": "ac-8", "objective_id": "CCI-000048", "text": "The information system displays an approved system use notification message or banner before granting access.", "implementation_guidance": "Display the organization-defined consent banner at logon.", "assessment_procedures": "Examine the logon banner."},
+      {"control_id": "ac-11", "objective_id": "CCI-000057", "text": "The information system initiates a session lock after a period of inactivity.", "implementation_guidance": "Configure an inactivity timeout.", "assessment_procedures": "Examine the session lock configuration."}
+    ]
+  },
+  "evidence": {
+    "filename": "logon_banner.png",
+    "title": "Logon warning banner screenshot (OCR)",
+    "kind": "image",
+    "text": "You are accessing a U.S. Government information system. By using this IS you consent to the following conditions: The Government routinely intercepts and monitors communications on this IS. At any time, the Government may inspect and seize data stored on this IS. Communications using this IS are not private. This IS includes security measures to protect Government interests.\n[ OK ]\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000048"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000057"}
+    ]
+  }
+}

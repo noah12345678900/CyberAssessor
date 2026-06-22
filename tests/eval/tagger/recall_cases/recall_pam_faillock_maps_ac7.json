@@ -1,0 +1,30 @@
+{
+  "name": "recall_pam_faillock_maps_ac7",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 01.AC/ (CTP-017_account_lockout): a script(1) capture of /etc/security/faillock.conf and the pam.d stack. Account lockout after N failed attempts is AC-7 (Unsuccessful Logon Attempts). Body has NO control ID / CCI / doc number; pam_faillock parameter names ('deny', 'unlock_time') do not lexically overlap 'unsuccessful logon attempts'. Current tagger → zero tags. Distractor IA-5 (password policy) present as precision guard — faillock is lockout, not password complexity.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-7", "title": "Unsuccessful Logon Attempts", "family": "AC"},
+      {"control_id": "ia-5", "title": "Authenticator Management", "family": "IA"}
+    ],
+    "objectives": [
+      {"control_id": "ac-7", "objective_id": "CCI-000044", "text": "The information system enforces a limit of consecutive invalid logon attempts by a user during a defined time period.", "implementation_guidance": "Configure the system to lock an account after a threshold of failed logons.", "assessment_procedures": "Examine the account lockout configuration."},
+      {"control_id": "ia-5", "objective_id": "CCI-000192", "text": "The information system enforces password complexity by the minimum number of upper case characters used.", "implementation_guidance": "Configure password complexity requirements.", "assessment_procedures": "Examine the password policy."}
+    ]
+  },
+  "evidence": {
+    "filename": "CTP-017_faillock.txt",
+    "title": "CTP-017 account lockout faillock capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-05 14:02:10-0500\n[root@app01 ~]# cat /etc/security/faillock.conf\n# deny: lock account after this many failures\ndeny = 3\n# fail_interval window in seconds\nfail_interval = 900\n# unlock_time: keep locked for this many seconds\nunlock_time = 0\nsilent\naudit\neven_deny_root\n[root@app01 ~]# grep faillock /etc/pam.d/system-auth\nauth        required      pam_faillock.so preauth silent deny=3 unlock_time=0\nauth        [default=die]  pam_faillock.so authfail deny=3 unlock_time=0\naccount     required      pam_faillock.so\n[root@app01 ~]# faillock --user testacct\ntestacct:\nWhen                Type  Source           Valid\n2026-03-05 13:58:01 RHOST 10.0.0.5         V\n[root@app01 ~]# exit\nScript done on 2026-03-05 14:02:55-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000044"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000192"}
+    ]
+  }
+}

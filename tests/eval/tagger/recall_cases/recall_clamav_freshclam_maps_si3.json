@@ -1,0 +1,30 @@
+{
+  "name": "recall_clamav_freshclam_maps_si3",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 11.SI/ (CTP-013_clam_av): a script(1) capture of `systemctl status clamav-freshclam` and `clamscan --version`. Anti-malware definition currency + on-access scanning is SI-3 (Malicious Code Protection). Body has NO control ID / CCI / doc number; clamav daemon/signature vocabulary ('freshclam', 'ClamAV', 'main.cvd') has near-zero overlap with 'malicious code protection'. Current tagger → zero tags. Distractor SI-7 (integrity) is present as a precision guard — clamav is malware scanning, not file integrity baselining.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "si-3", "title": "Malicious Code Protection", "family": "SI"},
+      {"control_id": "si-7", "title": "Software, Firmware, and Information Integrity", "family": "SI"}
+    ],
+    "objectives": [
+      {"control_id": "si-3", "objective_id": "CCI-001239", "text": "The organization employs malicious code protection mechanisms at information system entry and exit points to detect and eradicate malicious code.", "implementation_guidance": "Deploy anti-malware with current signatures and on-access scanning.", "assessment_procedures": "Examine the anti-malware configuration and signature currency."},
+      {"control_id": "si-7", "objective_id": "CCI-001297", "text": "The organization employs integrity verification tools to detect unauthorized changes to software, firmware, and information.", "implementation_guidance": "Deploy a file integrity monitoring tool.", "assessment_procedures": "Examine the integrity verification configuration."}
+    ]
+  },
+  "evidence": {
+    "filename": "CTP-013_clamav.txt",
+    "title": "CTP-013 ClamAV status capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-06 08:30:00-0500\n[root@app01 ~]# systemctl status clamav-freshclam --no-pager\n  clamav-freshclam.service - ClamAV virus database updater\n     Loaded: loaded (/usr/lib/systemd/system/clamav-freshclam.service; enabled)\n     Active: active (running) since Thu 2026-03-05 02:00:01 EST\n[root@app01 ~]# freshclam --version\nClamAV 1.0.5/27412/Thu Mar  5 04:11:22 2026\n[root@app01 ~]# ls -l /var/lib/clamav/\n-rw-r--r-- 1 clamav clamav 175472640 Mar  5 04:11 daily.cld\n-rw-r--r-- 1 clamav clamav 167772160 Feb 28 03:02 main.cvd\n[root@app01 ~]# clamdscan --version\nClamAV 1.0.5\n[root@app01 ~]# grep OnAccess /etc/clamav/clamd.conf\nOnAccessIncludePath /home\nOnAccessPrevention yes\n[root@app01 ~]# exit\nScript done on 2026-03-06 08:31:14-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-001239"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-001297"}
+    ]
+  }
+}

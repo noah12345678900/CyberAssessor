@@ -1,6 +1,6 @@
 """Plain-text extractor.
 
-Handles ``.txt``, ``.md``, ``.log``, ``.csv``. Decodes UTF-8 with
+Handles ``.txt``, ``.md``, ``.log``, ``.csv``, ``.json``. Decodes UTF-8 with
 fallbacks for Windows-1252 / Latin-1 since prior-assessor logs are
 frequently exported from Windows tools with no BOM.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json as _json
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
@@ -63,7 +64,27 @@ def _csv_hostnames(text: str) -> list[str]:
         return []
 
 
-@register(".txt", ".md", ".log", ".csv")
+def _prettify_json(text: str) -> str:
+    """Re-render JSON with indentation so keys/values tokenize cleanly.
+
+    A minified config export (``{"selinux":"enforcing","fips":true}``) is
+    one long token-poor line; pretty-printing puts each key/value on its
+    own line so the tagger's lexical + semantic lanes see ``selinux`` and
+    ``enforcing`` as distinct tokens. Best-effort: invalid JSON falls back
+    to the raw text unchanged (a ``.json`` file that isn't valid JSON is
+    still useful plain text).
+    """
+    try:
+        obj = _json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    try:
+        return _json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True)
+    except (ValueError, TypeError):  # pragma: no cover - non-serializable
+        return text
+
+
+@register(".txt", ".md", ".log", ".csv", ".json")
 def extract_text(stream: BinaryIO, name: str) -> ExtractedDoc:
     """Read a plain-text file and detect any USD doc number in it.
 
@@ -89,10 +110,15 @@ def extract_text(stream: BinaryIO, name: str) -> ExtractedDoc:
         raise ExtractorError(f"Could not decode {name} with any of {_DECODE_FALLBACKS}")
 
     metadata: dict = {}
-    if name.lower().endswith(".csv"):
+    lname = name.lower()
+    if lname.endswith(".csv"):
         hosts = _csv_hostnames(text)
         if hosts:
             metadata["hostnames"] = hosts
+    elif lname.endswith(".json"):
+        # Pretty-print for tokenization; doc-number detection runs on the
+        # original text below regardless.
+        text = _prettify_json(text)
 
     return ExtractedDoc(
         text=text,

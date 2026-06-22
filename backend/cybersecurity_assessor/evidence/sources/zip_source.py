@@ -48,11 +48,17 @@ _INGESTIBLE_SUFFIXES = {
     ".ckl",
     ".cklb",
     ".xml",
+    ".arf",
     ".nessus",
     ".txt",
     ".md",
     ".log",
     ".csv",
+    ".json",
+    # Packet captures — summary-digest extractor (stdlib, dependency-free).
+    ".pcap",
+    ".pcapng",
+    ".cap",
     # Images + vector diagrams (see local.py for rationale).
     ".png",
     ".jpg",
