@@ -1,0 +1,33 @@
+{
+  "name": "recall_aide_baseline_maps_si7_cm6",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 11.SI/ (CTP-014_aide): a script(1) capture of `aide --check` and the /etc/aide.conf rule set. AIDE file-integrity baselining is SI-7 (Software/Firmware/Information Integrity) and CM-6 (Configuration Settings monitoring). Body has NO control ID / CCI / doc number; AIDE rule vocabulary ('aide.db.gz', 'p+i+n+u+g+s+sha256') has near-zero overlap with 'integrity verification'. Current tagger → zero tags. Distractor SI-3 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "si-7", "title": "Software, Firmware, and Information Integrity", "family": "SI"},
+      {"control_id": "cm-6", "title": "Configuration Settings", "family": "CM"},
+      {"control_id": "si-3", "title": "Malicious Code Protection", "family": "SI"}
+    ],
+    "objectives": [
+      {"control_id": "si-7", "objective_id": "CCI-001297", "text": "The organization employs integrity verification tools to detect unauthorized changes to software, firmware, and information.", "implementation_guidance": "Deploy a file integrity monitoring tool with a known-good baseline.", "assessment_procedures": "Examine the integrity verification configuration and baseline."},
+      {"control_id": "cm-6", "objective_id": "CCI-000366", "text": "The organization establishes and documents configuration settings for information technology products and monitors and controls changes to those settings.", "implementation_guidance": "Establish a configuration baseline and detect deviations.", "assessment_procedures": "Examine the configuration baseline and deviation detection."},
+      {"control_id": "si-3", "objective_id": "CCI-001239", "text": "The organization employs malicious code protection mechanisms.", "implementation_guidance": "Deploy anti-malware.", "assessment_procedures": "Examine anti-malware."}
+    ]
+  },
+  "evidence": {
+    "filename": "CTP-014_aide.txt",
+    "title": "CTP-014 AIDE integrity check capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-06 10:05:11-0500\n[root@app01 ~]# grep -v '^#' /etc/aide.conf | grep -E 'database|sha|rule'\ndatabase=file:/var/lib/aide/aide.db.gz\ndatabase_out=file:/var/lib/aide/aide.db.new.gz\nNORMAL = p+i+n+u+g+s+m+c+md5+sha256\n/boot   NORMAL\n/bin    NORMAL\n/sbin   NORMAL\n/etc    NORMAL\n[root@app01 ~]# aide --check\nAIDE 0.16\nStart timestamp: 2026-03-06 10:05 (AIDE 0.16)\nAIDE found differences between database and filesystem!!\nSummary:\n  Total number of entries:      48211\n  Added entries:                0\n  Removed entries:              0\n  Changed entries:              2\n[root@app01 ~]# exit\nScript done on 2026-03-06 10:06:40-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-001297"},
+      {"objective_id": "CCI-000366"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-001239"}
+    ]
+  }
+}

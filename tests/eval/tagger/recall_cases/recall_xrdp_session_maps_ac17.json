@@ -1,0 +1,28 @@
+{
+  "name": "recall_xrdp_session_maps_ac17",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 01.AC/: a script(1) capture of `systemctl status xrdp` and the TLS crypto-level config. Remote access session (RDP into the VM) with TLS protection is AC-17 (Remote Access). Body has NO control ID / CCI / doc number; xrdp config vocabulary ('crypt_level=high', 'ssl_protocols=TLSv1.2', 'security_layer=tls') has near-zero overlap with 'remote access'. Current tagger → zero tags. Distractor SC-8 (transmission confidentiality) present as precision guard — the file documents remote access, with TLS as a sub-attribute, not standalone transmission-protection evidence.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-17", "title": "Remote Access", "family": "AC"},
+      {"control_id": "sc-8", "title": "Transmission Confidentiality and Integrity", "family": "SC"}
+    ],
+    "objectives": [
+      {"control_id": "ac-17", "objective_id": "CCI-000067", "text": "The information system monitors and controls remote access methods and authorizes remote access to the information system prior to allowing such connections.", "implementation_guidance": "Authorize and protect remote access sessions.", "assessment_procedures": "Examine the remote access configuration."},
+      {"control_id": "sc-8", "objective_id": "CCI-002418", "text": "The information system protects the confidentiality and integrity of transmitted information.", "implementation_guidance": "Encrypt data in transit.", "assessment_procedures": "Examine transmission protection."}
+    ]
+  },
+  "evidence": {
+    "filename": "xrdp_status.txt",
+    "title": "xrdp remote session capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-10 15:40:00-0500\n[root@app01 ~]# systemctl status xrdp --no-pager\n  xrdp.service - xrdp daemon\n     Active: active (running) since Fri 2026-03-06 07:01:11 EST\n[root@app01 ~]# grep -E 'crypt_level|security_layer|ssl_protocols' /etc/xrdp/xrdp.ini\ncrypt_level=high\nsecurity_layer=tls\nssl_protocols=TLSv1.2, TLSv1.3\n[root@app01 ~]# ss -tlnp | grep 3389\nLISTEN 0 2 0.0.0.0:3389 0.0.0.0:* users:((\"xrdp\",pid=1422,fd=11))\n[root@app01 ~]# exit\nScript done on 2026-03-10 15:40:47-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000067"}
+    ],
+    "tags_must_not_include": []
+  }
+}

@@ -51,7 +51,7 @@ from ..engine.assessor import LlmProposal
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-4-8-opus"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TEMPERATURE = 0.0  # PERMANENT — schema-strict classification, no JSON mode.
 # This is the durable, cross-checked decision (do not revisit on intuition):
@@ -88,6 +88,13 @@ DEFAULT_TEMPERATURE = 0.0  # PERMANENT — schema-strict classification, no JSON
 # retry/abstain handling, so a tight per-call ceiling is safe: a timed-out
 # call degrades that one candidate to keyword-only instead of freezing the run.
 _JUDGE_CALL_TIMEOUT_SECONDS = 30.0
+
+# Max source bytes for a vision describe_image call. Anthropic's per-image
+# limit is ~5 MB of source data; beyond that the base64-inflated request is
+# rejected (or strains memory under concurrent ingest), so we skip vision for
+# oversized images and let OCR carry them — a full-page scan is OCR's job
+# anyway. Keep just under the API ceiling for headroom.
+_VISION_MAX_IMAGE_BYTES = 4_500_000
 
 _KEYRING_SERVICE = "cybersecurity-assessor"
 _KEYRING_USERNAME = "anthropic_api_key"
@@ -1530,6 +1537,126 @@ class AnthropicClient:
         except (ValueError, TypeError, KeyError) as exc:
             return 0.0, f"[parse_error] {exc}: {raw_text[:80]!r}", usage
         return score, reasoning, usage
+
+    # ------------------------------------------------------------------
+    # HyDE query-expansion — bridge the config→policy vocabulary gap
+    # ------------------------------------------------------------------
+
+    def expand_to_control_prose(
+        self, evidence_text: str, *, model: str | None = None
+    ) -> str:
+        """Rewrite raw evidence into the NIST control language it satisfies.
+
+        HyDE (Hypothetical Document Embeddings): terse technical evidence
+        ("sestatus → SELinux enforcing", "pam_faillock deny=3") shares almost
+        no tokens with NIST control prose, so lexical AND dense retrieval miss
+        the right control. We ask the model to write the *hypothetical control
+        statement* this evidence would satisfy; embedding/searching THAT prose
+        (policy-text vs policy-text) bridges the gap. Returns plain prose —
+        NOT a verdict, NOT a tag — purely a retrieval query expansion.
+
+        Returns "" on any failure so the caller degrades to the other lanes
+        (a HyDE miss must never abort tagging).
+        """
+        prompt = (
+            "You are a NIST 800-53 control expert. Below is raw technical "
+            "evidence (a config dump, command output, screenshot text, or "
+            "scan result). Write 2-4 sentences of NIST 800-53 CONTROL "
+            "LANGUAGE describing what security control(s) this evidence would "
+            "demonstrate — the kind of prose a control's requirement or "
+            "assessment objective uses. Name relevant control families/IDs if "
+            "obvious. Do NOT judge compliance, do NOT quote the evidence "
+            "verbatim, do NOT add preamble — output only the control-language "
+            "description.\n\n=== EVIDENCE ===\n"
+            + evidence_text[:8000]
+            + "\n=== END EVIDENCE ==="
+        )
+        try:
+            response = self._messages_create_temperature_aware(
+                label="anthropic.expand_to_control_prose",
+                model=model or self._model,
+                max_tokens=512,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
+            )
+            return _extract_text(response).strip()
+        except Exception as exc:  # noqa: BLE001 — degrade, never abort tagging
+            log.warning("HyDE expansion failed: %s", exc)
+            return ""
+
+    # ------------------------------------------------------------------
+    # Vision — describe an image for tagging (OCR stays for verbatim)
+    # ------------------------------------------------------------------
+
+    def describe_image(
+        self,
+        image_bytes: bytes,
+        *,
+        media_type: str = "image/png",
+        model: str | None = None,
+    ) -> str:
+        """Return a rich natural-language description of an evidence image.
+
+        For screenshots and especially PURE-GRAPHICS images (topology
+        diagrams, red/green status dashboards) that OCR can't read, the
+        multimodal model describes what compliance evidence the image shows —
+        in control-flavored prose that the tagger can match. OCR is kept
+        separately for verbatim citation (a VLM paraphrase must never be
+        quoted to a 3PAO); this output feeds TAGGING only.
+
+        Sends a base64 image content block (the client otherwise only sends
+        text). Returns "" on any failure so the caller falls back to OCR.
+
+        Size-guarded: a very large image (e.g. a full-page scanner TIFF) would
+        base64-inflate ~33% and either blow the API request-size limit or
+        balloon memory under concurrent ingest. Anthropic's own per-image
+        ceiling is ~5 MB of source bytes; we skip anything larger and let OCR
+        carry it (a giant scan is exactly where OCR is the right tool anyway).
+        """
+        import base64
+
+        if len(image_bytes) > _VISION_MAX_IMAGE_BYTES:
+            log.info(
+                "skipping vision for oversized image (%d bytes > %d cap); OCR-only",
+                len(image_bytes),
+                _VISION_MAX_IMAGE_BYTES,
+            )
+            return ""
+        b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        prompt = (
+            "This image is evidence in a NIST 800-53 security assessment. "
+            "Describe what it shows in 3-6 sentences, focusing on anything "
+            "security-relevant: what system/console/tool is shown, what "
+            "settings/states/values are visible, account or access details, "
+            "network/boundary structure, or status indicators. Write in "
+            "plain prose a control assessor would use. Do NOT guess values "
+            "you cannot clearly see."
+        )
+        content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": b64,
+                },
+            },
+            {"type": "text", "text": prompt},
+        ]
+        try:
+            response = self._messages_create_temperature_aware(
+                label="anthropic.describe_image",
+                model=model or self._model,
+                max_tokens=768,
+                temperature=0.0,
+                messages=[{"role": "user", "content": content}],
+                timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
+            )
+            return _extract_text(response).strip()
+        except Exception as exc:  # noqa: BLE001 — degrade to OCR, never abort
+            log.warning("vision describe_image failed: %s", exc)
+            return ""
 
 
 # ---------------------------------------------------------------------------

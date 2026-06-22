@@ -395,3 +395,44 @@ def test_ingest_admits_images_and_diagrams_and_flags_untagged(
     paths = {Path(e.path).name for e in session.exec(select(_Ev)).all()}
     assert "network_boundary.svg" in paths
     assert "login_page.png" in paths
+
+
+# ---------------------------------------------------------------------------
+# Host-inventory IP-truncation regression (Bug B)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_host_keeps_ip_addresses_whole() -> None:
+    """IPv4/IPv6 literals must survive normalization intact.
+
+    Regression: ``_normalize_host`` dot-stripped ``172.20.8.86`` to
+    ``172`` so a Nessus/ACAS subnet sweep of 86 hosts collapsed to one
+    bogus "172" host (Asset Coverage showed "1 host"). The IP guard keeps
+    addresses whole while still stripping DNS domain suffixes.
+    """
+    from cybersecurity_assessor.evidence.ingest import _normalize_host
+
+    # IPs returned whole.
+    assert _normalize_host("172.20.8.86") == "172.20.8.86"
+    assert _normalize_host("10.0.0.5") == "10.0.0.5"
+    assert _normalize_host("fe80::1") == "fe80::1"
+    # DNS hostnames still get the domain suffix stripped + lowercased.
+    assert _normalize_host("Server01.dom.mil") == "server01"
+    assert _normalize_host("PaaS-VDI-01.sda-es.internal") == "paas-vdi-01"
+    assert _normalize_host("server01") == "server01"
+    # A set of distinct scanned IPs stays distinct (no collapse to "172").
+    ips = ["172.20.8.86", "172.20.4.179", "172.20.6.6"]
+    assert len({_normalize_host(h) for h in ips}) == 3
+
+
+def test_asset_crosscheck_normalize_matches_ingest_ip_guard() -> None:
+    """asset_crosscheck._normalize must apply the SAME IP guard as ingest.
+
+    The two run at ingest-time and query-time respectively; if they
+    diverge, host keys won't join. Pin that they agree on IPs + hostnames.
+    """
+    from cybersecurity_assessor.evidence.asset_crosscheck import _normalize
+    from cybersecurity_assessor.evidence.ingest import _normalize_host
+
+    for h in ("172.20.8.86", "10.0.0.5", "fe80::1", "Server01.dom.mil", "host"):
+        assert _normalize(h) == _normalize_host(h)

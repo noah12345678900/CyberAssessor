@@ -11,6 +11,7 @@ DEMO = Path(__file__).parent
 POLICIES = DEMO / "policies"
 CONFIGS = DEMO / "configs"
 DIAGRAMS = DEMO / "diagrams"
+SCANS = DEMO / "scans"
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +828,171 @@ def build_audit_info_protection_memo_docx() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# JSON -- Boundary firewall configuration export (SC-7)
+# ---------------------------------------------------------------------------
+#
+# Exercises the .json extractor (pretty-printed for tokenization). A firewall
+# zone/rule export is SC-7 (boundary protection) evidence. Cites "SC-7" and
+# "CCI-001097" in a comment-ish field so the tagger's control-ID + CCI passes
+# map it; the corpus-augmentation gloss (firewalld/zone/boundary) also lands it.
+
+
+def build_firewall_config_json() -> Path:
+    import json
+
+    config = {
+        "_control_reference": "SC-7 boundary protection; CCI-001097",
+        "system": "example-system-demo-ws01.demo.local",
+        "host_ip": "10.10.5.21",
+        "firewall": {
+            "engine": "firewalld",
+            "default_zone": "drop",
+            "panic_mode": False,
+            "zones": [
+                {
+                    "name": "public",
+                    "interfaces": ["eth0"],
+                    "target": "DROP",
+                    "services": ["https"],
+                    "ports": ["443/tcp"],
+                    "description": "Internet-facing boundary; deny-by-default.",
+                },
+                {
+                    "name": "internal",
+                    "interfaces": ["eth1"],
+                    "target": "default",
+                    "services": ["ssh", "ntp"],
+                    "ports": ["22/tcp"],
+                    "source_subnets": ["10.10.5.0/24"],
+                },
+            ],
+            "logging": {"denied_packets": "all", "forward_to": "siem-collector"},
+        },
+        "managed_interface_deny_all": True,
+        "notes": "Boundary protection enforced at the managed interface; "
+        "deny-all default with explicit allow-list per SC-7.",
+    }
+    SCANS.mkdir(parents=True, exist_ok=True)
+    CONFIGS.mkdir(parents=True, exist_ok=True)
+    out = CONFIGS / "Firewall_Boundary_Config_Export_USD20240625.json"
+    out.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# PCAP / PCAPNG -- boundary traffic captures (SC-7 / AC-4 / SI-4)
+# ---------------------------------------------------------------------------
+#
+# Exercises the dependency-free pcap parser in BOTH on-disk formats: classic
+# libpcap (.pcap) and the newer block format (.pcapng). The extractor emits a
+# traffic digest (protocols, talkers, ports) that maps to SC-7 boundary /
+# AC-4 information-flow / SI-4 monitoring. IPs are realistic Example-System
+# subnet addresses so the host-inventory IP-guard (no dot-truncation) is
+# exercised end-to-end.
+
+import socket as _socket
+import struct as _struct
+
+
+def _demo_packets() -> list[tuple[str, str, int, int]]:
+    # (src, dst, sport, dport) — boundary-crossing flows on the demo subnet.
+    return [
+        ("10.10.5.21", "10.10.5.1", 51000, 443),   # workstation → gateway HTTPS
+        ("10.10.5.21", "10.10.5.9", 51001, 22),    # → mgmt host SSH
+        ("10.10.5.30", "10.10.5.1", 51002, 443),
+        ("10.10.5.21", "10.10.5.50", 51003, 123),  # NTP
+    ]
+
+
+def _eth_ipv4_tcp(src: str, dst: str, sport: int, dport: int) -> bytes:
+    eth = b"\xaa" * 6 + b"\xbb" * 6 + _struct.pack("!H", 0x0800)
+    ip = (
+        bytes([0x45, 0, 0, 40])
+        + b"\x00" * 5
+        + bytes([6])  # proto TCP
+        + b"\x00\x00"
+        + _socket.inet_aton(src)
+        + _socket.inet_aton(dst)
+    )
+    l4 = _struct.pack("!HH", sport, dport) + b"\x00" * 16
+    return eth + ip + l4
+
+
+def build_boundary_capture_pcap() -> Path:
+    """Classic libpcap capture of boundary traffic (SC-7)."""
+    gh = _struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)  # linktype=Ethernet
+    recs = b""
+    for src, dst, sp, dp in _demo_packets():
+        pkt = _eth_ipv4_tcp(src, dst, sp, dp)
+        recs += _struct.pack("<IIII", 1718900000, 0, len(pkt), len(pkt)) + pkt
+    SCANS.mkdir(parents=True, exist_ok=True)
+    out = SCANS / "boundary_traffic_capture_USD20240626.pcap"
+    out.write_bytes(gh + recs)
+    return out
+
+
+def build_boundary_capture_pcapng() -> Path:
+    """Same boundary traffic in pcapng (next-gen) format (SC-7)."""
+
+    def blk(btype: int, body: bytes) -> bytes:
+        body = body + b"\x00" * ((-len(body)) % 4)
+        total = 12 + len(body)
+        return _struct.pack("<II", btype, total) + body + _struct.pack("<I", total)
+
+    shb = blk(0x0A0D0D0A, _struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))
+    idb = blk(0x00000001, _struct.pack("<HHI", 1, 0, 65535))  # linktype=Ethernet
+    epbs = b""
+    for src, dst, sp, dp in _demo_packets():
+        pkt = _eth_ipv4_tcp(src, dst, sp, dp)
+        epb_body = _struct.pack("<IIIII", 0, 0, 0, len(pkt), len(pkt)) + pkt
+        epbs += blk(0x00000006, epb_body)
+    SCANS.mkdir(parents=True, exist_ok=True)
+    out = SCANS / "boundary_traffic_capture_USD20240627.pcapng"
+    out.write_bytes(shb + idb + epbs)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# PNG -- account-lockout GPO screenshot (AC-7 / IA-5), OCR + vision evidence
+# ---------------------------------------------------------------------------
+#
+# A config screenshot is the canonical "image evidence" case: OCR pulls the
+# visible settings text (AC-7 lockout threshold, IA-5 password policy) and the
+# vision step describes the console. Drawn with PIL so it has REAL rasterized
+# text for OCR to extract. Cites the settings in plain words so the tagger maps
+# it via OCR text even without the vision step.
+
+
+def build_lockout_gpo_screenshot_png() -> Path:
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (760, 380), "white")
+    d = ImageDraw.Draw(img)
+    lines = [
+        "Group Policy Management Editor  —  Account Lockout Policy",
+        "System: example-system-demo-ws01.demo.local",
+        "",
+        "Account lockout threshold:        3 invalid logon attempts",
+        "Account lockout duration:         15 minutes",
+        "Reset account lockout counter:    15 minutes",
+        "",
+        "Password Policy",
+        "Minimum password length:          14 characters",
+        "Password must meet complexity:    Enabled",
+        "Enforce password history:         24 passwords remembered",
+        "",
+        "Evidence for AC-7 (unsuccessful logon attempts) and IA-5 authenticator mgmt.",
+    ]
+    for i, line in enumerate(lines):
+        d.text((20, 18 + i * 27), line, fill="black")
+    SCANS.mkdir(parents=True, exist_ok=True)
+    CONFIGS.mkdir(parents=True, exist_ok=True)
+    out = CONFIGS / "Account_Lockout_GPO_Screenshot_USD20240628.png"
+    img.save(str(out), "PNG")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -842,6 +1008,10 @@ if __name__ == "__main__":
         build_audit_info_protection_memo_docx,
         build_aws_boundary_diagram_vsdx,
         build_azure_boundary_diagram_svg,
+        build_firewall_config_json,
+        build_boundary_capture_pcap,
+        build_boundary_capture_pcapng,
+        build_lockout_gpo_screenshot_png,
     ):
         path = fn()
         print(f"WROTE  {path.relative_to(DEMO)}")

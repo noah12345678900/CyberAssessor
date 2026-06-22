@@ -118,7 +118,7 @@ class AppConfig(BaseModel):
     onedrive_root: str | None = Field(default=None)
     evidence_roots: list[str] = Field(default_factory=list)
     last_workbook: str | None = Field(default=None)
-    anthropic_model: str = Field(default="claude-opus-4-6")
+    anthropic_model: str = Field(default="claude-4-8-opus")
     llm_max_tokens: int = Field(default=4096)
     # Per-file text-extraction byte budget. Huge logs are less valuable than a
     # Splunk insight query result, but truncated text beats nothing — so we
@@ -188,6 +188,23 @@ class AppConfig(BaseModel):
     # set False to fall back to the deterministic TF-IDF Tier 5 (offline / no
     # API key). Mirrors sweep_judge_enabled; no Settings UI, config.toml only.
     tagger_llm_enabled: bool = Field(default=True)
+    # Vision describe-image step (2026-06-22). When True (default) AND an LLM
+    # client is available, every ingested IMAGE gets a multimodal description
+    # (Claude vision) IN ADDITION to OCR — so pure-graphics screenshots that
+    # OCR can't read (topology diagrams, status dashboards) still produce
+    # control-flavored text for the tagger, and text-heavy screenshots get a
+    # semantic description on top of the raw OCR labels. OCR is ALWAYS kept for
+    # verbatim citation (a VLM paraphrase must never be quoted to a 3PAO).
+    # Kill-switch: set False for offline/air-gapped or cost-sensitive runs —
+    # OCR-only behavior is unchanged. config.toml only, no Settings UI.
+    vision_enabled: bool = Field(default=True)
+    # Corpus augmentation (2026-06-22). When True (default), each control's
+    # reference text gets a short family-specific technical-synonym gloss
+    # appended before the tagger's lexical candidate lanes run — so machine-
+    # state evidence ("sestatus enforcing") overlaps policy-speak control text.
+    # Only feeds candidate SELECTION; the judge still gates every tag. Static,
+    # deterministic, auditable. Kill-switch for A/B or if a gloss ever mis-fires.
+    corpus_augmentation_enabled: bool = Field(default=True)
     # Global ceiling on *in-flight* LLM calls across the whole process, enforced
     # by a single semaphore in llm/_rate_limit.py that every call funnels
     # through (judge, tagger, sweep, assess — all of them). This is admission

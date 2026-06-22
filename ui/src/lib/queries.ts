@@ -213,6 +213,21 @@ export const qk = {
       opts.boundaryId ?? "all",
     ] as const,
   evidenceById: (id: number) => ["evidence", id] as const,
+  evidencePaged: (
+    opts: {
+      workbookId?: number;
+      kind?: string;
+      pageSize?: number;
+      page?: number;
+    } = {},
+  ) =>
+    [
+      "evidence-paged",
+      opts.workbookId ?? "all",
+      opts.kind ?? "all",
+      opts.pageSize ?? 100,
+      opts.page ?? 0,
+    ] as const,
   // Per-evidence M2M scope link lists (chip rows on the Evidence card).
   evidenceComponents: (evidenceId: number) =>
     ["evidence", evidenceId, "components"] as const,
@@ -802,6 +817,41 @@ export const useEvidence = (
     // passes the open workbook's id; once it resolves the query runs.
     enabled: opts.workbookId != null,
   });
+
+/**
+ * Paginated evidence list for the Evidence page. Returns the current page of
+ * rows PLUS the pre-limit total (from the X-Total-Count header) so the UI can
+ * render "page N of M". ``page`` is 0-based. ``keepPreviousData`` keeps the
+ * old page visible while the next loads, so paging doesn't flash empty.
+ */
+export const useEvidencePaged = (
+  opts: {
+    workbookId?: number;
+    kind?: string;
+    page?: number;
+    pageSize?: number;
+  } = {},
+) => {
+  const pageSize = opts.pageSize ?? 100;
+  const page = opts.page ?? 0;
+  return useQuery<{ items: Evidence[]; total: number }>({
+    queryKey: qk.evidencePaged({
+      workbookId: opts.workbookId,
+      kind: opts.kind,
+      pageSize,
+      page,
+    }),
+    queryFn: () =>
+      api.listEvidencePaged({
+        workbook_id: opts.workbookId,
+        kind: opts.kind,
+        limit: pageSize,
+        offset: page * pageSize,
+      }),
+    enabled: opts.workbookId != null,
+    placeholderData: (prev) => prev,
+  });
+};
 
 export const useEvidenceForObjective = (
   objectiveId: number | undefined,

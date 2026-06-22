@@ -1,0 +1,33 @@
+{
+  "name": "recall_selinux_enforcing_maps_ac3",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Models a real eMASS BoE file under 01.AC/ (CTP-008_selinux): a script(1) terminal capture of `sestatus`/`getenforce`. SELinux in enforcing mode with a targeted policy is mandatory-access-control = AC-3 (Access Enforcement) and AC-6 (Least Privilege). The body names NO control ID, NO CCI, NO doc number — it is raw command output with near-zero lexical overlap with NIST control prose ('access enforcement', 'least privilege'). The deterministic tiers (1-4) all miss; the TF-IDF Tier-5 backstop has no shared vocabulary, so the current tagger produces ZERO tags. This is the recall bar the RAG rewrite must clear. Distractor control SI-3 is present so a stray tag would register as a precision miss.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "ac-3", "title": "Access Enforcement", "family": "AC"},
+      {"control_id": "ac-6", "title": "Least Privilege", "family": "AC"},
+      {"control_id": "si-3", "title": "Malicious Code Protection", "family": "SI"}
+    ],
+    "objectives": [
+      {"control_id": "ac-3", "objective_id": "CCI-000213", "text": "The information system enforces approved authorizations for logical access to information and system resources in accordance with applicable access control policies.", "implementation_guidance": "Access enforcement mechanisms restrict subjects to authorized objects.", "assessment_procedures": "Examine the access enforcement configuration."},
+      {"control_id": "ac-6", "objective_id": "CCI-000225", "text": "The organization employs the principle of least privilege, allowing only authorized accesses for users which are necessary to accomplish assigned tasks.", "implementation_guidance": "Least privilege confines processes and users to the minimum required access.", "assessment_procedures": "Examine least-privilege configuration."},
+      {"control_id": "si-3", "objective_id": "CCI-001239", "text": "The organization employs malicious code protection mechanisms at information system entry and exit points.", "implementation_guidance": "Anti-malware scans files on access.", "assessment_procedures": "Examine antivirus configuration."}
+    ]
+  },
+  "evidence": {
+    "filename": "CTP-008_selinux_sestatus.txt",
+    "title": "CTP-008 SELinux sestatus capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-04 09:12:41-0500\n[root@app01 ~]# sestatus\nSELinux status:                 enabled\nSELinuxfs mount:                /sys/fs/selinux\nSELinux root directory:         /etc/selinux\nLoaded policy name:             targeted\nCurrent mode:                   enforcing\nMode from config file:          enforcing\nPolicy MLS status:              enabled\nPolicy deny_unknown status:     denied\nMemory protection checking:     actual (secure)\nMax kernel policy version:      33\n[root@app01 ~]# getenforce\nEnforcing\n[root@app01 ~]# semodule -l | head\ncontainer\nstaff_u\nsysadm_u\nunconfined_u\n[root@app01 ~]# exit\nScript done on 2026-03-04 09:13:02-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000213"},
+      {"objective_id": "CCI-000225"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-001239"}
+    ]
+  }
+}

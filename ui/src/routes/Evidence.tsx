@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -45,7 +45,7 @@ import {
   useClearEvidence,
   useCrosscheck,
   useDeleteEvidence,
-  useEvidence,
+  useEvidencePaged,
   useSetAssetList,
   useSettings,
   useSharePointStatus,
@@ -155,10 +155,22 @@ export function Evidence() {
   // the open workbook IS the scope, and you switch systems by opening a
   // different workbook on the Workbooks page. Every artifact in the open
   // workbook renders here, tagged or not.
-  const evidence = useEvidence({
+  // Pagination: the Evidence page previously showed only a truncated window.
+  // page is 0-based; reset to 0 whenever the active workbook changes so we
+  // never land on an out-of-range page for a smaller corpus.
+  const PAGE_SIZE = 100;
+  const [evidencePage, setEvidencePage] = useState(0);
+  useEffect(() => setEvidencePage(0), [activeWorkbookId]);
+  const evidence = useEvidencePaged({
     workbookId: activeWorkbookId,
+    page: evidencePage,
+    pageSize: PAGE_SIZE,
   });
-  const evidenceCount = evidence.data?.length ?? 0;
+  const evidenceRows = evidence.data?.items ?? [];
+  // Total across ALL pages (from X-Total-Count) — drives the "Clear all N"
+  // button and the page-count math, not just the current page length.
+  const evidenceCount = evidence.data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(evidenceCount / PAGE_SIZE));
   const crosscheck = useCrosscheck(activeWorkbookId);
   const setAssetList = useSetAssetList({
     onError: (err) => toast.error("Couldn't update asset-list flag", humanize(err)),
@@ -743,7 +755,15 @@ export function Evidence() {
         <CardHeader>
           <CardTitle>Indexed evidence</CardTitle>
           <CardDescription>
-            {evidence.data?.length ?? 0} artifacts available for objective tagging
+            {evidenceCount} artifact{evidenceCount === 1 ? "" : "s"} available for
+            objective tagging
+            {pageCount > 1 && (
+              <>
+                {" "}
+                — showing {evidencePage * PAGE_SIZE + (evidenceRows.length ? 1 : 0)}–
+                {evidencePage * PAGE_SIZE + evidenceRows.length}
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -762,7 +782,7 @@ export function Evidence() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {evidence.data?.map((e) => (
+              {evidenceRows.map((e) => (
                 <TableRow key={e.id}>
                   <TableCell className="font-medium max-w-md truncate" title={e.display_path}>
                     {e.filename}
@@ -844,7 +864,7 @@ export function Evidence() {
                   </TableCell>
                 </TableRow>
               )}
-              {!evidence.isLoading && evidence.data?.length === 0 && (
+              {!evidence.isLoading && evidenceRows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">
                     No evidence yet — click <strong>Ingest folder…</strong> to scan one.
@@ -853,6 +873,33 @@ export function Evidence() {
               )}
             </TableBody>
           </Table>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                Page {evidencePage + 1} of {pageCount}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setEvidencePage((p) => Math.max(0, p - 1))}
+                  disabled={evidencePage === 0 || evidence.isFetching}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setEvidencePage((p) => Math.min(pageCount - 1, p + 1))
+                  }
+                  disabled={evidencePage >= pageCount - 1 || evidence.isFetching}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

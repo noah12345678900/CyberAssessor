@@ -16,7 +16,9 @@ document, scan, and log is fabricated for the fictional "Example System Demo" sy
 1. The CCIS reader/writer round-trips a realistic eMASS export (`WORKING SHEET`,
    headers at row 6, 21 columns A–U, data row 7+).
 2. The evidence ingester handles every supported format: text, DOCX, PDF, PPTX,
-   XLSX, STIG `.ckl` / `.cklb` / XCCDF XML, and Nessus `.nessus`.
+   XLSX, JSON, STIG `.ckl` / `.cklb` / XCCDF XML, Nessus `.nessus`, packet
+   captures (`.pcap` / `.pcapng`, parsed to a traffic digest), and images
+   (`.png` via OCR + vision describe).
 3. The tagger links artifacts to objectives via USD document numbers cited in
    column F (Implementation Narrative) and column U (Previous Test Results).
 4. The deterministic Rule #8 pre-filter (`engine/rules.py`) fires on **every**
@@ -33,9 +35,9 @@ document, scan, and log is fabricated for the fictional "Example System Demo" sy
 |---|---|
 | `workbooks/` | One importable demo workbook per framework (NIST 800-53, 800-171 (CMMC), CSF 2.0, ISO 27001, CIS v8, PCI DSS, SOC 2). `DEMO_NIST_800-53r5_Example System.xlsx` is the primary 8-control demo — including AC-17, whose responsibility diverges across the two CRMs (AWS=Customer, Azure=Inherited) to showcase per-scope narratives |
 | `policies/` | Implementing policies/procedures referenced by `Col F` and `Col U` |
-| `configs/` | GPO export referenced by AC-7, AC-11, IA-5 rows |
+| `configs/` | GPO export referenced by AC-7, AC-11, IA-5 rows; a firewall boundary config **`.json`** export (SC-7); an account-lockout GPO **`.png`** screenshot (AC-7/IA-5, exercises OCR + vision describe) |
 | `text/` | Operator-generated weekly review records (AU-6, SI-4 evidence) |
-| `scans/` | ACAS / Nessus credentialed scan (RA-5 evidence) |
+| `scans/` | ACAS / Nessus credentialed scan (RA-5 evidence); boundary traffic captures in both **`.pcap`** and **`.pcapng`** (SC-7/AC-4/SI-4, exercises the packet-capture digest extractor) |
 | `stigs/` | Windows / RHEL / Application Security STIG checklists (CM-6 evidence) |
 | `psc/` | Program-Specific Control overlay (T1TL-style, control-grain), 800-53 **Rev 5**; resolves to DISA CCIs at load time |
 | `cci_list/` | DISA STIG→800-53 CCI mapping source the PSC resolves against |

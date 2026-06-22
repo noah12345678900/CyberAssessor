@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -311,6 +312,40 @@ _LLM_TIER_MIN_EXISTING = _TIER5_MIN_EXISTING  # same low-tag gate as TF-IDF Tier
 _LLM_TIER_CANDIDATE_TOPK = 20  # how many controls TF-IDF hands the judge
 _LLM_TIER_CANDIDATE_MIN_COSINE = 0.02  # don't judge zero-overlap controls
 _LLM_TIER_ACCEPT_SCORE = 0.6  # judge score >= this → tag; below → abstain/drop
+
+# ---------------------------------------------------------------------------
+# Hybrid RAG candidate generation (2026-06-22). The single TF-IDF cosine
+# pre-select starved the judge on the eMASS Body-of-Evidence corpus: terse
+# config/terminal text ("sestatus enforcing", "pam_faillock") shares ~zero
+# tokens with NIST control prose, so the correct control never entered the
+# top-K and the judge was never asked → 42 files tagged to ZERO controls.
+#
+# The fix is a MULTI-LANE candidate union fused by Reciprocal Rank Fusion
+# (RRF), then a tight cap, then the SAME judge gate (precision preserved).
+# Lanes (each contributes its own ranked top-N; a control surfacing in >=2
+# lanes gets the RRF boost; the judge still confirms every tag):
+#   1. sparse   — TF-IDF cosine of the raw body vs control text (exact
+#                 identifiers, the original lane).
+#   2. hyde     — TF-IDF cosine of an LLM-REWRITTEN "control prose" version
+#                 of the body vs control text. Bridges the vocabulary gap on
+#                 a gateway with no embeddings endpoint: policy-text vs
+#                 policy-text has real lexical overlap where raw config did
+#                 not. This is the highest-value lane for the failing corpus.
+#   3. dense    — embedding cosine, ONLY when a real (non-TF-IDF) embeddings
+#                 provider is available (OpenAI key / sentence-transformers).
+#                 Skipped silently otherwise so it never duplicates sparse.
+#   4. triage   — control families/IDs named directly by the HyDE prose
+#                 (parsed control-ID tokens) as an independent voter.
+#   5. folder   — the eMASS family-folder token (01.AC -> AC ...) as a
+#                 RECALL safety net: guarantees the right family's controls
+#                 reach the judge even if every content lane misses. One
+#                 voter of five; the judge gates it so it cannot mis-tag.
+# RRF k=60 (standard). Cap is eval-tuned (too many candidates hurt judge
+# precision via hard negatives; too few hurt recall).
+_RRF_K = 60
+_RAG_PER_LANE_TOPN = 15  # each lane contributes its top-N before fusion
+_RAG_FUSED_CAP = 15  # max candidates handed to the judge after fusion
+_CONTROL_ID_IN_TEXT_RE = re.compile(r"\b([A-Z]{2})-(\d{1,2})(?:\((\d+)\))?", re.I)
 _LLM_TIER_CONFIDENCE = 0.55  # method confidence: a real semantic judgment with
 # abstention — above TF-IDF Tier 5 (0.3) and control-ID Tier 3 (0.5), below the
 # deterministic content-shape Tier 4 (0.6). Relevance (not confidence) carries
@@ -369,6 +404,111 @@ _STRUCTURED_FINDING_KINDS = frozenset({
 # cross-check separately; this rule is what makes the artifact appear on the
 # RA-5 control page and reach the LLM/kernel as real per-objective evidence.
 _NESSUS_RA5_CCI = "CCI-001054"
+
+# ---------------------------------------------------------------------------
+# Corpus augmentation (2026-06-22) — control-family technical-synonym glosses.
+#
+# NIST control prose is policy-speak ("enforces approved authorizations for
+# logical access"); real evidence is machine-state ("sestatus → enforcing").
+# The TF-IDF/HyDE lanes match the evidence body against each control's text, so
+# a control whose text never contains the technical vocabulary the evidence
+# uses scores near zero. We append a SHORT gloss of the concrete artifacts a
+# control family is actually demonstrated by, so the lexical lanes get a real
+# overlap signal.
+#
+# Design guardrails (from the design review — both critics flagged the
+# cross-tagging risk):
+#   * Keyed by control FAMILY (the bounded, stable unit). A gloss is added to a
+#     control only if its family matches.
+#   * HIGH-SPECIFICITY ONLY. Each gloss term is a concrete technical artifact
+#     (a command, daemon, config file, mechanism) that belongs to ONE family —
+#     NOT a generic concept ("encryption", "access") that several families
+#     share, which would erode TF-IDF's discrimination and cause cross-tagging.
+#   * SHORT. A handful of tokens per family so the gloss can never dominate the
+#     control's real requirement text in the single-string TF-IDF document
+#     (the vectorizer is whole-string; we keep the gloss a small fraction of
+#     the control body). A gloss-only lexical hit is weak by construction; the
+#     0.6 judge gate still has the final say, so a gloss can never itself tag.
+#   * DETERMINISTic + auditable (a static table), unlike the dynamic HyDE lane
+#     — they compose: HyDE expands the query, the gloss expands the corpus.
+#
+# Extend by adding a family → space-joined technical terms entry. Keep terms
+# family-exclusive; if a term fits two families, it is too generic — drop it.
+_CONTROL_FAMILY_GLOSS: dict[str, str] = {
+    "ac": (
+        "selinux sestatus getenforce enforcing targeted policy mandatory "
+        "access control rbac sudoers pam_faillock faillock account lockout "
+        "deny unlock_time xrdp rdp remote session timeout screen lock "
+        "tmout idle disconnect podman docker container privileged rootless"
+    ),
+    "au": (
+        "auditd auditctl ausearch aureport audit rules syslog rsyslog "
+        "journald logrotate audisp log forwarding splunk audit events "
+        "watch syscall logging audit trail"
+    ),
+    "ia": (
+        "pwquality pam_pwquality password complexity minlen dcredit ucredit "
+        "ocredit lcredit faildelay krb5 kerberos ipa freeipa ldap sssd "
+        "multifactor mfa smartcard piv certificate authentication"
+    ),
+    "sc": (
+        "firewalld iptables nftables firewall zone tls openssl cipher "
+        "fips vault seal unseal encryption rest transit boundary dmz "
+        "vpn ipsec stunnel gpg luks dm-crypt cryptographic key"
+    ),
+    "si": (
+        # Malicious-code + flaw-remediation artifacts ONLY. Integrity-baseline
+        # tools (aide/tripwire/baseline) live in CM; vuln-scan terms live in
+        # RA — kept family-exclusive to preserve TF-IDF discrimination.
+        "clamav clamscan freshclam antivirus malware signature "
+        "tripwire-alert quarantine patch update remediation flaw"
+    ),
+    "cm": (
+        # Configuration-management artifacts ONLY. Owns aide/baseline (file
+        # integrity baseline IS configuration integrity) and package inventory;
+        # scap/oscap/vulnerability moved to RA (assessment), not duplicated.
+        "aide baseline configuration drift stig hardening "
+        "gpo registry rpm package inventory rpm-qa installed dpkg "
+        "least functionality disabled services ports protocols"
+    ),
+    "cp": (
+        "backup restore rsync snapshot bacula veeam recovery rpo rto "
+        "failover replication contingency cold warm hot site"
+    ),
+    "ra": (
+        # Vulnerability-scan / risk-assessment artifacts ONLY. Owns
+        # scap/oscap/vulnerability (the scanning act) — CM owns the hardened
+        # config those scans check against.
+        "nessus acas scap oscap vulnerability scan cve plugin findings "
+        "risk assessment scan results credentialed"
+    ),
+}
+
+
+def _augment_control_text(control_id: str, base_text: str) -> str:
+    """Append the family gloss (if any) to a control's reference text.
+
+    ``control_id`` is the catalog form (``ac-2`` / ``ac-2.1``); the family is
+    its leading segment. The gloss is appended AFTER the real requirement text
+    so the control's own wording dominates the TF-IDF document and the gloss is
+    a corroborating tail, never the primary signal. No gloss for the family →
+    returns ``base_text`` unchanged.
+    """
+    fam = control_id.split("-", 1)[0].lower()
+    gloss = _CONTROL_FAMILY_GLOSS.get(fam)
+    if not gloss:
+        return base_text
+    if not base_text:
+        return gloss
+    # Guard against the gloss dominating a terse control (e.g. a one-sentence
+    # enhancement): if the gloss would be a large fraction of the combined
+    # document, truncate it so the control's OWN requirement text stays the
+    # primary TF-IDF signal. The vectorizer is whole-string, so an unbounded
+    # gloss on a short control could let config-vocabulary match the stub as
+    # strongly as its substantive parent. Cap the gloss to the base length.
+    if len(gloss) > len(base_text):
+        gloss = gloss[: len(base_text)].rsplit(" ", 1)[0]
+    return f"{base_text}\n{gloss}"
 
 
 @dataclass
@@ -825,6 +965,227 @@ def _llm_candidate_user_text(cid: str, ref_text: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Hybrid RAG candidate generation — lanes + RRF fusion
+# ---------------------------------------------------------------------------
+
+# In-process embedded-catalog cache. narrative_embeddings re-embeds every
+# call and has no cache; embedding ~1000 controls per under-tagged file would
+# be ruinous. Cache the control-vector matrix per (framework_id, corpus-hash,
+# provider) so the catalog is embedded once and reused across files. Cleared
+# implicitly when the process restarts (catalog changes require a restart
+# anyway, same lifecycle as the decision cache).
+# key -> (cids, {cid: vector}). The vectors are stored cid-keyed so a cache
+# hit remaps by cid (content-keyed alignment), never positionally re-zipped
+# against a possibly-different cid order.
+#
+# Bounded LRU (OrderedDict) — NOT an unbounded dict. The v2.0 always-on
+# in-boundary service never restarts, and a fresh entry is created per distinct
+# control corpus (multi-framework DBs, catalog edits/reloads without restart,
+# re-ingest after a catalog change). Each entry holds ~1000 control vectors, so
+# an unbounded dict would leak over a long-running service. A handful of live
+# catalogs is the realistic working set; evict least-recently-used past the cap.
+_EMBED_CATALOG_MAX = 8
+_EMBED_CATALOG_CACHE: "OrderedDict[tuple, tuple[list[str], dict[str, Any]]]" = (
+    OrderedDict()
+)
+
+
+def _rank_to_rrf(ranked_cids: list[str]) -> dict[str, float]:
+    """Reciprocal Rank Fusion contribution for one lane's ranked cid list.
+
+    ``score(cid) = 1 / (k + rank)``, rank 0-based. A control near the top of
+    a lane contributes more; absence from a lane contributes nothing. Summed
+    across lanes by the caller, so a control surfacing in multiple lanes
+    accumulates — the agreement boost that makes RRF robust.
+    """
+    return {cid: 1.0 / (_RRF_K + i) for i, cid in enumerate(ranked_cids)}
+
+
+def _lane_sparse(text: str, cids: list[str], control_texts: list[str]) -> list[str]:
+    """Sparse lane: TF-IDF cosine of the raw body vs each control's text."""
+    if not text or not text.strip():
+        return []
+    cos = _tier3_relevance_scores(text, control_texts)
+    ranked = sorted(zip(cids, cos), key=lambda t: (-t[1], t[0]))
+    return [cid for cid, c in ranked if c > 0.0][:_RAG_PER_LANE_TOPN]
+
+
+def _lane_hyde(
+    hyde_prose: str, cids: list[str], control_texts: list[str]
+) -> list[str]:
+    """HyDE lane: TF-IDF cosine of the LLM-rewritten control prose vs catalog.
+
+    The big win for vocabulary mismatch — ``hyde_prose`` is already written in
+    policy language, so it overlaps control text where the raw config did not.
+    Empty prose (HyDE call failed) → empty lane (degrade, don't fabricate).
+    """
+    if not hyde_prose or not hyde_prose.strip():
+        return []
+    cos = _tier3_relevance_scores(hyde_prose, control_texts)
+    ranked = sorted(zip(cids, cos), key=lambda t: (-t[1], t[0]))
+    return [cid for cid, c in ranked if c > 0.0][:_RAG_PER_LANE_TOPN]
+
+
+def _lane_dense(
+    text: str,
+    cids: list[str],
+    control_texts: list[str],
+    *,
+    framework_id: int | None,
+) -> list[str]:
+    """Dense lane: embedding cosine — ONLY with a real embeddings provider.
+
+    Skipped (returns []) when the only available provider is the TF-IDF
+    fallback, because that would just duplicate the sparse lane. Uses the
+    per-catalog embed cache so controls are embedded once per process.
+    Best-effort: any failure → empty lane.
+    """
+    if not text or not text.strip():
+        return []
+    try:
+        from ..engine import narrative_embeddings as ne
+
+        provider = ne.resolve_provider()
+        # Skip the TF-IDF fallback provider — sparse already covers lexical.
+        if provider.__class__.__name__ == "TfidfFallbackProvider":
+            return []
+        # Content digest (not hash()) so the key is collision-safe and stable.
+        # Pair each control's text with its cid in the cache so vectors are
+        # remapped by cid on a hit — NEVER positionally re-zipped against a
+        # possibly-different cid order (the misalignment trap: same text set,
+        # different cid order, would attribute every vector to the wrong
+        # control). digest covers both the texts AND their cid pairing.
+        import hashlib
+
+        digest = hashlib.sha1(
+            "\x1e".join(f"{c}\x1f{t}" for c, t in zip(cids, control_texts)).encode(
+                "utf-8", "replace"
+            )
+        ).hexdigest()
+        corpus_key = (framework_id, digest, provider.__class__.__name__)
+        cached = _EMBED_CATALOG_CACHE.get(corpus_key)
+        if cached is None:
+            vecs = provider.embed(control_texts)
+            vec_by_cid = dict(zip(cids, vecs))
+            _EMBED_CATALOG_CACHE[corpus_key] = (list(cids), vec_by_cid)
+            # Bounded LRU: evict the oldest entry past the cap.
+            while len(_EMBED_CATALOG_CACHE) > _EMBED_CATALOG_MAX:
+                _EMBED_CATALOG_CACHE.popitem(last=False)
+        else:
+            _cids_cached, vec_by_cid = cached
+            _EMBED_CATALOG_CACHE.move_to_end(corpus_key)  # mark as recently used
+        artifact_vec = provider.embed([text])[0]
+        # Score by cid lookup — alignment is content-keyed, not positional.
+        scored = [
+            (cid, ne._cosine(artifact_vec, vec_by_cid[cid]))
+            for cid in cids
+            if cid in vec_by_cid
+        ]
+        ranked = sorted(scored, key=lambda t: (-t[1], t[0]))
+        return [cid for cid, c in ranked if c > 0.0][:_RAG_PER_LANE_TOPN]
+    except Exception:  # noqa: BLE001 — dense is optional; never abort tagging
+        log.debug("dense lane unavailable; skipping", exc_info=True)
+        return []
+
+
+def _lane_triage(hyde_prose: str, valid_cids: set[str]) -> list[str]:
+    """Triage lane: control IDs the HyDE prose names directly.
+
+    The LLM expansion often names families/IDs ("...mandatory access control,
+    AC-3, AC-6..."). Parse those tokens, normalize to catalog form, and emit
+    any that exist in this framework's control set. An independent voter — it
+    does not depend on lexical/embedding similarity at all.
+    """
+    if not hyde_prose:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _CONTROL_ID_IN_TEXT_RE.finditer(hyde_prose):
+        fam, num, enh = m.group(1).lower(), m.group(2), m.group(3)
+        cid = f"{fam}-{int(num)}" + (f".{int(enh)}" if enh else "")
+        if cid in valid_cids and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out[:_RAG_PER_LANE_TOPN]
+
+
+def _family_from_path(path: str | None) -> str | None:
+    """Extract the eMASS family token (01.AC -> 'ac') from an evidence path.
+
+    Matches the strict ``NN.XX`` BoE convention anywhere in the path (works
+    for both ``file://.../01.AC/...`` and ``zip://...!/02.AU/...``). Returns
+    the lowercase family code, or None when no such token is present (ad-hoc
+    paths contribute nothing — this lane is gated to the convention).
+    """
+    if not path:
+        return None
+    for m in re.finditer(r"[/!]\d{2}\.([A-Za-z]{2})[/_.]", path):
+        return m.group(1).lower()
+    return None
+
+
+def _lane_folder(path: str | None, all_by_control: dict[str, list[Objective]]) -> list[str]:
+    """Folder lane (recall safety net): controls in the path's eMASS family.
+
+    If the evidence sits under e.g. ``07.IA/``, every IA-family control is a
+    candidate the judge will be asked about — so a file the content lanes
+    whiffed on still gets its correct family in front of the judge. The judge
+    gates each one, so this raises recall without risking a wrong tag.
+    """
+    fam = _family_from_path(path)
+    if not fam:
+        return []
+    out = [cid for cid in all_by_control if cid.split("-", 1)[0] == fam]
+    return sorted(out)[:_RAG_PER_LANE_TOPN]
+
+
+def _generate_candidates(
+    text: str,
+    *,
+    hyde_prose: str,
+    evidence_path: str | None,
+    all_by_control: dict[str, list[Objective]],
+    cids: list[str],
+    control_texts: list[str],
+    framework_id: int | None,
+) -> list[str]:
+    """Run all lanes, fuse with RRF, return the capped candidate cid list.
+
+    The single place candidates are chosen before the judge loop. Replaces the
+    old TF-IDF-only pre-select. Deterministic: lanes are order-stable and RRF
+    ties break by cid.
+    """
+    valid = set(cids)
+    lanes = [
+        _lane_sparse(text, cids, control_texts),
+        _lane_hyde(hyde_prose, cids, control_texts),
+        _lane_dense(text, cids, control_texts, framework_id=framework_id),
+        _lane_triage(hyde_prose, valid),
+        _lane_folder(evidence_path, all_by_control),
+    ]
+    fused: dict[str, float] = {}
+    for lane in lanes:
+        for cid, contrib in _rank_to_rrf(lane).items():
+            fused[cid] = fused.get(cid, 0.0) + contrib
+    # Sort by fused score desc, ties by cid for determinism; cap tightly.
+    ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+    candidates = [cid for cid, _ in ranked[:_RAG_FUSED_CAP]]
+    if candidates:
+        return candidates
+
+    # Every lane came up empty (zero lexical overlap, no HyDE prose, no
+    # embeddings provider, no eMASS folder token). Preserve the original
+    # LLM-tier contract: an under-tagged artifact that reached this point
+    # STILL gets judged — the semantic judge is the only backstop left for
+    # text whose tokens don't overlap any control's wording. Fall back to the
+    # top-K controls by raw sparse cosine (deterministic by cid when all
+    # cosines are zero), exactly as the pre-RAG code did.
+    cos = _tier3_relevance_scores(text, control_texts)
+    by_cos = sorted(zip(cids, cos), key=lambda t: (-t[1], t[0]))
+    return [cid for cid, _ in by_cos[:_RAG_FUSED_CAP]]
+
+
 def _tag_via_llm(
     text: str,
     *,
@@ -833,8 +1194,12 @@ def _tag_via_llm(
     all_by_control: dict[str, list[Objective]],
     artifact_title: str,
     add,
+    hyde_prose: str = "",
+    evidence_path: str | None = None,
+    framework_id: int | None = None,
+    augment_corpus: bool = True,
 ) -> tuple[int, int, int]:
-    """LLM smart-backstop: TF-IDF pre-select, judge accept/abstain, tag.
+    """LLM smart-backstop: hybrid-RAG pre-select, judge accept/abstain, tag.
 
     Returns ``(llm_hits, attempted, errored)`` where ``attempted`` is the
     number of candidate controls actually sent to the judge and ``errored`` is
@@ -850,35 +1215,42 @@ def _tag_via_llm(
     cids = sorted(all_by_control.keys())
     if not cids:
         return 0, 0, 0
-    control_texts = [_control_reference_text(all_by_control[cid]) for cid in cids]
-    cosines = _tier3_relevance_scores(text, control_texts)
+    # Corpus augmentation: append each control family's technical-synonym gloss
+    # so the lexical lanes get an overlap signal between machine-state evidence
+    # and policy-speak control text. Gated (default on); the gloss only feeds
+    # CANDIDATE SELECTION — the judge still gates every tag, so a gloss-driven
+    # candidate that isn't truly relevant is rejected at 0.6.
+    if augment_corpus:
+        control_texts = [
+            _augment_control_text(cid, _control_reference_text(all_by_control[cid]))
+            for cid in cids
+        ]
+    else:
+        control_texts = [
+            _control_reference_text(all_by_control[cid]) for cid in cids
+        ]
+    text_by_cid = dict(zip(cids, control_texts))
 
-    # TF-IDF pre-select: rank all controls by cosine, ties broken by cid so the
-    # candidate set is deterministic for a given artifact.
-    ranked = sorted(
-        zip(cids, control_texts, cosines), key=lambda t: (-t[2], t[0])
+    # Hybrid-RAG candidate generation (replaces the TF-IDF-only pre-select).
+    # Multiple lanes (sparse + HyDE + dense + triage + folder) fused by RRF,
+    # then capped — so the correct control reaches the judge even when raw
+    # config text has zero lexical overlap with catalog prose. The judge's
+    # accept gate below is unchanged, so precision is preserved while recall
+    # rises. The old "1-3 candidates squeak over the floor → fallback never
+    # fires → judge starved" bug is structurally gone: RRF always returns a
+    # populated, ranked set when any lane produced a hit.
+    candidate_cids = _generate_candidates(
+        text,
+        hyde_prose=hyde_prose,
+        evidence_path=evidence_path,
+        all_by_control=all_by_control,
+        cids=cids,
+        control_texts=control_texts,
+        framework_id=framework_id,
     )
-
-    # Prefer controls that clear the lexical floor — cheap, high-signal, bounds
-    # the judge call count on a well-behaved artifact.
-    candidates = [t for t in ranked if t[2] >= _LLM_TIER_CANDIDATE_MIN_COSINE][
-        :_LLM_TIER_CANDIDATE_TOPK
-    ]
-    if not candidates:
-        # Nothing clears the lexical floor. This is the residual case the
-        # normalization fix can't reach: clean text whose tokens simply don't
-        # overlap the matched control's requirement wording (e.g.
-        # ``ClientAliveInterval`` is real AC-12 evidence but the catalog text
-        # says "session termination" — zero shared tokens, zero cosine). TF-IDF
-        # Tier 5 would also find nothing, so the SEMANTIC judge is the only
-        # backstop left. We are only here because the artifact is under-tagged
-        # (the caller gates Tier 5-LLM on ``len(existing) < _TIER5_MIN_EXISTING``),
-        # so spending judge calls to rescue it is exactly the intended trade —
-        # the judge's 0.6 accept threshold remains the precision gate. Fall back
-        # to the top-K by raw cosine (deterministic by cid when all-zero).
-        candidates = ranked[:_LLM_TIER_CANDIDATE_TOPK]
-    if not candidates:
+    if not candidate_cids:
         return 0, 0, 0
+    candidates = [(cid, text_by_cid[cid]) for cid in candidate_cids]
 
     brief = _build_llm_brief(artifact_title, _llm_artifact_body(text))
 
@@ -990,6 +1362,7 @@ def tag_evidence(
     framework_id: int | None = None,
     client: Any | None = None,
     judge_model: str | None = None,
+    augment_corpus: bool = True,
 ) -> TaggingResult:
     """Apply doc-number, CCI-direct, control-ID, evidence-type, and (as a
     low-tag backstop) semantic-recall tags.
@@ -1399,6 +1772,18 @@ def tag_evidence(
                     or (evidence.path.rsplit("/", 1)[-1] if evidence.path else "")
                     or str(evidence.id)
                 )
+                # HyDE query-expansion: rewrite the raw body into NIST control
+                # prose ONCE per under-tagged artifact. Feeds the hyde + triage
+                # RAG lanes. Best-effort — "" on failure degrades to the other
+                # lanes (sparse/dense/folder still run). Gated identically to
+                # the judge (only under-tagged artifacts pay for it).
+                hyde_prose = ""
+                expand = getattr(client, "expand_to_control_prose", None)
+                if callable(expand):
+                    try:
+                        hyde_prose = expand(text, model=judge_model) or ""
+                    except Exception:  # noqa: BLE001 — never abort tagging
+                        log.debug("HyDE expansion raised; continuing", exc_info=True)
                 llm_hits, attempted, errored = _tag_via_llm(
                     text,
                     client=client,
@@ -1406,6 +1791,10 @@ def tag_evidence(
                     all_by_control=all_by_control,
                     artifact_title=artifact_title,
                     add=_add,
+                    hyde_prose=hyde_prose,
+                    evidence_path=evidence.path,
+                    framework_id=framework_id,
+                    augment_corpus=augment_corpus,
                 )
                 # Instrumentation only — does not alter any verdict. judge_invoked
                 # marks that the gate passed AND a client was present (the doc

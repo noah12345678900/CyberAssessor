@@ -1,0 +1,32 @@
+{
+  "name": "recall_container_ports_maps_cm7",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 04.CM/: a script(1) capture of `podman ps` and `podman port` showing the running container set and exposed ports. Restricting running services/containers to the minimum necessary is CM-7 (Least Functionality); the documented running set also supports CM-8 (Component Inventory). Body has NO control ID / CCI / doc number; container vocabulary ('podman ps', 'CONTAINER ID', '0.0.0.0:8443->8443/tcp') has near-zero overlap with 'least functionality'. Current tagger → zero tags. Distractor AC-3 present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "cm-7", "title": "Least Functionality", "family": "CM"},
+      {"control_id": "cm-8", "title": "Information System Component Inventory", "family": "CM"},
+      {"control_id": "ac-3", "title": "Access Enforcement", "family": "AC"}
+    ],
+    "objectives": [
+      {"control_id": "cm-7", "objective_id": "CCI-000381", "text": "The organization configures the information system to provide only essential capabilities and prohibits or restricts the use of unnecessary functions, ports, protocols, and services.", "implementation_guidance": "Restrict running services and exposed ports to the minimum necessary.", "assessment_procedures": "Examine the running services and exposed ports."},
+      {"control_id": "cm-8", "objective_id": "CCI-000363", "text": "The organization develops and documents an inventory of information system components.", "implementation_guidance": "Maintain a component inventory.", "assessment_procedures": "Examine the component inventory."},
+      {"control_id": "ac-3", "objective_id": "CCI-000213", "text": "The information system enforces approved authorizations for logical access.", "implementation_guidance": "Enforce access authorizations.", "assessment_procedures": "Examine access enforcement."}
+    ]
+  },
+  "evidence": {
+    "filename": "container_inventory.txt",
+    "title": "Container running set capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-12 08:50:00-0500\n[root@app01 ~]# podman ps --format 'table {{.Names}} {{.Image}} {{.Ports}} {{.Status}}'\nNAMES        IMAGE                              PORTS                      STATUS\napi-gw       registry.local/api-gw:2.4.1        0.0.0.0:8443->8443/tcp     Up 9 days\nredis        registry.local/redis:7.2           127.0.0.1:6379->6379/tcp   Up 9 days\nworker       registry.local/worker:2.4.1                                   Up 9 days\n[root@app01 ~]# podman info --format '{{.Host.Security.Rootless}}'\ntrue\n[root@app01 ~]# ss -tlnp | grep -E '8443|6379'\nLISTEN 0 511 0.0.0.0:8443 0.0.0.0:*\nLISTEN 0 511 127.0.0.1:6379 0.0.0.0:*\n[root@app01 ~]# exit\nScript done on 2026-03-12 08:51:20-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-000381"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-000213"}
+    ]
+  }
+}

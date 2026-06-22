@@ -83,6 +83,11 @@ class EvidenceKind(str, Enum):
     # extracted (stdlib zip+XML), so network/boundary diagrams reach the tagger
     # and the boundary-control kind rule.
     DIAGRAM = "diagram"
+    # Packet capture (.pcap/.pcapng) — binary; a summary extractor emits a
+    # text digest (protocols, top talkers, ports, conversation counts) so the
+    # capture reaches the tagger as searchable text. Raw packets are never fed
+    # to the LLM (noise); the digest is the evidence surface.
+    PCAP = "pcap"
     OTHER = "other"
 
 

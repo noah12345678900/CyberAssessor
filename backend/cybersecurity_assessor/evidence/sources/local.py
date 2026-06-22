@@ -38,6 +38,11 @@ _INGESTIBLE_SUFFIXES = {
     ".md",
     ".log",
     ".csv",
+    ".json",
+    # Packet captures — summary-digest extractor (stdlib, dependency-free).
+    ".pcap",
+    ".pcapng",
+    ".cap",
     # Images (no OCR — filename/metadata tagging) + vector diagrams
     # (.vsdx/.svg shape text extracted). Admitted so screenshots and
     # network/boundary diagrams become visible evidence instead of being

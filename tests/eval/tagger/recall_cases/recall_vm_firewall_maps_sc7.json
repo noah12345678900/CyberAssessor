@@ -1,0 +1,30 @@
+{
+  "name": "recall_vm_firewall_maps_sc7",
+  "description": "RECALL case — expected to FAIL pre-RAG-rewrite. Real eMASS BoE file under 10.SC/: a script(1) capture of `firewall-cmd --list-all` on a VM host. Host-based firewall with default-deny zones enforcing boundary protection is SC-7 (Boundary Protection). Body has NO control ID / CCI / doc number; firewalld vocabulary ('public (active)', 'target: DROP', 'rich rules') has near-zero overlap with 'boundary protection'. Current tagger → zero tags. Distractor AC-4 (information flow) present as precision guard.",
+  "catalog": {
+    "framework": {"framework_id": "NIST-800-53r4", "name": "NIST 800-53", "version": "Rev 4"},
+    "controls": [
+      {"control_id": "sc-7", "title": "Boundary Protection", "family": "SC"},
+      {"control_id": "ac-4", "title": "Information Flow Enforcement", "family": "AC"}
+    ],
+    "objectives": [
+      {"control_id": "sc-7", "objective_id": "CCI-001097", "text": "The information system monitors and controls communications at the external boundary of the system and at key internal boundaries within the system.", "implementation_guidance": "Deploy boundary protection devices configured to deny by default and allow by exception.", "assessment_procedures": "Examine the boundary protection configuration."},
+      {"control_id": "ac-4", "objective_id": "CCI-001368", "text": "The information system enforces approved authorizations for controlling the flow of information within the system and between interconnected systems.", "implementation_guidance": "Configure information flow control policies.", "assessment_procedures": "Examine information flow enforcement."}
+    ]
+  },
+  "evidence": {
+    "filename": "vm_firewall.txt",
+    "title": "VM host firewall capture",
+    "kind": "text",
+    "text": "Script started on 2026-03-09 13:22:00-0500\n[root@app01 ~]# firewall-cmd --state\nrunning\n[root@app01 ~]# firewall-cmd --list-all\npublic (active)\n  target: DROP\n  icmp-block-inversion: no\n  interfaces: ens192\n  sources:\n  services: ssh\n  ports: 8443/tcp\n  protocols:\n  forward: no\n  masquerade: no\n  rich rules:\n    rule family=ipv4 source address=10.0.0.0/24 port port=22 protocol=tcp accept\n    rule family=ipv4 source address=0.0.0.0/0 drop\n[root@app01 ~]# firewall-cmd --get-default-zone\npublic\n[root@app01 ~]# exit\nScript done on 2026-03-09 13:23:10-0500\n"
+  },
+  "framework_id": null,
+  "expected": {
+    "tags_must_include": [
+      {"objective_id": "CCI-001097"}
+    ],
+    "tags_must_not_include": [
+      {"objective_id": "CCI-001368"}
+    ]
+  }
+}
