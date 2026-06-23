@@ -32,6 +32,14 @@ def get_settings() -> dict:
         "llm_provider": c.llm_provider,
         # Anthropic
         "anthropic_model": c.anthropic_model,
+        # Judge / ingest+sweep LLM. Separate from the main assess model: the
+        # tagger's Tier-5 judge AND the SharePoint sweep judge both read
+        # ``llm_judge_model`` (a cheaper, high-volume classifier). One model
+        # knob covers both. ``judge_llm_enabled`` is a SHARED toggle: it mirrors
+        # the two underlying kill-switches (tagger_llm_enabled + sweep_judge_
+        # enabled) as one — True only when BOTH are on; setting it flips both.
+        "llm_judge_model": c.llm_judge_model,
+        "judge_llm_enabled": bool(c.tagger_llm_enabled and c.sweep_judge_enabled),
         "anthropic_key_set": cfg.get_anthropic_key() is not None,
         "anthropic_base_url": c.anthropic_base_url,  # None ⇒ real Anthropic
         "anthropic_default_base_url": cfg.DEFAULT_ANTHROPIC_BASE_URL,
@@ -262,6 +270,15 @@ class SettingsUpdate(BaseModel):
     # "anthropic" | "openai"
     llm_provider: str | None = None
     anthropic_model: str | None = None
+    # Ingest + sweep judge model (the cheaper high-volume classifier shared by
+    # the tagger Tier-5 judge and the SharePoint sweep judge). None ⇒ leave
+    # alone. Separate from anthropic_model (the main assess model).
+    llm_judge_model: str | None = None
+    # SHARED enable toggle for the judge LLM. None ⇒ leave alone. When set, it
+    # flips BOTH underlying kill-switches together (tagger_llm_enabled +
+    # sweep_judge_enabled) so one switch governs "use the judge LLM at all"
+    # across ingest and sweep. Off ⇒ both fall back to deterministic/keyword.
+    judge_llm_enabled: bool | None = None
     # Pass "" to clear and revert to the default (real Anthropic API).
     anthropic_base_url: str | None = None
     openai_model: str | None = None
@@ -397,6 +414,13 @@ def update_settings(body: SettingsUpdate) -> dict:
         c.llm_provider = body.llm_provider  # type: ignore[assignment]
     if body.anthropic_model is not None:
         c.anthropic_model = body.anthropic_model
+    if body.llm_judge_model is not None:
+        # Shared by the ingest tagger judge AND the sweep judge.
+        c.llm_judge_model = body.llm_judge_model.strip() or c.llm_judge_model
+    if body.judge_llm_enabled is not None:
+        # One switch → flip BOTH underlying kill-switches together.
+        c.tagger_llm_enabled = body.judge_llm_enabled
+        c.sweep_judge_enabled = body.judge_llm_enabled
     if body.anthropic_base_url is not None:
         c.anthropic_base_url = body.anthropic_base_url.strip() or None
     if body.openai_model is not None:

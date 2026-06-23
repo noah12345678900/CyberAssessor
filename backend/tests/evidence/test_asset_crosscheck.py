@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
@@ -82,6 +82,7 @@ def _make_evidence(
     asset_list_label: str | None = None,
     superseded_by_id: int | None = None,
     workbook_id: int = 1,
+    host_pairs: list[dict[str, str]] | None = None,
 ) -> Evidence:
     """Seed one Evidence row with host_inventory JSON pre-populated.
 
@@ -93,6 +94,10 @@ def _make_evidence(
     ``summarize_asset_coverage`` call in this module passes — PR 2's
     per-workbook scoping filters ``Evidence.workbook_id``, so an unscoped
     (None) row is invisible to the coverage query.
+
+    ``host_pairs`` seeds the device-identity sibling column with a list of
+    ``{"ip","fqdn"}`` dicts (what a credentialed scan emits). None = the
+    column stays NULL, matching uncredentialed scans / legacy rows.
     """
     ev = Evidence(
         path=path,
@@ -103,6 +108,7 @@ def _make_evidence(
         is_asset_list=is_asset_list,
         asset_list_label=asset_list_label,
         host_inventory=json.dumps(hosts) if hosts is not None else None,
+        host_pairs=json.dumps(host_pairs) if host_pairs is not None else None,
         superseded_by_id=superseded_by_id,
         workbook_id=workbook_id,
     )
@@ -139,10 +145,13 @@ def test_nessus_only_host_classified_as_scanned_only(session):
     )
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
-    assert report.scanned_set == {"server01"}
+    # Host identity is (boundary, hostname); a single-boundary / untagged
+    # workbook resolves every host to the "unspecified" sentinel.
+    assert report.scanned_set == {("unspecified", "server01")}
     assert report.checklisted_set == frozenset()
     assert report.declared_set == frozenset()
     assert [h.hostname for h in report.hosts] == ["server01"]
+    assert report.hosts[0].boundary == "unspecified"
     assert report.hosts[0].coverage == "scanned_only"
     assert "server01" in report.gaps.get("scanned_only", [])
 
@@ -158,7 +167,7 @@ def test_ckl_only_host_attaches_stig_title(session):
     )
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
-    assert report.checklisted_set == {"server02"}
+    assert report.checklisted_set == {("unspecified", "server02")}
     rec = report.hosts[0]
     assert rec.coverage == "checklisted_only"
     assert rec.stigs_applied == ["Microsoft Windows Server 2022 STIG"]
@@ -211,7 +220,7 @@ def test_declared_inventory_with_flag_populates_declared_set(session):
     )
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
-    assert report.declared_set == {"server05"}
+    assert report.declared_set == {("unspecified", "server05")}
     assert report.hosts[0].coverage == "declared_not_observed"
     # asset_list_label takes precedence over title/filename in the source label.
     assert report.sources[0].label == "Approved HW/SW"
@@ -247,9 +256,9 @@ def test_three_source_full_match_lands_in_complete(session):
     # exists so the UI can show "N complete hosts".
     assert report.gaps.get("complete") == ["server06"]
     # Headline counts all see the same host.
-    assert report.scanned_set == {"server06"}
-    assert report.checklisted_set == {"server06"}
-    assert report.declared_set == {"server06"}
+    assert report.scanned_set == {("unspecified", "server06")}
+    assert report.checklisted_set == {("unspecified", "server06")}
+    assert report.declared_set == {("unspecified", "server06")}
 
 
 def test_scanned_and_checklisted_but_not_declared(session):
@@ -318,8 +327,8 @@ def test_superseded_evidence_is_excluded(session):
 
     # Normalization lowercases — but both fixture names are already lower.
     report = summarize_asset_coverage(workbook_id=1, session=session)
-    assert report.scanned_set == {"server-current"}
-    assert "server-old" not in report.scanned_set
+    assert report.scanned_set == {("unspecified", "server-current")}
+    assert ("unspecified", "server-old") not in report.scanned_set
 
 
 def test_source_with_empty_host_list_still_reported(session):
@@ -623,3 +632,370 @@ def test_source_summary_is_a_value_type():
     )
     with pytest.raises(Exception):
         s.host_count = 99  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Device-centric source-type breakdown (host_pairs reconciliation)
+# ---------------------------------------------------------------------------
+
+
+def test_credentialed_pair_collapses_two_ips_to_one_device(session):
+    """A credentialed scan reporting two IPs for one FQDN → ONE resolved device.
+
+    Mirrors a multi-homed / dual-NIC box: the (ip, fqdn) pairs name the same
+    device twice with different IPs. ingest folds the FQDN's bare short form
+    into host_inventory, so the host universe key is ``server01``; both IPs
+    collapse under it. Expectation: resolved_devices == 1, distinct_ips == 0
+    (the IPs are attributes of the device, not their own hosts).
+    """
+    _make_evidence(
+        session,
+        path="file:///cred-scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        # Bare device name only — ingest does NOT add the raw IPs to the
+        # host_inventory list (the IP guard would keep them whole and they'd
+        # masquerade as their own hosts). The pairs carry the IP side.
+        hosts=["server01"],
+        title="Credentialed ACAS",
+        host_pairs=[
+            {"ip": "10.0.0.5", "fqdn": "server01.dom.mil"},
+            {"ip": "10.0.0.6", "fqdn": "server01.dom.mil"},
+        ],
+    )
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    assert report.resolved_devices == 1
+    assert report.distinct_ips == 0
+    # The device itself is the single host in the universe; the two raw IPs
+    # never became their own host rows.
+    assert [h.hostname for h in report.hosts] == ["server01"]
+
+
+def test_uncredentialed_ip_shows_unmapped_not_conflict(session):
+    """An uncredentialed scan IP with no pair → distinct (unmapped) IP, calmly.
+
+    No (ip, fqdn) pair exists, so the scanner only knows the IP. It must show
+    as a scanned IP "not yet mapped to a device" — counted in distinct_ips —
+    and must NOT be promoted to a resolved device or raised as a conflict /
+    needs-review. Reconciliation stays silent (no alert spam).
+    """
+    _make_evidence(
+        session,
+        path="file:///uncred-scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["172.20.8.86"],  # bare IP literal, no pair
+        title="Uncredentialed ACAS",
+        # host_pairs intentionally omitted (NULL) — uncredentialed.
+    )
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    assert report.distinct_ips == 1
+    assert report.resolved_devices == 0
+    # The IP-literal host stays in the universe (visible to the assessor) but
+    # is tagged scanned_only — a normal coverage state, not a conflict bucket.
+    assert [h.hostname for h in report.hosts] == ["172.20.8.86"]
+    assert report.hosts[0].coverage == "scanned_only"
+    # No conflict / needs-review-style gap bucket was invented for it.
+    assert "conflict" not in report.gaps
+
+
+def test_stig_xlsx_counts_as_checklisted_xlsx(session):
+    """A DISA STIG-report .xlsx (kind STIG_CKL) → checklists_xlsx, not regular.
+
+    xlsx.py tags STIG-report spreadsheets as STIG_CKL so they flow into the
+    checklisted bucket, but provenance (the .xlsx extension) splits them out
+    for the source-type breakdown. A real .ckl alongside it must land in
+    checklists_regular so the two are distinguishable in the UI.
+    """
+    _make_evidence(
+        session,
+        path="file:///win2022-stig-report.xlsx",
+        kind=EvidenceKind.STIG_CKL,  # shared kind; .xlsx extension = SCAP/xlsx
+        hosts=["webhost"],
+        title="Windows Server 2022 STIG",
+    )
+    _make_evidence(
+        session,
+        path="file:///dbhost.ckl",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["dbhost"],
+        title="SQL Server 2019 STIG",
+    )
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    assert report.checklists_xlsx == 1
+    assert report.checklists_regular == 1
+    # Both hosts still flow through the checklisted set as before — the
+    # breakdown is additive, not a re-categorization.
+    assert report.checklisted_set == frozenset(
+        {("unspecified", "webhost"), ("unspecified", "dbhost")}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Boundary-aware host identity — (boundary, hostname) keying
+# ---------------------------------------------------------------------------
+
+
+def _link_boundary(
+    session: Session, *, evidence_id: int, name: str, workbook_id: int = 1
+) -> None:
+    """Tag an Evidence row with a named boundary via EvidenceBoundary.
+
+    Mirrors what routes.evidence.set_evidence_boundary persists: get-or-create
+    a BoundarySegment for (workbook_id, name), then link this evidence to it.
+    """
+    from cybersecurity_assessor.models import BoundarySegment, EvidenceBoundary
+
+    seg = session.exec(
+        select(BoundarySegment)
+        .where(BoundarySegment.workbook_id == workbook_id)
+        .where(BoundarySegment.name == name)
+    ).first()
+    if seg is None:
+        seg = BoundarySegment(workbook_id=workbook_id, name=name)
+        session.add(seg)
+        session.flush()
+    session.add(
+        EvidenceBoundary(evidence_id=evidence_id, boundary_segment_id=seg.id)
+    )
+    session.commit()
+
+
+def test_same_ip_in_two_boundaries_stays_distinct(session):
+    """Reused RFC1918 IP in two CRNs must NOT collapse into one device."""
+    a = _make_evidence(
+        session,
+        path="file:///boe/scanA.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["192.168.1.1"],
+        title="CRN-A scan",
+    )
+    b = _make_evidence(
+        session,
+        path="file:///boe/scanB.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["192.168.1.1"],
+        title="CRN-B scan",
+    )
+    _link_boundary(session, evidence_id=a.id, name="CRN-A")
+    _link_boundary(session, evidence_id=b.id, name="CRN-B")
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    # Two DISTINCT host records — one per boundary — not one collapsed row.
+    assert report.scanned_set == {
+        ("CRN-A", "192.168.1.1"),
+        ("CRN-B", "192.168.1.1"),
+    }
+    boundaries = sorted(h.boundary for h in report.hosts)
+    assert boundaries == ["CRN-A", "CRN-B"]
+    # Both are bare-IP, unpaired, undeclared → each is its own unmapped IP.
+    assert report.distinct_ips == 2
+
+
+def test_same_host_scanned_and_checklisted_one_boundary_unions(session):
+    """The legitimate scan+checklist union must survive boundary keying."""
+    scan = _make_evidence(
+        session,
+        path="file:///boe/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        title="scan",
+    )
+    ckl = _make_evidence(
+        session,
+        path="file:///boe/dc01.ckl",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["dc01"],
+        title="Windows STIG",
+    )
+    _link_boundary(session, evidence_id=scan.id, name="CRN-A")
+    _link_boundary(session, evidence_id=ckl.id, name="CRN-A")
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    # ONE host record — same boundary + same host unions across evidence.
+    assert len(report.hosts) == 1
+    rec = report.hosts[0]
+    assert rec.hostname == "dc01"
+    assert rec.boundary == "CRN-A"
+    assert rec.scanned_in and rec.checklisted_in
+    assert rec.coverage == "observed_not_declared"
+
+
+def test_same_host_different_boundaries_does_not_union(session):
+    """dc01 in CRN-A and dc01 in CRN-B are two devices, not one."""
+    a = _make_evidence(
+        session,
+        path="file:///boe/a.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        title="A",
+    )
+    b = _make_evidence(
+        session,
+        path="file:///boe/b.ckl",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["dc01"],
+        title="Windows STIG",
+    )
+    _link_boundary(session, evidence_id=a.id, name="CRN-A")
+    _link_boundary(session, evidence_id=b.id, name="CRN-B")
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    assert len(report.hosts) == 2
+    # CRN-A dc01 is scanned-only; CRN-B dc01 is checklisted-only — they did
+    # NOT merge into a "complete" host.
+    covs = {(h.boundary, h.coverage) for h in report.hosts}
+    assert covs == {("CRN-A", "scanned_only"), ("CRN-B", "checklisted_only")}
+    # Gap labels are boundary-qualified so the two don't render identically.
+    assert "CRN-A/dc01" in report.gaps.get("scanned_only", [])
+    assert "CRN-B/dc01" in report.gaps.get("checklisted_only", [])
+
+
+def test_boundary_inferred_from_folder_path(session):
+    """A CRN folder above the NN.XX family token seeds the boundary."""
+    _make_evidence(
+        session,
+        path="file:///boe/CRN-A/01.AC/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["host9"],
+        title="scan",
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert report.hosts[0].boundary == "CRN-A"
+
+
+def test_explicit_link_beats_folder_path(session):
+    """An EvidenceBoundary link overrides a (different) folder-path token."""
+    ev = _make_evidence(
+        session,
+        path="file:///boe/CRN-A/01.AC/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["host9"],
+        title="scan",
+    )
+    _link_boundary(session, evidence_id=ev.id, name="CRN-Z")
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert report.hosts[0].boundary == "CRN-Z"
+
+
+def test_generic_folder_segment_does_not_become_boundary(session):
+    """A denylisted parent (e.g. 'scans') above NN.XX yields no boundary."""
+    _make_evidence(
+        session,
+        path="file:///boe/scans/01.AC/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["host9"],
+        title="scan",
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert report.hosts[0].boundary == "unspecified"
+
+
+def test_credentialed_pair_does_not_cross_boundary_for_ip_mapping(session):
+    """A paired IP in CRN-A must not mark a bare same-IP host in CRN-B mapped."""
+    paired = _make_evidence(
+        session,
+        path="file:///boe/credA.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dca", "10.0.0.5"],
+        title="A credentialed",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dca.dom.mil"}],
+    )
+    bare = _make_evidence(
+        session,
+        path="file:///boe/uncredB.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["10.0.0.5"],
+        title="B uncredentialed",
+    )
+    _link_boundary(session, evidence_id=paired.id, name="CRN-A")
+    _link_boundary(session, evidence_id=bare.id, name="CRN-B")
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    # CRN-A: 10.0.0.5 collapses under device "dca" (paired) → not an unmapped IP.
+    # CRN-B: 10.0.0.5 is bare/unpaired → it IS an unmapped IP, NOT absorbed by
+    # CRN-A's pairing. So exactly one distinct unmapped IP, and dca is a device.
+    assert report.distinct_ips == 1
+    a_hosts = {h.hostname for h in report.hosts if h.boundary == "CRN-A"}
+    b_hosts = {h.hostname for h in report.hosts if h.boundary == "CRN-B"}
+    assert "dca" in a_hosts and "10.0.0.5" in a_hosts
+    assert b_hosts == {"10.0.0.5"}
+
+
+def test_single_boundary_report_unchanged_when_untagged(session):
+    """No links + no path tokens → everything 'unspecified' (legacy behaviour)."""
+    _make_evidence(
+        session,
+        path="file:///flat/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["server01", "server02"],
+        title="scan",
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert all(h.boundary == "unspecified" for h in report.hosts)
+    # Gap labels stay bare (no "unspecified/" prefix) so single-boundary
+    # output is byte-identical to the pre-boundary report.
+    assert set(report.gaps.get("scanned_only", [])) == {"server01", "server02"}
+
+
+# ---------------------------------------------------------------------------
+# scope_backfill: credentialed (ip, fqdn) back-fill onto an existing Asset
+# ---------------------------------------------------------------------------
+
+
+def test_scope_backfill_backfills_fqdn_ip_when_credentialed_row_is_later(session):
+    """A later credentialed row must back-fill fqdn/ip on an Asset created by
+    an earlier bare-hostname row (evidence iteration order is unspecified).
+
+    Regression: first-writer-wins created the Asset with null fqdn/ip from the
+    bare row, and the credentialed (ip, fqdn) pair from a later row silently
+    vanished. The back-fill fills the null attrs in place without creating a
+    second Asset.
+    """
+    from cybersecurity_assessor.models import Asset, Workbook
+    from cybersecurity_assessor.evidence.scope_backfill import run_scope_backfill
+
+    # scope_backfill needs a real workbook row to scope Asset/links to.
+    wb = session.get(Workbook, 1)
+    if wb is None:
+        wb = Workbook(id=1, path="wb.xlsx", filename="wb.xlsx", baseline_id=None)
+        session.add(wb)
+        session.commit()
+
+    # Earlier row: bare hostname, NO pair → would create Asset(fqdn=None, ip=None).
+    _make_evidence(
+        session,
+        path="file:///boe/bare.ckl",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["dca"],
+        title="Windows STIG",
+    )
+    # Later row: same device, credentialed (ip, fqdn) pair. Its host_inventory
+    # must include the bare-host form so backfill keys the same Asset.
+    _make_evidence(
+        session,
+        path="file:///boe/cred.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dca"],
+        title="credentialed scan",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dca.dom.mil"}],
+    )
+
+    summary = run_scope_backfill(session)
+    session.commit()
+
+    assets = session.exec(select(Asset).where(Asset.workbook_id == 1)).all()
+    dca = [a for a in assets if a.hostname == "dca"]
+    # Exactly ONE Asset for the device (no duplicate), with fqdn + ip back-filled.
+    assert len(dca) == 1
+    assert dca[0].fqdn == "dca.dom.mil"
+    assert dca[0].ip_address == "10.0.0.5"
+    assert summary.assets_created == 1

@@ -53,6 +53,7 @@ Hostname resolution is two-tier as of 2026-06-06:
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,7 +62,22 @@ from typing import Iterable
 from sqlmodel import Session, select
 
 from ..db import chunked
-from ..models import Asset, Evidence, EvidenceAsset, EvidenceKind
+from ..models import (
+    Asset,
+    BoundarySegment,
+    Evidence,
+    EvidenceAsset,
+    EvidenceBoundary,
+    EvidenceKind,
+)
+
+# Sentinel boundary for hosts whose evidence carries no boundary signal —
+# no EvidenceBoundary link and no parseable folder-path token. In a
+# single-boundary workbook EVERY host lands here, so the report behaves
+# exactly as it did before boundary-awareness (zero regression). Two
+# same-named hosts both "unspecified" still collapse — which is correct,
+# because we have no evidence they are different devices.
+UNSPECIFIED_BOUNDARY = "unspecified"
 
 # ---------------------------------------------------------------------------
 # Source categorization
@@ -101,9 +117,21 @@ class SourceRef:
 
 @dataclass
 class HostRecord:
-    """Per-host roll-up across all three derived sources."""
+    """Per-host roll-up across all three derived sources.
+
+    The identity of a host is ``(boundary, hostname)`` — a workbook can span
+    multiple boundaries / CRNs under one ATO, and RFC1918 space + default
+    hostnames are reused per enclave, so a bare ``192.168.1.1`` or ``dc01`` is
+    NOT globally unique. ``boundary`` carries the per-evidence boundary label
+    (from an EvidenceBoundary link, else a gated folder-path token, else
+    ``"unspecified"``) so two same-named hosts in different boundaries stay
+    distinct in the inventory while the same host across scan + checklist in ONE
+    boundary still unions. ``"unspecified"`` is the single-boundary / untagged
+    default — behaviour there is identical to the pre-boundary report.
+    """
 
     hostname: str
+    boundary: str = "unspecified"
     scanned_in: list[SourceRef] = field(default_factory=list)
     checklisted_in: list[SourceRef] = field(default_factory=list)
     declared_in: list[SourceRef] = field(default_factory=list)
@@ -160,6 +188,29 @@ class AssetCoverageReport:
     scanned_set: frozenset[str]
     checklisted_set: frozenset[str]
     declared_set: frozenset[str]
+    # ---- Source-type breakdown (additive, render-time) -------------------
+    # These power the UI "what did we actually look at" card and replace the
+    # misleading "Scanned 86 / Checklisted 0" headline with a device-centric
+    # view. All four default to 0 so older callers / tests that build the
+    # report directly keep working.
+    #
+    # distinct_ips      — bare IP literals seen by scans that are NOT collapsed
+    #                     under a resolved device (uncredentialed scan IPs with
+    #                     no (ip,fqdn) pair and no declared IP↔host mapping).
+    #                     Shown calmly as "scanned IP not yet mapped to a
+    #                     device" — NOT a conflict.
+    # resolved_devices  — distinct device hostnames (everything in the host
+    #                     universe that is a real name, not a bare IP). One per
+    #                     physical/virtual box regardless of how many IPs it has.
+    # checklists_regular — count of checklist Evidence rows whose file is a real
+    #                     .ckl / .cklb / XCCDF checklist.
+    # checklists_xlsx   — count of checklist Evidence rows that are actually a
+    #                     DISA STIG-report .xlsx/.xlsm (kind STIG_CKL but the
+    #                     file is a spreadsheet, distinguished by extension).
+    distinct_ips: int = 0
+    resolved_devices: int = 0
+    checklists_regular: int = 0
+    checklists_xlsx: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +235,30 @@ def _looks_like_ip(token: str) -> bool:
         return False
 
 
+def _clean_host_token(name: str) -> str:
+    """Lowercase + drop a trailing dot and a ``:port`` suffix before IP checks.
+
+    Mirrors ``ingest._clean_host_token`` (kept local to avoid an import
+    cycle). Strips a ``:port`` only when there is exactly one colon with an
+    all-digit suffix, so a bare IPv6 literal is never mangled. Without this,
+    ``1.2.3.4:443`` fails the IP guard and dot-splits to the bogus key ``"1"``.
+    """
+    n = (name or "").strip().lower().rstrip(".")
+    if n.count(":") == 1:
+        head, _, tail = n.partition(":")
+        if head and tail.isdigit():
+            n = head
+    return n
+
+
 def _normalize(name: str) -> str:
     """Lower-case, strip dot-domain suffix, drop surrounding whitespace.
 
     IP guard mirrors ``ingest._normalize_host``: an IPv4/IPv6 literal is
     returned whole so ingest-time and query-time host keys stay identical.
+    A ``:port`` / trailing-dot is stripped first (see ``_clean_host_token``).
     """
-    n = (name or "").strip().lower()
+    n = _clean_host_token(name)
     if "." in n and not _looks_like_ip(n):
         n = n.split(".", 1)[0]
     return n
@@ -284,6 +352,256 @@ def _category(ev: Evidence) -> str | None:
     return None
 
 
+# Spreadsheet extensions that mark a STIG_CKL evidence row as a DISA
+# STIG-report .xlsx rather than a real .ckl/.cklb/XCCDF checklist. The
+# kind is shared (xlsx.py emits STIG_CKL for STIG-report spreadsheets), so
+# provenance must come from the file extension.
+_STIG_XLSX_SUFFIXES: frozenset[str] = frozenset({".xlsx", ".xlsm"})
+
+
+def _is_stig_xlsx(ev: Evidence) -> bool:
+    """True if a checklist-kind Evidence row is really a STIG-report spreadsheet.
+
+    ``xlsx.py`` tags DISA STIG-report ``.xlsx``/``.xlsm`` files as
+    ``EvidenceKind.STIG_CKL`` so they flow into the checklisted bucket, but
+    for the UI source-type breakdown the assessor wants them counted
+    separately from hand/tool-authored ``.ckl`` checklists. The only
+    discriminator is the file extension.
+    """
+    try:
+        suffix = Path(ev.path).suffix.lower()
+    except (TypeError, ValueError):
+        return False
+    return suffix in _STIG_XLSX_SUFFIXES
+
+
+def _device_ip_map(
+    session: Session, evidence_ids: Iterable[int]
+) -> dict[str, set[str]]:
+    """Resolve credentialed-scan ``host_pairs`` into ``{device: {ips}}``.
+
+    Reads the SIBLING ``host_pairs`` JSON column on each in-scope Evidence
+    row (populated by ``ingest._capture_host_pairs`` for credentialed
+    scans). The map lets the cross-check collapse every IP a scan reported
+    for a device under that ONE device key, so a box scanned on two
+    interfaces counts as a single resolved device with two IP attributes —
+    not two hosts.
+
+    Device key = bare short form of the pair's FQDN (matches ``_normalize``
+    so it lines up with the host universe keys). IP literals stay whole.
+    Malformed / empty blobs contribute nothing. One query for the workbook.
+    """
+    ids = [e for e in evidence_ids if e]
+    if not ids:
+        return {}
+    out: dict[str, set[str]] = defaultdict(set)
+    for batch in chunked(ids):
+        rows = session.exec(
+            select(Evidence.host_pairs).where(Evidence.id.in_(batch))  # type: ignore[attr-defined]
+        ).all()
+        for raw in rows:
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, list):
+                continue
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                ip = entry.get("ip")
+                fqdn = entry.get("fqdn")
+                if not (
+                    isinstance(ip, str) and ip and isinstance(fqdn, str) and fqdn
+                ):
+                    continue
+                device = _normalize(fqdn)
+                if not device:
+                    continue
+                out[device].add(ip.strip())
+    return {k: set(v) for k, v in out.items()}
+
+
+def _mapped_ips_by_boundary(
+    session: Session,
+    evidence_ids: Iterable[int],
+    boundary_by_ev: dict[int, str],
+) -> set[tuple[str, str]]:
+    """Reverse index of every IP claimed by a credentialed pair, per boundary.
+
+    Returns ``{(boundary, ip)}`` so an IP paired to a device in one boundary
+    cannot mark a bare same-IP host in another boundary as "already mapped".
+    Single query over ``host_pairs`` for the whole workbook (no per-evidence
+    N+1); the boundary for each row comes from the pre-resolved
+    ``boundary_by_ev`` map (default :data:`UNSPECIFIED_BOUNDARY`).
+    """
+    ids = [e for e in evidence_ids if e]
+    if not ids:
+        return set()
+    out: set[tuple[str, str]] = set()
+    for batch in chunked(ids):
+        rows = session.exec(
+            select(Evidence.id, Evidence.host_pairs).where(
+                Evidence.id.in_(batch)  # type: ignore[attr-defined]
+            )
+        ).all()
+        for ev_id, raw in rows:
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, list):
+                continue
+            bnd = boundary_by_ev.get(ev_id, UNSPECIFIED_BOUNDARY)
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                ip = entry.get("ip")
+                if isinstance(ip, str) and ip.strip():
+                    out.add((bnd, ip.strip()))
+    return out
+
+
+def _host_gap_label(rec: "HostRecord") -> str:
+    """Gap-bucket display label for a host.
+
+    Boundary-qualified (``"CRN-A/dc01"``) when the host carries a real
+    boundary so two same-named hosts in different boundaries don't render as
+    one indistinguishable row. Unspecified-boundary hosts keep the bare
+    hostname so a single-boundary report's gap lists are byte-identical to the
+    pre-boundary output (zero churn for the common case).
+    """
+    if rec.boundary and rec.boundary != UNSPECIFIED_BOUNDARY:
+        return f"{rec.boundary}/{rec.hostname}"
+    return rec.hostname
+
+
+# ---------------------------------------------------------------------------
+# Boundary resolution (per-evidence → boundary label for the host key)
+# ---------------------------------------------------------------------------
+
+# Path segments that are NEVER a boundary even when they sit just above an
+# eMASS NN.XX family token — generic container folders, the workbook/system
+# name, or a bare year. Lowercased compare. Keeps the folder-path fallback
+# from inventing a bogus boundary like "Body of Evidence" or "2026".
+_BOUNDARY_PATH_DENYLIST: frozenset[str] = frozenset(
+    {
+        "evidence",
+        "boe",
+        "body of evidence",
+        "body_of_evidence",
+        "artifacts",
+        "uploads",
+        "upload",
+        "scans",
+        "stigs",
+        "configs",
+        "policies",
+        "diagrams",
+        "documents",
+        "docs",
+    }
+)
+
+
+def _boundary_from_path(path: str | None) -> str | None:
+    """Best-effort boundary label from the eMASS folder convention.
+
+    Anchors on the strict ``NN.XX`` family token (same convention
+    ``tagger._family_from_path`` keys on) and takes the path segment
+    IMMEDIATELY ABOVE it as the boundary candidate — e.g.
+    ``file:///.../CRN-A/01.AC/scan.nessus`` → ``CRN-A``. Returns ``None``
+    (contributes nothing, safe default) when the convention is absent, the
+    parent segment is generic/denylisted, or it's a bare year. This is a
+    LOW-PRIORITY fallback beneath an explicit EvidenceBoundary link — a real
+    BoE tree rarely encodes boundary in the path, so this only refines the
+    disciplined case and is inert everywhere else.
+    """
+    if not path:
+        return None
+    # Find the family token and capture the segment just before it. Split on
+    # both / and ! so file:// and zip:// member URIs both work.
+    m = re.search(r"[/!]([^/!]+)[/!]\d{2}\.[A-Za-z]{2}[/_.]", path)
+    if not m:
+        return None
+    seg = m.group(1).strip()
+    if not seg:
+        return None
+    low = seg.lower()
+    if low in _BOUNDARY_PATH_DENYLIST:
+        return None
+    if re.fullmatch(r"\d{4}", seg):  # bare year, not a boundary
+        return None
+    return seg
+
+
+def _boundary_by_evidence(
+    session: Session, evidence_ids: Iterable[int]
+) -> dict[int, str]:
+    """Resolve each Evidence row to its boundary label.
+
+    Priority: an explicit :class:`EvidenceBoundary` link (the assessor tagged
+    the artifact, or a boundary-doc backfill created one) wins; otherwise the
+    gated folder-path token; otherwise the row is absent from the dict and the
+    caller defaults it to :data:`UNSPECIFIED_BOUNDARY`. One artifact can carry
+    multiple boundary links in theory — we take the lowest-id segment name
+    deterministically so the key is stable across runs.
+
+    Returns ``{evidence_id: boundary_label}`` for rows that resolved to a
+    NON-unspecified boundary only; unresolved rows are simply not present.
+    """
+    ids = [e for e in evidence_ids if e]
+    if not ids:
+        return {}
+
+    # 1) Explicit EvidenceBoundary links → BoundarySegment.name. Join once,
+    #    bucket per evidence, keep the segment with the smallest id for
+    #    determinism when an artifact is linked to several segments.
+    link_boundary: dict[int, tuple[int, str]] = {}
+    for batch in chunked(ids):
+        rows = session.exec(
+            select(
+                EvidenceBoundary.evidence_id,
+                BoundarySegment.id,
+                BoundarySegment.name,
+            )
+            .join(
+                BoundarySegment,
+                BoundarySegment.id == EvidenceBoundary.boundary_segment_id,
+            )
+            .where(EvidenceBoundary.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        ).all()
+        for ev_id, seg_id, seg_name in rows:
+            name = (seg_name or "").strip()
+            if not name:
+                continue
+            cur = link_boundary.get(ev_id)
+            if cur is None or (seg_id is not None and seg_id < cur[0]):
+                link_boundary[ev_id] = (seg_id or 0, name)
+
+    out: dict[int, str] = {ev_id: nm for ev_id, (sid, nm) in link_boundary.items()}
+
+    # 2) Folder-path fallback for rows with no explicit link. One query for
+    #    paths of the still-unresolved ids.
+    unresolved = [e for e in ids if e not in out]
+    if unresolved:
+        for batch in chunked(unresolved):
+            rows = session.exec(
+                select(Evidence.id, Evidence.path).where(
+                    Evidence.id.in_(batch)  # type: ignore[attr-defined]
+                )
+            ).all()
+            for ev_id, path in rows:
+                label = _boundary_from_path(path)
+                if label:
+                    out[ev_id] = label
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Coverage report build
 # ---------------------------------------------------------------------------
@@ -316,20 +634,49 @@ def summarize_asset_coverage(
     in_scope_ids = [ev.id for ev in rows if ev.id is not None and _category(ev) is not None]
     scope_table_hosts = _hostnames_from_scope_tables(session, in_scope_ids)
 
-    # host → HostRecord under construction
-    host_index: dict[str, HostRecord] = {}
-    # host → set of STIG titles applied (deduped across multi-STIG CKLs)
-    stigs_by_host: dict[str, set[str]] = defaultdict(set)
+    # Per-evidence boundary label (explicit EvidenceBoundary link > gated
+    # folder-path token > unspecified). The host identity is (boundary, host)
+    # so a hostname/IP reused across enclaves (192.168.1.1 in CRN-A vs CRN-B,
+    # dc01 x2) stays distinct, while the same host across scan + checklist in
+    # ONE boundary still unions. Single-boundary / untagged workbooks resolve
+    # everything to UNSPECIFIED_BOUNDARY → identical to the pre-boundary report.
+    boundary_by_ev = _boundary_by_evidence(session, in_scope_ids)
+
+    # Credentialed-scan (ip, fqdn) pairs, keyed (boundary, ip). A paired
+    # 192.168.1.1→dcA in boundary A must NOT absorb a bare 192.168.1.1 scanned
+    # in boundary B, so the mapped-IP reverse index is keyed (boundary, ip),
+    # not a flat global IP set. One query for the whole workbook (no N+1).
+    mapped_ips: set[tuple[str, str]] = _mapped_ips_by_boundary(
+        session, in_scope_ids, boundary_by_ev
+    )
+
+    # (boundary, host) → HostRecord under construction
+    host_index: dict[tuple[str, str], HostRecord] = {}
+    # (boundary, host) → set of STIG titles applied (deduped across multi-STIG CKLs)
+    stigs_by_host: dict[tuple[str, str], set[str]] = defaultdict(set)
     sources: list[SourceSummary] = []
 
-    scanned_set: set[str] = set()
-    checklisted_set: set[str] = set()
-    declared_set: set[str] = set()
+    # Headline-count sets are (boundary, host) tuples so len()/union stop
+    # collapsing same-named hosts across boundaries.
+    scanned_set: set[tuple[str, str]] = set()
+    checklisted_set: set[tuple[str, str]] = set()
+    declared_set: set[tuple[str, str]] = set()
+
+    # Source-type breakdown tallies (additive). Checklist counts are by
+    # Evidence row (one .ckl file = one regular checklist); device/IP counts
+    # are derived from the host universe after the loop.
+    checklists_regular = 0
+    checklists_xlsx = 0
 
     for ev in rows:
         category = _category(ev)
         if category is None:
             continue
+        if category == "checklisted":
+            if _is_stig_xlsx(ev):
+                checklists_xlsx += 1
+            else:
+                checklists_regular += 1
         hosts = scope_table_hosts.get(ev.id or 0, frozenset())
         if not hosts:
             # Legacy fallback — Evidence rows pre-backfill (or with
@@ -351,50 +698,94 @@ def summarize_asset_coverage(
         if not hosts:
             continue
 
+        boundary = boundary_by_ev.get(ev.id or 0, UNSPECIFIED_BOUNDARY)
         ref = SourceRef(
             evidence_id=ev.id or 0, label=_label(ev), kind=ev.kind.value
         )
         for h in hosts:
-            rec = host_index.get(h)
+            key = (boundary, h)
+            rec = host_index.get(key)
             if rec is None:
-                rec = HostRecord(hostname=h)
-                host_index[h] = rec
+                rec = HostRecord(hostname=h, boundary=boundary)
+                host_index[key] = rec
             if category == "scanned":
                 rec.scanned_in.append(ref)
-                scanned_set.add(h)
+                scanned_set.add(key)
             elif category == "checklisted":
                 rec.checklisted_in.append(ref)
-                checklisted_set.add(h)
+                checklisted_set.add(key)
                 # Evidence.title for CKL/CKLB/XCCDF carries the STIG name.
                 # Skip when missing rather than substituting the filename
                 # — a filename like "WIN2022.ckl" is not the STIG title and
                 # would mislead the coverage panel.
                 if ev.title:
-                    stigs_by_host[h].add(ev.title)
+                    stigs_by_host[key].add(ev.title)
             else:  # declared
                 rec.declared_in.append(ref)
-                declared_set.add(h)
+                declared_set.add(key)
 
     # Attach STIG titles to each host, sorted for stable display.
-    for hostname, rec in host_index.items():
-        rec.stigs_applied = sorted(stigs_by_host.get(hostname, ()))
+    for key, rec in host_index.items():
+        rec.stigs_applied = sorted(stigs_by_host.get(key, ()))
 
-    hosts_sorted = sorted(host_index.values(), key=lambda r: r.hostname)
+    # Stable order: boundary first, then hostname, so multi-boundary reports
+    # group naturally and same-named hosts in different boundaries are adjacent.
+    hosts_sorted = sorted(
+        host_index.values(), key=lambda r: (r.boundary, r.hostname)
+    )
 
     # Gap buckets. The same hostname can be in two different buckets
     # (e.g. scanned_not_checklisted AND observed_not_declared) — the UI
     # tabs render each independently so the user sees the full picture.
+    # Entries are boundary-qualified ("CRN-A/dc01") when the host carries a
+    # non-unspecified boundary so two same-named hosts don't render as one
+    # indistinguishable row; unspecified hosts keep the bare hostname so the
+    # single-boundary report is byte-identical to before.
     gaps: dict[str, list[str]] = defaultdict(list)
     for rec in hosts_sorted:
+        label = _host_gap_label(rec)
         cov = rec.coverage
         # Render every coverage state as its own bucket. The "complete"
         # bucket is informational; the UI shows a count, not a list.
-        gaps[cov].append(rec.hostname)
+        gaps[cov].append(label)
         # No-STIG hosts are a separate concern from source coverage: a
         # host might be both scanned AND checklisted but the checklist's
         # title wasn't extractable, leaving stigs_applied empty.
         if rec.checklisted_in and not rec.stigs_applied:
-            gaps["checklisted_but_stig_unknown"].append(rec.hostname)
+            gaps["checklisted_but_stig_unknown"].append(label)
+
+    # ---- Source-type breakdown: IPs vs resolved devices -----------------
+    # Walk the final host universe once. Device-centric rule:
+    #   * a real hostname (not an IP literal)            → resolved device
+    #   * a bare IP literal that some scan PAIRED with a  → already collapsed
+    #     device (in mapped_ips) IN THE SAME BOUNDARY        under that device;
+    #                                                        do NOT double-count
+    #   * a bare IP literal with NO pairing               → unmapped scanned IP
+    #     and not declared in any inventory map             (calm "not yet
+    #                                                        mapped to a device")
+    # An IP that the declared inventory itself names as a host is treated as a
+    # device (the inventory asserts it IS the device's identity) — so only
+    # scanned-only / checklisted-only bare IPs land in distinct_ips.
+    resolved_devices = 0
+    distinct_ips = 0
+    for rec in hosts_sorted:
+        host = rec.hostname
+        if not _looks_like_ip(host):
+            resolved_devices += 1
+            continue
+        # host is a bare IP literal — check the pairing within ITS boundary.
+        if (rec.boundary, host) in mapped_ips:
+            # Collapsed under a resolved device via a credentialed pair —
+            # the device side is (or will be) counted as resolved; the IP is
+            # an attribute, not its own device.
+            continue
+        if rec.declared_in:
+            # The declared inventory lists this IP as an asset in its own
+            # right. Treat it as a (thinly-identified) device, not an
+            # orphan scan IP.
+            resolved_devices += 1
+            continue
+        distinct_ips += 1
 
     return AssetCoverageReport(
         sources=sorted(sources, key=lambda s: (s.category, s.label.lower())),
@@ -403,6 +794,10 @@ def summarize_asset_coverage(
         scanned_set=frozenset(scanned_set),
         checklisted_set=frozenset(checklisted_set),
         declared_set=frozenset(declared_set),
+        distinct_ips=distinct_ips,
+        resolved_devices=resolved_devices,
+        checklists_regular=checklists_regular,
+        checklists_xlsx=checklists_xlsx,
     )
 
 

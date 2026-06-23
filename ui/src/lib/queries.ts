@@ -217,6 +217,7 @@ export const qk = {
     opts: {
       workbookId?: number;
       kind?: string;
+      q?: string;
       pageSize?: number;
       page?: number;
     } = {},
@@ -225,6 +226,7 @@ export const qk = {
       "evidence-paged",
       opts.workbookId ?? "all",
       opts.kind ?? "all",
+      opts.q ?? "",
       opts.pageSize ?? 100,
       opts.page ?? 0,
     ] as const,
@@ -828,6 +830,7 @@ export const useEvidencePaged = (
   opts: {
     workbookId?: number;
     kind?: string;
+    q?: string;
     page?: number;
     pageSize?: number;
   } = {},
@@ -838,6 +841,7 @@ export const useEvidencePaged = (
     queryKey: qk.evidencePaged({
       workbookId: opts.workbookId,
       kind: opts.kind,
+      q: opts.q,
       pageSize,
       page,
     }),
@@ -845,6 +849,7 @@ export const useEvidencePaged = (
       api.listEvidencePaged({
         workbook_id: opts.workbookId,
         kind: opts.kind,
+        q: opts.q,
         limit: pageSize,
         offset: page * pageSize,
       }),
@@ -894,6 +899,31 @@ export const useSetAssetList = (
   return useMutation({
     mutationFn: ({ id, is_asset_list, asset_list_label }) =>
       api.setAssetList(id, { is_asset_list, asset_list_label }),
+    ...restOpts,
+    onSuccess: (...args) => {
+      qc.invalidateQueries({ queryKey: ["evidence"] });
+      callerOnSuccess?.(...args);
+    },
+  });
+};
+
+// Tag a host-bearing artifact with a named boundary / CRN. Invalidates the
+// evidence cache (the ["evidence"] prefix also covers the crosscheck key
+// ["evidence","crosscheck",wb]) so the coverage panel re-keys its hosts by
+// (boundary, hostname) immediately. Same destructure-before-spread rule as
+// useSetAssetList so a caller toast doesn't clobber the invalidation.
+export const useSetEvidenceBoundary = (
+  opts?: UseMutationOptions<
+    Evidence,
+    Error,
+    { id: number; boundary_name: string | null; workbook_id: number }
+  >,
+) => {
+  const qc = useQueryClient();
+  const { onSuccess: callerOnSuccess, ...restOpts } = opts ?? {};
+  return useMutation({
+    mutationFn: ({ id, boundary_name, workbook_id }) =>
+      api.setEvidenceBoundary(id, { boundary_name, workbook_id }),
     ...restOpts,
     onSuccess: (...args) => {
       qc.invalidateQueries({ queryKey: ["evidence"] });

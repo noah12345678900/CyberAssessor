@@ -307,6 +307,8 @@ export function Settings() {
             anthropicKeySet={settings.data?.anthropic_key_set ?? false}
             openaiModel={settings.data?.openai_model ?? ""}
             openaiKeySet={settings.data?.openai_key_set ?? false}
+            judgeModel={settings.data?.llm_judge_model ?? ""}
+            judgeEnabled={settings.data?.judge_llm_enabled ?? true}
             loading={settings.isLoading}
           />
 
@@ -704,6 +706,8 @@ function DefaultsCard({
   anthropicKeySet,
   openaiModel,
   openaiKeySet,
+  judgeModel,
+  judgeEnabled,
   loading,
 }: {
   defaultTester: string;
@@ -712,6 +716,8 @@ function DefaultsCard({
   anthropicKeySet: boolean;
   openaiModel: string;
   openaiKeySet: boolean;
+  judgeModel: string;
+  judgeEnabled: boolean;
   loading: boolean;
 }) {
   const update = useUpdateSettings({
@@ -724,17 +730,23 @@ function DefaultsCard({
   const [activeProvider, setActiveProvider] = useState<LlmProvider>(provider);
   const [aModel, setAModel] = useState(anthropicModel);
   const [oModel, setOModel] = useState(openaiModel);
+  const [jModel, setJModel] = useState(judgeModel);
+  const [jEnabled, setJEnabled] = useState(judgeEnabled);
 
   useEffect(() => setTester(defaultTester), [defaultTester]);
   useEffect(() => setActiveProvider(provider), [provider]);
   useEffect(() => setAModel(anthropicModel), [anthropicModel]);
   useEffect(() => setOModel(openaiModel), [openaiModel]);
+  useEffect(() => setJModel(judgeModel), [judgeModel]);
+  useEffect(() => setJEnabled(judgeEnabled), [judgeEnabled]);
 
   const dirty =
     tester !== defaultTester ||
     activeProvider !== provider ||
     aModel !== anthropicModel ||
-    oModel !== openaiModel;
+    oModel !== openaiModel ||
+    jModel !== judgeModel ||
+    jEnabled !== judgeEnabled;
 
   async function save() {
     await update.mutateAsync({
@@ -742,6 +754,8 @@ function DefaultsCard({
       llm_provider: activeProvider,
       anthropic_model: aModel,
       openai_model: oModel,
+      llm_judge_model: jModel,
+      judge_llm_enabled: jEnabled,
     });
   }
 
@@ -911,6 +925,46 @@ function DefaultsCard({
             </p>
           )}
         </Field>
+
+        {/* Ingest + sweep judge LLM. Separate from the main assess model above:
+            this cheaper, high-volume classifier is shared by the evidence-tagger
+            Tier-5 judge AND the SharePoint sweep judge. One model, one toggle. */}
+        <div className="rounded-md border border-border/60 bg-muted/30 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Ingest &amp; sweep judge LLM</p>
+              <p className="text-[11px] text-muted-foreground">
+                Cheaper high-volume classifier the evidence tagger and SharePoint
+                sweep both use. Separate from the assessment model above.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={jEnabled}
+                onChange={(e) => setJEnabled(e.target.checked)}
+                disabled={loading}
+                className="h-4 w-4 accent-primary"
+              />
+              <span>{jEnabled ? "Enabled" : "Disabled"}</span>
+            </label>
+          </div>
+          <Field label="Judge model">
+            <Input
+              value={jModel}
+              onChange={(e) => setJModel(e.target.value)}
+              placeholder="claude-haiku-4-5-20251001"
+              disabled={loading || !jEnabled}
+            />
+          </Field>
+          {!jEnabled && (
+            <p className="text-[11px] text-muted-foreground">
+              Off → ingest tagging falls back to deterministic tiers and the
+              sweep to keyword scoring (offline / air-gapped mode). No judge
+              LLM calls are made.
+            </p>
+          )}
+        </div>
 
         <div className="flex items-center gap-3 pt-1">
           <Button onClick={save} disabled={!dirty || update.isPending}>
