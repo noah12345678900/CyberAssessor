@@ -12,6 +12,7 @@ import {
   Network,
   Radar,
   ScrollText,
+  Search,
   ShieldCheck,
   Ticket,
   Trash2,
@@ -47,6 +48,7 @@ import {
   useDeleteEvidence,
   useEvidencePaged,
   useSetAssetList,
+  useSetEvidenceBoundary,
   useSettings,
   useSharePointStatus,
   useTenableStatus,
@@ -160,9 +162,21 @@ export function Evidence() {
   // never land on an out-of-range page for a smaller corpus.
   const PAGE_SIZE = 100;
   const [evidencePage, setEvidencePage] = useState(0);
-  useEffect(() => setEvidencePage(0), [activeWorkbookId]);
+  // Free-text search over filename/title/doc-number. ``search`` is the live
+  // input value; ``debouncedSearch`` is what actually drives the query so we
+  // don't refetch on every keystroke. Server-side, so it spans pagination.
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  // Reset to page 0 when the workbook changes OR the search term changes, so a
+  // narrowed result set never leaves us stranded on an out-of-range page.
+  useEffect(() => setEvidencePage(0), [activeWorkbookId, debouncedSearch]);
   const evidence = useEvidencePaged({
     workbookId: activeWorkbookId,
+    q: debouncedSearch || undefined,
     page: evidencePage,
     pageSize: PAGE_SIZE,
   });
@@ -174,6 +188,9 @@ export function Evidence() {
   const crosscheck = useCrosscheck(activeWorkbookId);
   const setAssetList = useSetAssetList({
     onError: (err) => toast.error("Couldn't update asset-list flag", humanize(err)),
+  });
+  const setEvidenceBoundary = useSetEvidenceBoundary({
+    onError: (err) => toast.error("Couldn't set boundary", humanize(err)),
   });
 
   // Enable the SharePoint ingest button only when the user has signed in
@@ -639,6 +656,36 @@ export function Evidence() {
                 <Stat label="Unmapped" value={summary.untagged?.length ?? 0} />
                 <Stat label="Errors" value={summary.errors.length} />
               </div>
+              {summary.tagger_status && summary.tagger_status !== "ok" && (
+                // DEGRADED INGEST banner. When the tagger LLM was unavailable
+                // the hybrid-RAG folder lane + vision were skipped, so
+                // structural files (a scan under 01.AC/, a screenshot) can tag
+                // to ZERO controls. Surfacing this loudly is the whole point —
+                // a silent degrade looks identical to a healthy ingest and
+                // hides the gap. "error" is red (unexpected failure → fix +
+                // re-ingest); "disabled" is amber (the user chose to turn the
+                // judge off).
+                <div
+                  className={
+                    summary.tagger_status === "error"
+                      ? "rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                      : "rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-700"
+                  }
+                >
+                  <div className="font-semibold">
+                    {summary.tagger_status === "error"
+                      ? "Tagging ran degraded — the tagger LLM client failed to start"
+                      : "Tagging ran degraded — the tagger LLM is disabled in Settings"}
+                  </div>
+                  <div className="mt-1 text-xs">
+                    Semantic tagging (folder-family matching + image vision) was
+                    skipped, so some files may have mapped to zero controls.{" "}
+                    {summary.tagger_status === "error"
+                      ? "Check the tagger LLM key/connection, then re-ingest."
+                      : "Enable the judge LLM in Settings, then re-ingest."}
+                  </div>
+                </div>
+              )}
               {summary.untagged && summary.untagged.length > 0 && (
                 // Files that ingested fine but mapped to ZERO controls. Without
                 // this they'd be invisible on every control page — the silent-
@@ -741,7 +788,11 @@ export function Evidence() {
           {crosscheckOpen && (
             <CardContent className="space-y-4 text-sm">
               <CoverageTotals totals={crosscheck.data.totals} />
+              {crosscheck.data.source_types && (
+                <CoverageSourceTypes sourceTypes={crosscheck.data.source_types} />
+              )}
               <CoverageSources sources={crosscheck.data.sources} />
+              <CoverageReconciliation hosts={crosscheck.data.hosts} />
               <CoverageGaps
                 gaps={crosscheck.data.gaps}
                 hostIndex={crosscheck.data.hosts}
@@ -767,6 +818,16 @@ export function Evidence() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="relative max-w-sm">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search filename, title, or doc number…"
+              className="pl-8"
+              aria-label="Search indexed evidence"
+            />
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
@@ -803,36 +864,50 @@ export function Evidence() {
                     {e.ingested_at ? new Date(e.ingested_at).toLocaleString() : "—"}
                   </TableCell>
                   <TableCell>
-                    {AUTO_DERIVED_KINDS.has(e.kind) ? (
-                      // Nessus + STIG checklists enumerate hosts on their own —
-                      // showing a "declared inventory" toggle here would let a
-                      // user double-count or silently override the auto-derived
-                      // signal. Show a static tag instead.
-                      <span
-                        className="text-xs text-muted-foreground"
-                        title="Hosts auto-derived from this artifact — no manual flag needed"
-                      >
-                        auto
-                      </span>
-                    ) : isInventoryFile(e.filename) ? (
-                      <AssetListToggle
-                        ev={e}
-                        onToggle={(is_asset_list, asset_list_label) =>
-                          setAssetList.mutate({
-                            id: e.id,
-                            is_asset_list,
-                            asset_list_label,
-                          })
-                        }
-                        disabled={setAssetList.isPending}
-                      />
+                    {AUTO_DERIVED_KINDS.has(e.kind) || isInventoryFile(e.filename) ? (
+                      // Eligible to be marked the DECLARED AUTHORITATIVE source:
+                      //   * spreadsheets — a manually-authored HW/SW inventory; OR
+                      //   * host-enumerating scans/checklists (Nessus/STIG) — their
+                      //     hosts auto-derive, but flagging one authoritative lets
+                      //     it win the asset-identity trust order (E2). A credentialed
+                      //     ACAS scan IS often the canonical host list for a system.
+                      // The toggle's label adapts (see AssetListToggle.autoDerived).
+                      <div className="space-y-1">
+                        <AssetListToggle
+                          ev={e}
+                          autoDerived={AUTO_DERIVED_KINDS.has(e.kind)}
+                          onToggle={(is_asset_list, asset_list_label) =>
+                            setAssetList.mutate({
+                              id: e.id,
+                              is_asset_list,
+                              asset_list_label,
+                            })
+                          }
+                          disabled={setAssetList.isPending}
+                        />
+                        {/* Boundary / CRN tag — only for host-bearing kinds,
+                            and only when a workbook is open (the segment is
+                            scoped to it). Lets the assessor split reused IPs /
+                            hostnames across enclaves in the coverage panel. */}
+                        {AUTO_DERIVED_KINDS.has(e.kind) && activeWorkbookId != null && (
+                          <BoundaryTagControl
+                            onSet={(boundary_name) =>
+                              setEvidenceBoundary.mutate({
+                                id: e.id,
+                                boundary_name,
+                                workbook_id: activeWorkbookId,
+                              })
+                            }
+                            disabled={setEvidenceBoundary.isPending}
+                          />
+                        )}
+                      </div>
                     ) : (
-                      // Declared inventories only come via spreadsheet. A
-                      // non-spreadsheet artifact can't be a declared asset list,
-                      // so don't offer the toggle (the backend also rejects it).
+                      // Not host-bearing and not a spreadsheet → can't be an
+                      // authoritative asset source (backend rejects the flag too).
                       <span
                         className="text-xs text-muted-foreground"
-                        title="Declared inventories must be spreadsheets (.xlsx/.xlsm/.xls/.csv)"
+                        title="Only host inventories (.xlsx/.xlsm/.xls/.csv) or host-enumerating scans/checklists can be a declared authoritative source"
                       >
                         —
                       </span>
@@ -918,10 +993,15 @@ function AssetListToggle({
   ev,
   onToggle,
   disabled,
+  autoDerived = false,
 }: {
   ev: EvidenceArtifact;
   onToggle: (is_asset_list: boolean, asset_list_label: string | null) => void;
   disabled: boolean;
+  // True for Nessus/STIG kinds whose hosts auto-derive. The toggle then means
+  // "mark this the AUTHORITATIVE source" (wins the asset-identity trust order),
+  // not "this is a manual inventory". Label + tooltip adapt accordingly.
+  autoDerived?: boolean;
 }) {
   // Local mirror of the label so typing doesn't fire a PATCH on every keystroke.
   const [label, setLabel] = useState<string>(ev.asset_list_label ?? ev.title ?? ev.filename);
@@ -929,7 +1009,11 @@ function AssetListToggle({
     <div className="flex flex-col gap-1">
       <label
         className="flex cursor-pointer items-center gap-2 text-xs"
-        title="Treat this workbook as an authoritative declared asset inventory (CM-8)"
+        title={
+          autoDerived
+            ? "Mark this scan/checklist the AUTHORITATIVE host source — its IP↔hostname pairing wins the asset-identity trust order"
+            : "Treat this workbook as an authoritative declared asset inventory (CM-8)"
+        }
       >
         <input
           type="checkbox"
@@ -943,7 +1027,9 @@ function AssetListToggle({
           }}
           className="h-3.5 w-3.5"
         />
-        <span className="text-muted-foreground">Declared</span>
+        <span className="text-muted-foreground">
+          {autoDerived ? "Authoritative" : "Declared"}
+        </span>
       </label>
       {ev.is_asset_list && (
         <Input
@@ -967,6 +1053,48 @@ function AssetListToggle({
 }
 
 /**
+ * Compact boundary / CRN tag for a host-bearing artifact. Commits on blur (or
+ * Enter) so typing doesn't fire a PATCH per keystroke; an empty value clears
+ * the tag (hosts fall back to "unspecified"). The artifact's current boundary
+ * isn't on the Evidence row (it lives in the EvidenceBoundary link surfaced via
+ * the cross-check), so this is a write-only set/clear control — deliberately
+ * minimal, matching the "scoping is encoded by the assessor, not inferred"
+ * stance. Used only for scans/checklists where (boundary, host) keying applies.
+ */
+function BoundaryTagControl({
+  onSet,
+  disabled,
+}: {
+  onSet: (boundary_name: string | null) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = useState("");
+  const commit = () => {
+    const trimmed = val.trim();
+    onSet(trimmed || null);
+  };
+  return (
+    <Input
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={() => {
+        if (val.trim()) commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+      disabled={disabled}
+      placeholder="Boundary / CRN"
+      title="Tag this scan/checklist with its boundary / CRN so reused IPs or hostnames in other enclaves stay distinct in the coverage panel. Blank = clear."
+      className="h-7 text-xs"
+    />
+  );
+}
+
+/**
  * Headline counters across the asset universe. The "union" column is the
  * effective denominator for CM-8 narratives — every host the assessor
  * should expect to see covered somewhere.
@@ -983,6 +1111,110 @@ function CoverageTotals({
       <Stat label="Declared" value={totals.declared} />
       <Stat label="Union (all assets)" value={totals.union} />
     </div>
+  );
+}
+
+/**
+ * Device-centric source-type breakdown — "what did we actually look at".
+ *
+ * Separates raw scanned IPs (not yet mapped to a device) from resolved
+ * devices, so a box scanned on three interfaces counts as ONE device with
+ * its IPs as attributes instead of inflating the host count. Also splits
+ * checklist provenance between real .ckl/.cklb/XCCDF files and DISA
+ * STIG-report spreadsheets (which share the STIG_CKL kind). This is what
+ * fixes the misleading "Scanned 86 / Checklisted 0" headline — the user
+ * sees both the scanned-IP count AND the resolved-device count.
+ */
+function CoverageSourceTypes({
+  sourceTypes,
+}: {
+  sourceTypes: {
+    ips: number;
+    hostnames: number;
+    checklists_regular: number;
+    checklists_xlsx: number;
+  };
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Source-type breakdown
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <Stat label="IPs (scanned, unmapped)" value={sourceTypes.ips} />
+        <Stat label="Hostnames (devices)" value={sourceTypes.hostnames} />
+        <Stat label="Checklists (.ckl/XCCDF)" value={sourceTypes.checklists_regular} />
+        <Stat label="Checklists (xlsx/SCAP)" value={sourceTypes.checklists_xlsx} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Identity-reconciliation footnote. When a workbook spans multiple boundaries
+ * (CRNs), the coverage counts key hosts by (boundary, hostname) — so a reused
+ * private IP or hostname in two enclaves is two devices, not one. That makes
+ * the device count legitimately differ from a naive hostname-only count, with
+ * no obvious explanation in the headline numbers. This collapsible appendix
+ * shows the per-boundary device breakdown so "why did the count change / why
+ * are there two dc01s?" is answerable from the artifact itself — the
+ * defensibility hook a 3PAO/ISSM needs. Renders nothing for the common
+ * single-boundary case (every host "unspecified") so it adds zero noise there.
+ */
+function CoverageReconciliation({ hosts }: { hosts: CoverageHost[] }) {
+  const byBoundary = new Map<string, CoverageHost[]>();
+  for (const h of hosts) {
+    const key = h.boundary || "unspecified";
+    const list = byBoundary.get(key);
+    if (list) list.push(h);
+    else byBoundary.set(key, [h]);
+  }
+  // Only meaningful when more than one boundary is present. A single boundary
+  // (incl. all-"unspecified") is the legacy view — no reconciliation to show.
+  if (byBoundary.size <= 1) return null;
+
+  const boundaries = [...byBoundary.keys()].sort((a, b) => a.localeCompare(b));
+  return (
+    <details className="rounded-md border border-border bg-muted/30 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Identity reconciliation — {byBoundary.size} boundaries, {hosts.length}{" "}
+        device{hosts.length === 1 ? "" : "s"}
+      </summary>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Hosts are counted per boundary, so a hostname or private IP reused
+        across enclaves is treated as separate devices. This is why the device
+        count can differ from a flat hostname count.
+      </p>
+      <div className="mt-2 space-y-2">
+        {boundaries.map((b) => {
+          const devs = byBoundary
+            .get(b)!
+            .slice()
+            .sort((x, y) => x.hostname.localeCompare(y.hostname));
+          return (
+            <div key={b}>
+              <div className="text-xs font-semibold">
+                {b === "unspecified" ? "(no boundary tagged)" : b}{" "}
+                <span className="font-normal text-muted-foreground">
+                  — {devs.length} device{devs.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="mt-0.5 flex flex-wrap gap-1.5">
+                {devs.map((d) => (
+                  <span
+                    key={`${b}/${d.hostname}`}
+                    className="rounded bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                    title={`coverage: ${d.coverage}`}
+                  >
+                    {d.hostname}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 

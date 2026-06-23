@@ -306,6 +306,7 @@ def list_evidence(
     component_id: int | None = None,
     asset_id: int | None = None,
     boundary_id: int | None = None,
+    q: str | None = None,
     limit: int = 3000,
     offset: int = 0,
     response: Response = None,  # type: ignore[assignment]  # injected by FastAPI
@@ -364,6 +365,20 @@ def list_evidence(
         # intentionally invisible here; they belong to no system under
         # assessment and must not bleed across boundaries.
         stmt = stmt.where(Evidence.workbook_id == workbook_id)
+    if q:
+        # Free-text search over the human-meaningful identifiers: the source
+        # path (filename is derived from it via _leaf_name — there is no
+        # separate filename column), the optional title, and the optional
+        # doc_number (e.g. a CDRL/USD number). Case-insensitive substring,
+        # COALESCE so a NULL title/doc_number doesn't drop the row. Applied to
+        # the shared ``stmt`` so it composes with the count subquery, the
+        # offset/limit page, AND the id-filter chunk path below.
+        like = f"%{q.lower()}%"
+        stmt = stmt.where(
+            func.lower(Evidence.path).like(like)
+            | func.lower(func.coalesce(Evidence.title, "")).like(like)
+            | func.lower(func.coalesce(Evidence.doc_number, "")).like(like)
+        )
 
     # Catalog/scope filters intersect in Python rather than ANDing several
     # ``Evidence.id.in_(...)`` clauses into one statement. On a 10k-host
@@ -664,6 +679,27 @@ class BoundaryDocPatch(BaseModel):
     workbook_id: int | None = None
 
 
+class EvidenceBoundaryPatch(BaseModel):
+    """Body for ``PATCH /api/evidence/{id}/boundary``.
+
+    Tags a host-bearing artifact (scan / checklist / declared inventory) with
+    a NAMED boundary / CRN so the asset cross-check keys its hosts by
+    ``(boundary, hostname)`` — keeping a reused private IP or default hostname
+    in CRN-A distinct from the same string in CRN-B. Distinct from
+    ``boundary-doc`` (which flags a *document* as boundary-DEFINING via the
+    legacy ``is_boundary_doc`` flag); this binds *evidence-to-enclave* through
+    the existing :class:`EvidenceBoundary` link table — no schema change.
+
+    ``boundary_name`` is the enclave label (free text, e.g. "CRN-A", "DMZ").
+    An empty / null name CLEARS the evidence's boundary link (host falls back
+    to ``unspecified``). ``workbook_id`` scopes the get-or-create of the
+    :class:`BoundarySegment` so the same name in two workbooks stays separate.
+    """
+
+    boundary_name: str | None = None
+    workbook_id: int
+
+
 class IngestFileRequest(BaseModel):
     """Body for ``POST /api/evidence/ingest-file`` — sync single-file ingest.
 
@@ -726,6 +762,7 @@ def get_crosscheck(workbook_id: int, s: Session = Depends(get_session)) -> dict:
         "hosts": [
             {
                 "hostname": h.hostname,
+                "boundary": h.boundary,
                 "coverage": h.coverage,
                 "scanned_in": [
                     {"evidence_id": r.evidence_id, "label": r.label, "kind": r.kind}
@@ -752,6 +789,15 @@ def get_crosscheck(workbook_id: int, s: Session = Depends(get_session)) -> dict:
                 report.scanned_set | report.checklisted_set | report.declared_set
             ),
         },
+        # Device-centric source-type breakdown. Replaces the misleading
+        # "Scanned 86 / Checklisted 0" headline by separating raw scanned
+        # IPs from resolved devices and splitting checklist provenance.
+        "source_types": {
+            "ips": report.distinct_ips,
+            "hostnames": report.resolved_devices,
+            "checklists_regular": report.checklists_regular,
+            "checklists_xlsx": report.checklists_xlsx,
+        },
     }
 
 
@@ -770,20 +816,35 @@ def set_asset_list(
     ev = s.get(Evidence, evidence_id)
     if not ev:
         raise HTTPException(status_code=404, detail="Evidence not found")
-    # Declared inventories only come via spreadsheet. A vendor parts catalog and
-    # an HW/SW inventory are indistinguishable by column shape, so the assessor
-    # flags one manually — but the flag is only meaningful on a spreadsheet
-    # (any Excel format plus CSV). Reject the toggle on any other artifact rather
-    # than silently accepting a flag the asset cross-check can never parse.
+    # An artifact may be flagged "declared authoritative source" only if it
+    # actually ENUMERATES HOSTS — otherwise the asset cross-check has nothing to
+    # read from it. Two eligible classes:
+    #   * spreadsheets (.xlsx/.xlsm/.xls/.csv) — a manually-authored HW/SW
+    #     inventory whose column shape is ambiguous, so the assessor flags it; and
+    #   * host-enumerating evidence KINDS — a Nessus/ACAS scan or a STIG
+    #     checklist (incl. the STIG-report xlsx, which ingests as STIG_CKL).
+    #     These auto-derive hosts; marking one authoritative lets it win the
+    #     asset-identity trust order (a credentialed scan IS often the canonical
+    #     host enumeration for a system — user request E2).
+    # Reject anything else rather than accept a flag the cross-check can't use.
     if body.is_asset_list:
         leaf = _leaf_name(ev.path)
         ext = PurePosixPath(leaf).suffix.lower()
-        if ext not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        _HOST_BEARING_KINDS = {
+            EvidenceKind.NESSUS,
+            EvidenceKind.STIG_CKL,
+            EvidenceKind.STIG_CKLB,
+            EvidenceKind.STIG_XCCDF,
+        }
+        is_spreadsheet = ext in {".xlsx", ".xlsm", ".xls", ".csv"}
+        is_host_kind = ev.kind in _HOST_BEARING_KINDS
+        if not (is_spreadsheet or is_host_kind):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Declared inventories must be spreadsheets "
-                    f"(.xlsx/.xlsm/.xls/.csv); '{leaf}' is not."
+                    "Declared authoritative sources must be a host inventory "
+                    "spreadsheet (.xlsx/.xlsm/.xls/.csv) or a host-enumerating "
+                    f"scan/checklist (Nessus/STIG); '{leaf}' is neither."
                 ),
             )
     ev.is_asset_list = body.is_asset_list
@@ -817,6 +878,70 @@ def set_boundary_doc(
     if body.workbook_id is not None:
         ev.workbook_id = body.workbook_id
     s.add(ev)
+    s.commit()
+    s.refresh(ev)
+    return _serialize(ev)
+
+
+@router.patch("/{evidence_id}/boundary")
+def set_evidence_boundary(
+    evidence_id: int,
+    body: EvidenceBoundaryPatch,
+    s: Session = Depends(get_session),
+) -> dict:
+    """Tag a host-bearing artifact with a NAMED boundary / CRN.
+
+    Writes through the existing :class:`EvidenceBoundary` link table (no schema
+    change): get-or-create a :class:`BoundarySegment` named ``boundary_name``
+    in the artifact's workbook, then REPLACE this evidence's boundary link with
+    a single link to that segment. An empty / null ``boundary_name`` clears the
+    link, so the artifact's hosts fall back to ``unspecified`` in the
+    cross-check.
+
+    Only host-bearing kinds (scans / checklists) or declared inventories carry
+    hosts the boundary key applies to; we accept the tag on any evidence row
+    rather than reject, since a future host-bearing format shouldn't need a
+    code change here — a tag on a host-less row is simply inert in the
+    cross-check.
+
+    Registered BEFORE the ``/{evidence_id}`` catch-all — FastAPI matches in
+    declaration order.
+    """
+    ev = s.get(Evidence, evidence_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    # Always clear the existing link first — boundary membership for the
+    # cross-check is single-valued (a scan belongs to ONE enclave), so a
+    # re-tag replaces rather than accumulates.
+    s.exec(
+        delete(EvidenceBoundary).where(
+            EvidenceBoundary.evidence_id == evidence_id  # type: ignore[arg-type]
+        )
+    )
+
+    name = (body.boundary_name or "").strip()
+    if name:
+        # Get-or-create the segment for (workbook_id, name) — mirrors
+        # scope.create_boundary_segment's dedupe so the same enclave name
+        # reuses one segment row across many tagged artifacts.
+        seg = s.exec(
+            select(BoundarySegment)
+            .where(BoundarySegment.workbook_id == body.workbook_id)
+            .where(BoundarySegment.name == name)
+        ).first()
+        if seg is None:
+            seg = BoundarySegment(workbook_id=body.workbook_id, name=name)
+            s.add(seg)
+            s.flush()  # populate seg.id for the link row
+        s.add(
+            EvidenceBoundary(
+                evidence_id=evidence_id,
+                boundary_segment_id=seg.id,
+                confidence=1.0,
+                source=ScopeLinkSource.MANUAL,
+            )
+        )
     s.commit()
     s.refresh(ev)
     return _serialize(ev)
@@ -1223,7 +1348,7 @@ def retag_all_evidence(
     # retag (one provider/key resolution, not one per file). None when the
     # kill-switch is off or no provider is configured — retag degrades to the
     # deterministic TF-IDF Tier 5, exactly like a fresh ingest.
-    tagger_client, tagger_judge_model = _build_tagger_llm()
+    tagger_client, tagger_judge_model, tagger_status = _build_tagger_llm()
 
     per_file: list[dict] = []
     total_created = 0
@@ -1240,6 +1365,10 @@ def retag_all_evidence(
         "evidence_retagged": len(rows),
         "reextracted": reextracted_count,
         "tags_created": total_created,
+        # Surface degraded tagging so a bulk-retag that quietly produced few
+        # tags because the judge was unavailable isn't mistaken for "nothing
+        # to tag". "ok" | "disabled" | "error".
+        "tagger_status": tagger_status,
         "per_file": per_file,
     }
 
@@ -1252,10 +1381,10 @@ def retag_one_evidence(
     ev = s.get(Evidence, evidence_id)
     if not ev:
         raise HTTPException(status_code=404, detail="Evidence not found")
-    tagger_client, tagger_judge_model = _build_tagger_llm()
+    tagger_client, tagger_judge_model, tagger_status = _build_tagger_llm()
     result = _retag_one(ev, s, client=tagger_client, judge_model=tagger_judge_model)
     s.commit()
-    return {"ok": True, **result}
+    return {"ok": True, "tagger_status": tagger_status, **result}
 
 
 @router.get("/{evidence_id}")

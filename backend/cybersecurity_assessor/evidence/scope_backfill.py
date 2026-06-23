@@ -108,6 +108,32 @@ def _asset_source_for(ev: Evidence) -> AssetSource:
     return AssetSource.MANUAL
 
 
+def _normalize_host(name: str) -> str:
+    """Bare lowercase short form, IP-literal returned whole.
+
+    Mirrors ``ingest._normalize_host`` / ``asset_crosscheck._normalize`` so
+    the device key a pair's FQDN resolves to lines up with the bare-hostname
+    keys the rest of the backfill builds.
+    """
+    import ipaddress
+
+    # Strip a trailing DNS-root dot and a ``:port`` suffix first (mirrors
+    # ingest._clean_host_token) so ``1.2.3.4:443`` doesn't fail the IP guard
+    # and dot-split to the bogus key "1".
+    n = (name or "").strip().lower().rstrip(".")
+    if n.count(":") == 1:
+        head, _, tail = n.partition(":")
+        if head and tail.isdigit():
+            n = head
+    if "." in n:
+        try:
+            ipaddress.ip_address(n)
+            return n  # IP literal — dots are octets, not a DNS suffix
+        except ValueError:
+            n = n.split(".", 1)[0]
+    return n
+
+
 def _parse_host_inventory(raw: str | None) -> list[str]:
     """Return the list of normalized hostnames from the JSON cache, [] on miss.
 
@@ -125,6 +151,42 @@ def _parse_host_inventory(raw: str | None) -> list[str]:
         return []
     out = sorted({str(x).strip().lower() for x in data if x})
     return [h for h in out if h]
+
+
+def _parse_host_pairs(raw: str | None) -> dict[str, dict[str, object]]:
+    """Resolve the JSON ``host_pairs`` blob into a per-DEVICE attribute map.
+
+    Returns ``{device_hostname: {"fqdn": str, "ips": set[str]}}`` where
+    ``device_hostname`` is the bare lowercase short form of the pair's FQDN —
+    the device-centric key. Multiple ``(ip, fqdn)`` pairs that share a device
+    (a credentialed scan reporting several interfaces / a multi-homed box)
+    collapse here: their IPs accumulate under ONE device, matching the
+    "assess once per device, IPs are attributes" model. Malformed entries are
+    skipped. Empty dict on miss so the caller's ``if pairs_by_device`` guard
+    is clean.
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, list):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        ip = entry.get("ip")
+        fqdn = entry.get("fqdn")
+        if not (isinstance(ip, str) and ip and isinstance(fqdn, str) and fqdn):
+            continue
+        device = _normalize_host(fqdn)
+        if not device:
+            continue
+        slot = out.setdefault(device, {"fqdn": fqdn.strip(), "ips": set()})
+        slot["ips"].add(ip.strip())  # type: ignore[union-attr]
+    return out
 
 
 def run_scope_backfill(session: Session) -> BackfillSummary:
@@ -168,21 +230,56 @@ def run_scope_backfill(session: Session) -> BackfillSummary:
 
         # ---- Host inventory → Asset + EvidenceAsset ---------------------
         hosts = _parse_host_inventory(ev.host_inventory)
+        # Device-identity enrichment: a credentialed scan's (ip, fqdn) pairs
+        # let us stamp Asset.fqdn / Asset.ip_address and, crucially, collapse
+        # every IP for a device under that ONE device row (the FQDN's bare
+        # hostname is already in `hosts` because ingest folds pair FQDNs into
+        # host_inventory). Uncredentialed scan IPs carry no pair → they stay
+        # as bare-IP "hosts" with no fqdn, which the cross-check shows calmly
+        # as "scanned IP not yet mapped to a device" (NOT a conflict).
+        pairs_by_device = _parse_host_pairs(ev.host_pairs)
         if hosts:
             asset_source = _asset_source_for(ev)
             for hostname in hosts:
                 key = (wb_id, hostname)
                 asset = asset_cache.get(key)
+                device_attrs = pairs_by_device.get(hostname)
                 if asset is None:
+                    fqdn: str | None = None
+                    ip_address: str | None = None
+                    if device_attrs is not None:
+                        fqdn = device_attrs.get("fqdn") or None  # type: ignore[assignment]
+                        ips = sorted(device_attrs.get("ips") or [])  # type: ignore[arg-type]
+                        # One Asset per device with its IP(s) attached. Join
+                        # multiple IPs (multi-homed box) into the single
+                        # ip_address column rather than spawning a row per IP.
+                        ip_address = ", ".join(ips) if ips else None
                     asset = Asset(
                         workbook_id=wb_id,
                         hostname=hostname,
+                        fqdn=fqdn,
+                        ip_address=ip_address,
                         source=asset_source,
                     )
                     session.add(asset)
                     session.flush()  # populate asset.id for the link row
                     asset_cache[key] = asset
                     summary.assets_created += 1
+                elif device_attrs is not None:
+                    # Existing cached Asset created by an EARLIER evidence row.
+                    # Evidence iteration order is unspecified, so a credentialed
+                    # scan carrying (ip, fqdn) pairs may be processed AFTER a
+                    # bare-hostname row already created this Asset with null
+                    # fqdn/ip. Back-fill the identity attributes in place rather
+                    # than letting the credentialed signal vanish — first-writer
+                    # creates the row, but the richest signal wins the attrs.
+                    if not asset.fqdn:
+                        asset.fqdn = device_attrs.get("fqdn") or None  # type: ignore[assignment]
+                    if not asset.ip_address:
+                        ips = sorted(device_attrs.get("ips") or [])  # type: ignore[arg-type]
+                        if ips:
+                            asset.ip_address = ", ".join(ips)
+                    session.add(asset)
 
                 # Composite-PK link row. Safe to insert directly — the
                 # short-circuit guard guarantees no pre-existing rows, and

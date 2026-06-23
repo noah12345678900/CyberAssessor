@@ -1352,6 +1352,13 @@ export type HostCoverage =
 /** Per-host roll-up across scans / checklists / declared inventory. */
 export interface CoverageHost {
   hostname: string;
+  /**
+   * Boundary / CRN this host belongs to. "unspecified" when the evidence
+   * carries no boundary signal (single-boundary workbooks, untagged
+   * artifacts). Host identity is (boundary, hostname), so the same hostname
+   * or reused private IP in two boundaries renders as two distinct rows.
+   */
+  boundary: string;
   coverage: HostCoverage;
   scanned_in: CoverageSourceRef[];
   checklisted_in: CoverageSourceRef[];
@@ -1383,6 +1390,23 @@ export interface CrossCheckResult {
     declared: number;
     /** Cardinality of scanned ∪ checklisted ∪ declared. */
     union: number;
+  };
+  /**
+   * Device-centric source-type breakdown — "what did we actually look at".
+   * Separates raw scanned IPs from resolved devices (so multiple IPs that
+   * collapse under one host count once) and splits checklist provenance
+   * between real .ckl/.cklb/XCCDF files and DISA STIG-report spreadsheets.
+   * Optional for forward/backward compatibility with older responses.
+   */
+  source_types?: {
+    /** Bare scanned IPs not yet mapped to a resolved device. */
+    ips: number;
+    /** Distinct resolved devices (real hostnames). */
+    hostnames: number;
+    /** Real .ckl / .cklb / XCCDF checklist files. */
+    checklists_regular: number;
+    /** DISA STIG-report .xlsx/.xlsm files (kind STIG_CKL, spreadsheet provenance). */
+    checklists_xlsx: number;
   };
 }
 
@@ -1503,6 +1527,15 @@ export interface IngestSummary {
    * the user can tag these manually or add a control reference.
    */
   untagged?: { path: string; reason: string }[];
+  /**
+   * Tagger LLM availability for this ingest: "ok" (judge + hybrid-RAG ran),
+   * "disabled" (the judge kill-switch was off), or "error" (the client failed
+   * to start). When not "ok", the folder-family lane + vision were skipped, so
+   * structural files may have tagged to zero controls — the UI raises a banner
+   * so a degraded ingest is never mistaken for a healthy one. Optional so older
+   * summaries (pre-field) render unchanged.
+   */
+  tagger_status?: "ok" | "disabled" | "error";
   errors: { path: string; error: string }[];
 }
 
@@ -1531,6 +1564,11 @@ export interface IngestJob {
   tags_created: number;
   findings_created: number;
   error_count: number;
+  /** Two-class ETA inputs: fast = deterministic files, slow = LLM-judged. */
+  fast_file_count: number;
+  fast_file_seconds: number;
+  slow_file_count: number;
+  slow_file_seconds: number;
   /** Final summary; null while running. */
   summary: IngestSummary | null;
   /** Fatal thread-level error; per-file errors live in summary.errors. */
@@ -2063,6 +2101,10 @@ export interface AppSettings {
   llm_provider: LlmProvider;
   // Anthropic
   anthropic_model: string;
+  /** Ingest tagger + sweep judge model (shared). Separate from anthropic_model. */
+  llm_judge_model: string;
+  /** Shared enable toggle for the judge LLM (tagger + sweep). */
+  judge_llm_enabled: boolean;
   anthropic_key_set: boolean;
   /** null ⇒ talking to the real Anthropic API (default). Set to a corporate / high-side gateway URL otherwise. */
   anthropic_base_url: string | null;
@@ -2256,6 +2298,10 @@ export interface SettingsUpdate {
   /** Switch the active provider — must be one of "anthropic" | "openai". */
   llm_provider?: LlmProvider;
   anthropic_model?: string;
+  /** Ingest tagger + sweep judge model (shared). */
+  llm_judge_model?: string;
+  /** Shared toggle: flips both tagger_llm_enabled and sweep_judge_enabled. */
+  judge_llm_enabled?: boolean;
   /** Pass "" (empty string) to clear the override and revert to the real Anthropic API. */
   anthropic_base_url?: string;
   openai_model?: string;
@@ -4181,6 +4227,7 @@ export const api = {
       component_id?: number;
       asset_id?: number;
       boundary_id?: number;
+      q?: string;
       limit?: number;
       offset?: number;
     } = {},
@@ -4194,6 +4241,7 @@ export const api = {
     if (opts.component_id != null) q.set("component_id", String(opts.component_id));
     if (opts.asset_id != null) q.set("asset_id", String(opts.asset_id));
     if (opts.boundary_id != null) q.set("boundary_id", String(opts.boundary_id));
+    if (opts.q) q.set("q", opts.q);
     q.set("limit", String(opts.limit ?? 100));
     q.set("offset", String(opts.offset ?? 0));
     const res = await fetch(`${baseUrl()}/api/evidence?${q.toString()}`, {
@@ -4234,6 +4282,19 @@ export const api = {
     request<CrossCheckResult>(
       `/api/evidence/crosscheck?workbook_id=${workbookId}`,
     ),
+  // Tag a host-bearing artifact (scan / checklist) with a NAMED boundary /
+  // CRN. Writes through the existing EvidenceBoundary link table (no schema
+  // change): get-or-create a BoundarySegment for (workbook_id, name) and
+  // replace this evidence's single boundary link. Empty name clears the tag
+  // → the artifact's hosts fall back to "unspecified" in the cross-check.
+  setEvidenceBoundary: (
+    id: number,
+    body: { boundary_name: string | null; workbook_id: number },
+  ) =>
+    request<Evidence>(`/api/evidence/${id}/boundary`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   // ---- Boundary docs (Sweep Context page) ------------------------
   //
