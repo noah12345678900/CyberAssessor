@@ -62,6 +62,55 @@ _CCI_HEADER_HEADERS = frozenset(
 # sheets.
 _HEADER_SCAN_ROWS = 25
 
+# DISA STIG report (Manual / OSCAP) xlsx detection. These exports lay out one
+# sheet per benchmark with a fixed left-side header block — Vuln ID, Rule ID,
+# Stig ID, Title, Severity — followed by ONE COLUMN PER HOSTNAME whose cells
+# carry the per-host result (Open/NotAFinding/Fail/Pass/…). We detect that
+# header and parse each (rule × host) into a StigFindingRow, plus register the
+# per-host column headers as checklisted assets. The left-block labels are
+# matched case/space-insensitively; we require Vuln ID + Rule ID + (Stig ID or
+# Title) so a generic spreadsheet that merely has a "Title" column can't trip it.
+_STIG_REPORT_FIXED_HEADERS = {
+    "vuln id": "group_id",
+    "vuln_id": "group_id",
+    "vulnerability id": "group_id",
+    "rule id": "rule_id",
+    "rule_id": "rule_id",
+    "stig id": "stig_id",
+    "stig_id": "stig_id",
+    "title": "title",
+    "rule title": "title",
+    "severity": "severity",
+    "cat": "severity",
+}
+# Cells that mark a column as a per-host RESULT column — i.e. the values that
+# appear UNDER a hostname header. Used to confirm a candidate hostname column
+# actually holds STIG statuses (so a stray text column isn't read as a host).
+_STIG_STATUS_VALUES = frozenset(
+    {
+        "open", "not a finding", "notafinding", "not_a_finding", "fail", "pass",
+        "not applicable", "notapplicable", "not_applicable", "not reviewed",
+        "notreviewed", "not_reviewed", "error", "unknown", "true", "false",
+        "compliant", "non-compliant", "noncompliant",
+    }
+)
+
+
+def _stig_report_status(raw: str) -> "FindingStatus | None":
+    """Map a STIG-report cell value to a FindingStatus, or None if not a status."""
+    from ...models import FindingStatus
+
+    s = (raw or "").strip().lower().replace("_", " ")
+    if s in ("open", "fail", "false", "non-compliant", "noncompliant"):
+        return FindingStatus.OPEN
+    if s in ("not a finding", "notafinding", "pass", "true", "compliant"):
+        return FindingStatus.NOT_A_FINDING
+    if s in ("not applicable", "notapplicable"):
+        return FindingStatus.NOT_APPLICABLE
+    if s in ("not reviewed", "notreviewed", "error", "unknown", ""):
+        return FindingStatus.NOT_REVIEWED
+    return None
+
 # Header strings (case + whitespace insensitive) that mark a hostname column
 # in an HW/SW xlsx. Kept in sync with asset_crosscheck.HOSTNAME_HEADERS so a
 # user-flagged asset list resolves the same way whether the cache hit or the
@@ -370,6 +419,116 @@ def _classify_asset_workbook(
     return None, []
 
 
+def _parse_stig_report_sheet(sheet) -> tuple[list, list[str]]:
+    """Parse one DISA STIG-report sheet into (StigFindingRows, hostnames).
+
+    Returns ([], []) when the sheet doesn't match the STIG-report shape, so the
+    caller falls back to generic text extraction. A matched sheet yields one
+    StigFindingRow per (rule × host-with-a-real-status) and the list of host
+    column headers (checklisted assets).
+    """
+    from ._stig_common import StigFindingRow
+
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+
+    # Find the header row: the first row (within the scan window) that carries
+    # both a Vuln ID and a Rule ID label. Real exports put it at row 0, but be
+    # tolerant of a banner row above it.
+    header_idx = None
+    fixed_cols: dict[str, int] = {}
+    host_cols: dict[int, str] = {}
+    for r_idx in range(min(_HEADER_SCAN_ROWS, len(rows))):
+        row = rows[r_idx]
+        labels = {}
+        for c_idx, cell in enumerate(row):
+            if cell is None:
+                continue
+            key = str(cell).strip().lower()
+            mapped = _STIG_REPORT_FIXED_HEADERS.get(key)
+            if mapped and mapped not in labels:
+                labels[mapped] = c_idx
+        if "group_id" in labels and "rule_id" in labels and (
+            "stig_id" in labels or "title" in labels
+        ):
+            header_idx = r_idx
+            fixed_cols = labels
+            # Every column to the RIGHT of the last fixed column that has a
+            # non-empty header is a candidate per-host result column.
+            last_fixed = max(labels.values())
+            for c_idx in range(last_fixed + 1, len(row)):
+                cell = row[c_idx]
+                if cell is None:
+                    continue
+                hn = str(cell).strip()
+                if hn:
+                    host_cols[c_idx] = hn
+            break
+
+    if header_idx is None or not host_cols:
+        return [], []
+
+    # Confirm at least one host column actually holds STIG statuses in the data
+    # rows — guards against a wide non-STIG sheet whose right columns are prose.
+    data_rows = rows[header_idx + 1 :]
+    confirmed_hosts: dict[int, str] = {}
+    for c_idx, hn in host_cols.items():
+        for row in data_rows[:50]:
+            if c_idx < len(row) and row[c_idx] is not None:
+                if _stig_report_status(str(row[c_idx])) is not None and str(
+                    row[c_idx]
+                ).strip().lower() in _STIG_STATUS_VALUES:
+                    confirmed_hosts[c_idx] = hn
+                    break
+    if not confirmed_hosts:
+        return [], []
+
+    findings: list = []
+    g_col = fixed_cols.get("group_id")
+    r_col = fixed_cols["rule_id"]
+    s_col = fixed_cols.get("stig_id")
+    t_col = fixed_cols.get("title")
+    sev_col = fixed_cols.get("severity")
+
+    def _cell(row, idx):
+        if idx is None or idx >= len(row) or row[idx] is None:
+            return None
+        v = str(row[idx]).strip()
+        return v or None
+
+    for row in data_rows:
+        rule_id = _cell(row, r_col)
+        if not rule_id:
+            continue
+        group_id = _cell(row, g_col)
+        stig_id = _cell(row, s_col)
+        title = _cell(row, t_col)
+        severity = _cell(row, sev_col)
+        for c_idx, hn in confirmed_hosts.items():
+            raw = _cell(row, c_idx)
+            if raw is None:
+                continue
+            status = _stig_report_status(raw)
+            if status is None:
+                continue
+            findings.append(
+                StigFindingRow(
+                    rule_id=rule_id,
+                    status=status,
+                    rule_version=stig_id,
+                    severity=severity,
+                    group_id=group_id,
+                    rule_title=title,
+                    # Attribute the finding to its host so the asset cross-check
+                    # and any multi-host narrative can tell which box it's for.
+                    comments=f"host={hn}",
+                )
+            )
+
+    return findings, sorted(set(confirmed_hosts.values()))
+
+
 @register(".xlsx", ".xlsm")
 def extract_xlsx(stream: BinaryIO, name: str) -> ExtractedDoc:
     """Extract cell text from every sheet of a workbook."""
@@ -402,6 +561,21 @@ def extract_xlsx(stream: BinaryIO, name: str) -> ExtractedDoc:
             f"{name} is a CCIS workbook (has WORKING SHEET tab); "
             "open it via Workbooks, not Evidence."
         )
+
+    # STIG-report detection (DISA Manual/OSCAP xlsx): one sheet per benchmark,
+    # fixed Vuln/Rule/Stig/Title/Severity header + per-host result columns. If
+    # ANY sheet matches, harvest per-(rule×host) StigFindingRows and the host
+    # column headers as checklisted assets — same downstream pipeline as .ckl.
+    # We still build the generic text dump below so the artifact is searchable.
+    stig_findings: list = []
+    stig_hostnames: list[str] = []
+    for sheet in wb.worksheets:
+        try:
+            sf, shosts = _parse_stig_report_sheet(sheet)
+        except Exception:  # pragma: no cover - never let one odd sheet abort
+            sf, shosts = [], []
+        stig_findings.extend(sf)
+        stig_hostnames.extend(shosts)
 
     sheet_chunks: list[str] = []
     hostnames: list[str] = []
@@ -475,9 +649,13 @@ def extract_xlsx(stream: BinaryIO, name: str) -> ExtractedDoc:
 
     text = "\n\n".join(sheet_chunks)
     metadata: dict = {"sheet_count": len(sheet_chunks)}
-    if hostnames:
+    # Merge STIG-report host column headers into the hostname list (deduped) so
+    # they register as checklisted assets via the same path as an inventory's
+    # hostname column.
+    all_hosts = list(dict.fromkeys([*hostnames, *stig_hostnames]))
+    if all_hosts:
         # Surface raw values; ingest._capture_host_inventory normalizes.
-        metadata["hostnames"] = hostnames
+        metadata["hostnames"] = all_hosts
     if evidence_type is not None:
         metadata["evidence_type"] = evidence_type
         metadata["evidence_type_signals"] = evidence_type_signals
@@ -485,10 +663,20 @@ def extract_xlsx(stream: BinaryIO, name: str) -> ExtractedDoc:
         # Consumed by ingest.py → tag_evidence(cci_refs=...) → ungated 0.95
         # Tier-2. Insertion-ordered list (dict keys) for deterministic output.
         metadata["cci_refs"] = list(cci_refs)
+    if stig_findings:
+        # Same key the .ckl/.cklb/XCCDF extractors use: ingest.py creates one
+        # StigFinding ORM row per entry and passes them to tag_evidence so the
+        # rules (CM-6 etc.) and the asset cross-check's checklisted bucket see
+        # this xlsx as a real STIG checklist source.
+        metadata["_stig_findings"] = stig_findings
+    # Mark the kind as a STIG checklist when we actually parsed findings, so the
+    # asset cross-check's _CHECKLIST_KINDS membership (and any kind-gated tagger
+    # logic) treats it as checklisted, not a generic spreadsheet.
+    kind = EvidenceKind.STIG_CKL if stig_findings else EvidenceKind.XLSX
     return ExtractedDoc(
         text=text,
         title=stem,
         doc_number=resolve_doc_number(name, stem, text),
-        kind=EvidenceKind.XLSX,
+        kind=kind,
         metadata=metadata,
     )
