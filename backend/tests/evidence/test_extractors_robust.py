@@ -353,6 +353,52 @@ def test_arf_host_falls_back_to_asset_identification_branch():
     assert findings[0].comments == "host=arf-host"
 
 
+# When BOTH a scanner asset and a target-facts target exist, and the
+# TestResult names no <target>, the collection-level fallback must use the
+# TARGET (target-facts), NEVER the scanner asset. This is the misattribution
+# the target-facts scoping fix prevents — the scanner and target deliberately
+# have DIFFERENT names so a regression (grabbing the scanner) is visible.
+_ARF_SCANNER_AND_TARGET_DIFFER = """<?xml version="1.0" encoding="UTF-8"?>
+<arf:asset-report-collection
+    xmlns:arf="http://scap.nist.gov/schema/asset-reporting-format/1.1"
+    xmlns:ai="http://scap.nist.gov/schema/asset-identification/1.1">
+  <arf:assets>
+    <arf:asset>
+      <ai:computing-device>
+        <ai:hostname>scanner-box</ai:hostname>
+      </ai:computing-device>
+    </arf:asset>
+  </arf:assets>
+  <arf:reports>
+    <arf:report id="xccdf1">
+      <arf:content>
+        <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="b">
+          <title>ARF Scanner vs Target</title>
+          <Rule id="rule_1" severity="medium"><title>r1</title></Rule>
+          <TestResult id="tr1">
+            <target-facts>
+              <fact name="urn:scap:fact:asset:identifier:fqdn">target-box</fact>
+            </target-facts>
+            <rule-result idref="rule_1"><result>fail</result></rule-result>
+          </TestResult>
+        </Benchmark>
+      </arf:content>
+    </arf:report>
+  </arf:reports>
+</arf:asset-report-collection>
+"""
+
+
+def test_arf_target_facts_win_over_scanner_asset():
+    doc = extract_xccdf(_stream(_ARF_SCANNER_AND_TARGET_DIFFER), "scan.arf")
+    # Findings must attribute to the TARGET, never the scanner-box asset.
+    assert doc.metadata["host"] == "target-box"
+    findings = doc.metadata["_stig_findings"]
+    assert len(findings) == 1
+    assert findings[0].comments == "host=target-box"
+    assert "scanner-box" not in (findings[0].comments or "")
+
+
 def test_arf_routes_through_registry_and_dispatcher():
     from cybersecurity_assessor.evidence.extractors import dispatcher
     from cybersecurity_assessor.evidence.extractors.base import extract

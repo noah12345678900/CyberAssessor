@@ -26,6 +26,7 @@ from .base import ExtractedDoc, ExtractorError, extract as _extract_via_registry
 # Order does not matter; the dict keys are unique by extension.
 from . import diagram as _diagram  # noqa: F401
 from . import docx as _docx  # noqa: F401
+from . import html as _html  # noqa: F401
 from . import image as _image  # noqa: F401
 from . import nessus as _nessus  # noqa: F401
 from . import pcap as _pcap  # noqa: F401
@@ -58,6 +59,9 @@ _KIND_BY_SUFFIX = {
     ".log": EvidenceKind.TEXT,
     ".csv": EvidenceKind.TEXT,
     ".json": EvidenceKind.TEXT,
+    # SCAP-tool HTML summary reports — tags stripped to searchable text.
+    ".html": EvidenceKind.TEXT,
+    ".htm": EvidenceKind.TEXT,
     # Packet captures — summary digest extractor (stdlib, dependency-free).
     ".pcap": EvidenceKind.PCAP,
     ".pcapng": EvidenceKind.PCAP,

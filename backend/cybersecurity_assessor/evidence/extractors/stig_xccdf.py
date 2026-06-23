@@ -148,6 +148,7 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
 
     findings: list[StigFindingRow] = []
     text_chunks: list[str] = []
+    host_pairs: list[dict] = []  # {"ip":..., "fqdn":...} device-identity pairs
     if title:
         text_chunks.append(f"STIG: {title}")
 
@@ -159,6 +160,36 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
     # rule_ids with no way to tell which box failed what.
     test_results = _findall_local(root, "TestResult")
     hosts: list[str] = []
+
+    def _looks_like_ip(token: str) -> bool:
+        import ipaddress
+
+        try:
+            ipaddress.ip_address((token or "").strip())
+            return True
+        except ValueError:
+            return False
+
+    def _facts(node) -> dict[str, list[str]]:
+        # ARF (and XCCDF 1.2 TestResult) carry host identity in
+        # ``<target-facts><fact name="urn:...:fqdn">host.dom</fact>`` and
+        # ``ipv4``/``ipv6`` siblings, rather than as discrete <fqdn>/<target>
+        # elements. ARF asset-identification (ai:computing-device) uses the
+        # same <fact> shape under <connections>/<connection>. We bucket every
+        # <fact> by the local-name suffix of its ``name`` attribute so the
+        # caller can pull fqdn vs ip without caring which namespace flavor the
+        # scanner emitted.
+        out: dict[str, list[str]] = {}
+        for fact in _findall_local(node, "fact"):
+            raw_name = (fact.attrib.get("name") or "").strip().lower()
+            val = (fact.text or "").strip()
+            if not raw_name or not val:
+                continue
+            # name is a URN like "urn:scap:fact:asset:identifier:fqdn";
+            # the trailing token is what we key on.
+            key = raw_name.rsplit(":", 1)[-1]
+            out.setdefault(key, []).append(val)
+        return out
 
     def _host_of(node) -> str | None:
         # ``target``/``target-address``/``target-id-ref`` are the XCCDF
@@ -176,7 +207,42 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
             el = _find_local(node, tag)
             if el is not None and (el.text or "").strip():
                 return el.text.strip()
+        # Fall back to ARF/TestResult <target-facts><fact name="...fqdn">.
+        facts = _facts(node)
+        for key in ("fqdn", "host-name", "hostname"):
+            if facts.get(key):
+                return facts[key][0]
+        for key in ("ipv4", "ipv6", "ip-address", "ipaddress"):
+            if facts.get(key):
+                return facts[key][0]
         return None
+
+    def _pairs_of(node) -> None:
+        # Capture the (ip, fqdn) device-identity pairing the same way the
+        # Nessus parser does: a single live box reports both its IP and its
+        # OS-reported FQDN. ARF target-facts/asset facts carry both, so the
+        # asset cross-check can collapse multiple IPs under one device.
+        facts = _facts(node)
+        fqdn = ""
+        for key in ("fqdn", "host-name", "hostname"):
+            if facts.get(key):
+                fqdn = facts[key][0]
+                break
+        ip = ""
+        for key in ("ipv4", "ipv6", "ip-address", "ipaddress"):
+            if facts.get(key):
+                ip = facts[key][0]
+                break
+        # An explicit <target> that is itself an IP also seeds the pair.
+        if not ip:
+            tgt = _find_local(node, "target")
+            tgt_txt = (tgt.text or "").strip() if tgt is not None else ""
+            if tgt_txt and _looks_like_ip(tgt_txt):
+                ip = tgt_txt
+        if ip and fqdn:
+            pair = {"ip": ip, "fqdn": fqdn}
+            if pair not in host_pairs:
+                host_pairs.append(pair)
 
     def _emit_rule_results(node, host_name: str | None) -> None:
         for rr in _findall_local(node, "rule-result"):
@@ -211,11 +277,37 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
                 f"[{rid} {status_raw}] {meta.get('title', '')}".strip()
             )
 
-    # ARF carries asset identification (hostname/fqdn) in a sibling
-    # <assets> branch, OUTSIDE the embedded <TestResult>. When a
-    # TestResult itself names no target, fall back to this
-    # collection-level host so ARF files don't lose host attribution.
-    collection_host = _host_of(root)
+    # ARF carries asset identification (hostname/fqdn) for the SCAN TARGET in
+    # ``<target-facts>``. It ALSO carries the SCANNER's own identity elsewhere
+    # in the asset/metadata branch (ai:computing-device under <assets>). A
+    # tree-wide ``_host_of(root)`` / ``_pairs_of(root)`` walks ``el.iter()`` and
+    # can grab whichever asset sorts first — frequently the scanner — and pin
+    # every otherwise-untargeted TestResult's findings to the WRONG device.
+    #
+    # Resolution: PREFER ``<target-facts>`` (unambiguously the target). Only
+    # when NO target-facts exist anywhere in the document do we fall back to the
+    # whole-tree ``_host_of(root)`` — which reaches the single ARF
+    # ``ai:computing-device`` asset branch. That preserves the common
+    # single-asset ARF (one scanned box, host only in the asset branch) while
+    # still refusing to let a scanner asset win when target-facts ARE present.
+    target_facts_nodes = _findall_local(root, "target-facts")
+
+    collection_host: str | None = None
+    if target_facts_nodes:
+        for tfn in target_facts_nodes:
+            collection_host = _host_of(tfn)
+            if collection_host:
+                break
+        # Pairs come only from target-facts when those exist — the scanner's
+        # facts (outside target-facts) must never masquerade as a device.
+        for tfn in target_facts_nodes:
+            _pairs_of(tfn)
+    else:
+        # No target-facts container anywhere → single-asset ARF / bare XCCDF.
+        # The whole-tree fallback is safe here: there is no competing target
+        # vs scanner distinction to get wrong.
+        collection_host = _host_of(root)
+        _pairs_of(root)
 
     if test_results:
         for tr in test_results:
@@ -224,6 +316,7 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
                 hosts.append(host_name)
             if host_name:
                 text_chunks.append(f"Host: {host_name}")
+            _pairs_of(tr)
             _emit_rule_results(tr, host_name)
     else:
         # Benchmark-only or data-stream document — fall back to root-level
@@ -237,7 +330,12 @@ def _parse_xccdf(stream: BinaryIO, name: str) -> StigParseResult:
     primary_host = hosts[0] if hosts else None
     text = "\n".join(text_chunks)
     return StigParseResult(
-        text=text, findings=findings, title=title, host=primary_host, hosts=hosts
+        text=text,
+        findings=findings,
+        title=title,
+        host=primary_host,
+        hosts=hosts,
+        host_pairs=host_pairs,
     )
 
 
@@ -262,6 +360,7 @@ def extract_xccdf(stream: BinaryIO, name: str) -> ExtractedDoc:
         metadata={
             "host": result.host,
             "hosts": result.hosts,
+            "host_pairs": result.host_pairs,
             "finding_count": len(result.findings),
             "_stig_findings": result.findings,
         },

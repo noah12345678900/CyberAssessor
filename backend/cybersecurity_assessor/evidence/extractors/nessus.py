@@ -46,6 +46,46 @@ from .base import ExtractedDoc, ExtractorError, register, resolve_doc_number
 # Nessus numeric severity: 0=info, 1=low, 2=medium, 3=high, 4=critical.
 _NUMERIC_TO_NAME = {"0": "info", "1": "low", "2": "medium", "3": "high", "4": "critical"}
 
+# Tenable .audit compliance verdicts → FindingStatus. PASSED is a clean
+# control, FAILED is a finding, WARNING/ERROR mean the check couldn't be
+# evaluated cleanly (manual review) — map them to NOT_REVIEWED so they're
+# kept but flagged rather than silently passed/failed.
+_COMPLIANCE_TO_STATUS = {
+    "PASSED": FindingStatus.NOT_A_FINDING,
+    "FAILED": FindingStatus.OPEN,
+    "WARNING": FindingStatus.NOT_REVIEWED,
+    "ERROR": FindingStatus.NOT_REVIEWED,
+}
+
+
+def _local(tag: str) -> str:
+    """Strip an XML ``{namespace}tag`` (or ``cm:tag``) down to ``tag``."""
+    if "}" in tag:
+        tag = tag.rsplit("}", 1)[-1]
+    if ":" in tag:
+        tag = tag.rsplit(":", 1)[-1]
+    return tag
+
+
+def _cm_children(item) -> dict[str, str]:
+    """Bucket an ItemReportItem's ``cm:compliance-*`` children by local name.
+
+    Tenable .audit compliance scans put the result in child elements named
+    ``compliance-check-name``, ``compliance-result``, ``compliance-actual-
+    value``, ``compliance-info``, ``compliance-reference``, ``compliance-
+    check-id``, ``compliance-severity`` — all in the ``cm:`` namespace. We
+    match on the namespace-stripped local name so either ``cm:foo`` or
+    ``{ns}foo`` is found. Last value wins for duplicate tags (rare).
+    """
+    out: dict[str, str] = {}
+    for child in item:
+        name = _local(child.tag)
+        if name.startswith("compliance-"):
+            val = (child.text or "").strip()
+            if val:
+                out[name] = val
+    return out
+
 
 def _parse_nessus(stream: BinaryIO, name: str) -> StigParseResult:
     try:
@@ -64,6 +104,7 @@ def _parse_nessus(stream: BinaryIO, name: str) -> StigParseResult:
     findings: list[StigFindingRow] = []
     text_chunks: list[str] = []
     hosts: list[str] = []
+    host_pairs: list[dict] = []  # {"ip":..., "fqdn":...} from HostProperties
     title = None
 
     # Top-level Policy/policyName is a good title when present.
@@ -89,10 +130,102 @@ def _parse_nessus(stream: BinaryIO, name: str) -> StigParseResult:
             if hostname:
                 text_chunks.append(f"Host: {hostname}")
 
+            # Device-identity capture: a CREDENTIALED scan records both the IP
+            # and the OS-reported FQDN/netbios for the SAME live box under
+            # <HostProperties>. Capturing the (ip, fqdn) pair lets the asset
+            # cross-check collapse multiple IPs under one device (one STIG per
+            # device), per the device-centric model. Uncredentialed scans only
+            # have host-ip (== the ReportHost name) and no fqdn → empty fqdn,
+            # which the cross-check shows calmly as "scanned IP not yet mapped".
+            props = {}
+            hp = rh.find("HostProperties")
+            if hp is not None:
+                for tag in hp.findall("tag"):
+                    tname = tag.attrib.get("name") or ""
+                    if tname in ("host-ip", "host-fqdn", "netbios-name", "host-rdns"):
+                        val = (tag.text or "").strip()
+                        if val:
+                            props[tname] = val
+            ip = props.get("host-ip") or (hostname if _looks_like_ip(hostname) else "")
+            fqdn = (
+                props.get("host-fqdn")
+                or props.get("host-rdns")
+                or props.get("netbios-name")
+                or ""
+            )
+            if ip and fqdn:
+                pair = {"ip": ip, "fqdn": fqdn}
+                if pair not in host_pairs:
+                    host_pairs.append(pair)
+
             for item in rh.findall("ReportItem"):
                 plugin_id = item.attrib.get("pluginID") or ""
                 plugin_name = item.attrib.get("pluginName") or ""
                 severity_num = item.attrib.get("severity") or "0"
+
+                # --- Tenable .audit compliance check branch -----------------
+                # When a ReportItem carries cm:compliance-* children it's a
+                # config-compliance result (.audit), not a vuln. Emit a
+                # StigFindingRow keyed on the audit check id/name and skip the
+                # vuln path below. The plain-vuln path is unchanged.
+                cm = _cm_children(item)
+                if cm:
+                    result_raw = (cm.get("compliance-result") or "").strip().upper()
+                    status = _COMPLIANCE_TO_STATUS.get(
+                        result_raw, FindingStatus.NOT_REVIEWED
+                    )
+                    check_name = (
+                        cm.get("compliance-check-name") or plugin_name or ""
+                    ).strip()
+                    # rule_id: prefer an explicit check id, else the check name,
+                    # else fall back to the plugin id so the row is never anon.
+                    rule_token = (
+                        cm.get("compliance-check-id")
+                        or check_name
+                        or plugin_id
+                        or "compliance"
+                    )
+                    cm_severity = normalize_severity(
+                        cm.get("compliance-severity")
+                        or _NUMERIC_TO_NAME.get(severity_num)
+                    )
+                    # CCI / 800-53 refs live in cm:compliance-reference, with
+                    # actual-value/info as secondary haystacks.
+                    cci_refs = extract_cci_refs(
+                        cm.get("compliance-reference"),
+                        cm.get("compliance-info"),
+                        cm.get("compliance-actual-value"),
+                    )
+                    details = (
+                        cm.get("compliance-info")
+                        or cm.get("compliance-actual-value")
+                        or None
+                    )
+                    actual = cm.get("compliance-actual-value")
+                    if hostname:
+                        comments = f"host={hostname}"
+                        if actual:
+                            comments = f"{comments}\n{actual}"
+                    else:
+                        comments = actual or None
+
+                    findings.append(
+                        StigFindingRow(
+                            rule_id=f"Nessus-{rule_token}",
+                            status=status,
+                            rule_version=None,
+                            cci_refs=cci_refs,
+                            severity=cm_severity,
+                            finding_details=details,
+                            comments=comments,
+                            rule_title=check_name or None,
+                        )
+                    )
+                    text_chunks.append(
+                        f"[Nessus-{rule_token} {result_raw}] {check_name}".strip()
+                    )
+                    continue
+                # --- end compliance branch ---------------------------------
                 risk = (item.findtext("risk_factor") or "").strip()
                 description = (item.findtext("description") or "").strip() or None
                 output = (item.findtext("plugin_output") or "").strip() or None
@@ -146,8 +279,24 @@ def _parse_nessus(stream: BinaryIO, name: str) -> StigParseResult:
     text = "\n".join(text_chunks)
     primary_host = hosts[0] if hosts else None
     return StigParseResult(
-        text=text, findings=findings, title=title, host=primary_host, hosts=hosts
+        text=text,
+        findings=findings,
+        title=title,
+        host=primary_host,
+        hosts=hosts,
+        host_pairs=host_pairs,
     )
+
+
+def _looks_like_ip(token: str) -> bool:
+    """True if ``token`` parses as an IPv4/IPv6 address (mirrors ingest)."""
+    import ipaddress
+
+    try:
+        ipaddress.ip_address((token or "").strip())
+        return True
+    except ValueError:
+        return False
 
 
 @register(".nessus")
@@ -164,6 +313,7 @@ def extract_nessus(stream: BinaryIO, name: str) -> ExtractedDoc:
         metadata={
             "host": result.host,
             "hosts": result.hosts,
+            "host_pairs": result.host_pairs,
             "finding_count": len(result.findings),
             "_stig_findings": result.findings,
         },

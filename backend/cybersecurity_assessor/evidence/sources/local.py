@@ -39,6 +39,9 @@ _INGESTIBLE_SUFFIXES = {
     ".log",
     ".csv",
     ".json",
+    # SCAP-tool HTML summary reports — tags stripped to searchable text.
+    ".html",
+    ".htm",
     # Packet captures — summary-digest extractor (stdlib, dependency-free).
     ".pcap",
     ".pcapng",

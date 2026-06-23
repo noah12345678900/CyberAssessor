@@ -328,6 +328,116 @@ def test_xccdf_extractor_rejects_non_xccdf_xml(tmp_path):
         extract_path(p)
 
 
+# A bare <TestResult> results doc (no Benchmark wrapper) carrying every
+# XCCDF result verdict, plus target-facts that should populate host_pairs.
+_XCCDF_TESTRESULT = """<?xml version="1.0" encoding="UTF-8"?>
+<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2" id="xccdf_res_only">
+  <title>OpenSCAP TestResult</title>
+  <target>web-01</target>
+  <target-address>10.0.0.42</target-address>
+  <target-facts>
+    <fact name="urn:scap:fact:asset:identifier:fqdn">web-01.dom.mil</fact>
+    <fact name="urn:scap:fact:asset:identifier:ipv4">10.0.0.42</fact>
+  </target-facts>
+  <rule-result idref="rule_pass"><result>pass</result>
+    <ident system="http://cyber.mil/cci">CCI-000366</ident></rule-result>
+  <rule-result idref="rule_fail"><result>fail</result></rule-result>
+  <rule-result idref="rule_na"><result>notapplicable</result></rule-result>
+  <rule-result idref="rule_nc"><result>notchecked</result></rule-result>
+</TestResult>
+"""
+
+
+def test_xccdf_bare_testresult_maps_all_verdicts_and_host_pairs(tmp_path):
+    p = tmp_path / "results.xml"
+    p.write_text(_XCCDF_TESTRESULT, encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.STIG_XCCDF
+    assert doc.metadata["host"] == "web-01"
+    # target-facts fqdn + ipv4 → device-identity pair.
+    assert {"ip": "10.0.0.42", "fqdn": "web-01.dom.mil"} in doc.metadata["host_pairs"]
+    by_id = {f.rule_id: f for f in doc.metadata["_stig_findings"]}
+    assert by_id["rule_pass"].status == FindingStatus.NOT_A_FINDING
+    assert by_id["rule_fail"].status == FindingStatus.OPEN
+    assert by_id["rule_na"].status == FindingStatus.NOT_APPLICABLE
+    assert by_id["rule_nc"].status == FindingStatus.NOT_REVIEWED
+
+
+# ---------------------------------------------------------------------------
+# ARF (Asset Reporting Format) — XCCDF results wrapped in asset-report-collection
+# ---------------------------------------------------------------------------
+
+_MINIMAL_ARF = """<?xml version="1.0" encoding="UTF-8"?>
+<arf:asset-report-collection
+    xmlns:arf="http://scap.nist.gov/schema/asset-reporting-format/1.1"
+    xmlns:ai="http://scap.nist.gov/schema/asset-identification/1.1"
+    xmlns="http://checklists.nist.gov/xccdf/1.2">
+  <arf:assets>
+    <arf:asset>
+      <ai:computing-device>
+        <ai:fqdn>arf-host.dom.mil</ai:fqdn>
+        <ai:connections>
+          <ai:connection>
+            <ai:ip-address><ai:ip-v4>192.168.50.10</ai:ip-v4></ai:ip-address>
+          </ai:connection>
+        </ai:connections>
+      </ai:computing-device>
+    </arf:asset>
+  </arf:assets>
+  <arf:reports>
+    <arf:report>
+      <arf:content>
+        <Benchmark id="xccdf_arf_bench">
+          <title>ARF Wrapped STIG</title>
+          <Rule id="arf_rule_1" severity="high">
+            <title>FIPS mode enabled</title>
+            <version>RHEL-08-010020</version>
+            <ident system="http://cyber.mil/cci">CCI-000803</ident>
+          </Rule>
+          <TestResult id="arf_result">
+            <target>arf-host</target>
+            <target-facts>
+              <fact name="urn:scap:fact:asset:identifier:fqdn">arf-host.dom.mil</fact>
+              <fact name="urn:scap:fact:asset:identifier:ipv4">192.168.50.10</fact>
+            </target-facts>
+            <rule-result idref="arf_rule_1"><result>fail</result></rule-result>
+          </TestResult>
+        </Benchmark>
+      </arf:content>
+    </arf:report>
+  </arf:reports>
+</arf:asset-report-collection>
+"""
+
+
+def test_arf_extractor_parses_wrapped_results_and_host(tmp_path):
+    # ARF saved with a .xml suffix is sniffed by root element, not extension.
+    p = tmp_path / "scan_results.xml"
+    p.write_text(_MINIMAL_ARF, encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.STIG_XCCDF
+    assert doc.metadata["host"] == "arf-host"
+    findings = doc.metadata["_stig_findings"]
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule_id == "arf_rule_1"
+    assert f.status == FindingStatus.OPEN  # fail
+    assert f.cci_refs == "CCI-000803"
+    assert f.rule_version == "RHEL-08-010020"
+    # ARF asset/target facts → device-identity pair (ip + fqdn).
+    assert {"ip": "192.168.50.10", "fqdn": "arf-host.dom.mil"} in doc.metadata[
+        "host_pairs"
+    ]
+
+
+def test_arf_extractor_via_arf_suffix(tmp_path):
+    p = tmp_path / "scan.arf"
+    p.write_text(_MINIMAL_ARF, encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.STIG_XCCDF
+    assert doc.metadata["finding_count"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Nessus
 # ---------------------------------------------------------------------------
@@ -370,6 +480,126 @@ def test_nessus_extractor_maps_severity_and_status(tmp_path):
     assert by_id["Nessus-67890"].status == FindingStatus.NOT_A_FINDING
     assert by_id["Nessus-67890"].severity == "info"
     assert by_id["Nessus-22222"].severity == "medium"  # CAT II
+
+
+# A .nessus file produced by a Tenable .audit COMPLIANCE scan: the result
+# lives in cm:compliance-* children rather than a vuln ReportItem. The same
+# file mixes one ordinary vuln ReportItem so we prove both paths coexist.
+_NESSUS_COMPLIANCE = """<?xml version="1.0" encoding="UTF-8"?>
+<NessusClientData_v2 xmlns:cm="http://www.nessus.org/cm">
+  <Report name="Audit Scan">
+    <ReportHost name="db-01">
+      <HostProperties>
+        <tag name="host-ip">10.1.1.9</tag>
+        <tag name="host-fqdn">db-01.dom.mil</tag>
+      </HostProperties>
+      <ReportItem pluginID="99999" pluginName="Vuln plugin" severity="3">
+        <risk_factor>High</risk_factor>
+        <description>Some CVE.</description>
+      </ReportItem>
+      <ReportItem pluginID="1000" pluginName="Compliance check" severity="3">
+        <cm:compliance-check-name>1.1 Ensure SELinux enforcing</cm:compliance-check-name>
+        <cm:compliance-check-id>RHEL-08-010170</cm:compliance-check-id>
+        <cm:compliance-result>FAILED</cm:compliance-result>
+        <cm:compliance-actual-value>permissive</cm:compliance-actual-value>
+        <cm:compliance-info>SELinux must be enforcing.</cm:compliance-info>
+        <cm:compliance-reference>800-53|AC-3,CCI|CCI-000213</cm:compliance-reference>
+        <cm:compliance-severity>High</cm:compliance-severity>
+      </ReportItem>
+      <ReportItem pluginID="1001" pluginName="Compliance check 2" severity="0">
+        <cm:compliance-check-name>1.2 Ensure auditd running</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-reference>CCI|CCI-000130</cm:compliance-reference>
+      </ReportItem>
+      <ReportItem pluginID="1002" pluginName="Compliance check 3" severity="0">
+        <cm:compliance-check-name>1.3 Banner present</cm:compliance-check-name>
+        <cm:compliance-result>WARNING</cm:compliance-result>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>
+"""
+
+
+def test_nessus_compliance_items_emit_findings(tmp_path):
+    p = tmp_path / "audit.nessus"
+    p.write_text(_NESSUS_COMPLIANCE, encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.NESSUS
+    findings = doc.metadata["_stig_findings"]
+    by_id = {f.rule_id: f for f in findings}
+
+    # Vuln path still works alongside the new compliance path.
+    assert by_id["Nessus-99999"].status == FindingStatus.OPEN
+
+    # Compliance check id becomes the rule token; FAILED -> OPEN.
+    failed = by_id["Nessus-RHEL-08-010170"]
+    assert failed.status == FindingStatus.OPEN
+    assert failed.severity == "high"
+    assert "CCI-000213" in (failed.cci_refs or "")
+    assert failed.rule_title == "1.1 Ensure SELinux enforcing"
+
+    # PASSED -> NOT_A_FINDING; no check-id so rule token is the check name.
+    passed = by_id["Nessus-1.2 Ensure auditd running"]
+    assert passed.status == FindingStatus.NOT_A_FINDING
+    assert "CCI-000130" in (passed.cci_refs or "")
+
+    # WARNING -> NOT_REVIEWED (couldn't evaluate cleanly).
+    warned = by_id["Nessus-1.3 Banner present"]
+    assert warned.status == FindingStatus.NOT_REVIEWED
+
+    # Host device-identity pairing still captured from HostProperties.
+    assert {"ip": "10.1.1.9", "fqdn": "db-01.dom.mil"} in doc.metadata["host_pairs"]
+
+
+# ---------------------------------------------------------------------------
+# HTML report extractor (.html / .htm — stdlib html.parser, no bs4)
+# ---------------------------------------------------------------------------
+
+_SCAP_HTML = """<!DOCTYPE html>
+<html><head><title>SCC Compliance Report</title>
+<style>.fail{color:red}</style>
+<script>var x = 1;</script></head>
+<body>
+  <h1>SCAP Results for win-01</h1>
+  <table>
+    <tr><th>Rule</th><th>Result</th></tr>
+    <tr><td>Audit subsystem enabled</td><td>Pass</td></tr>
+    <tr><td>Account lockout configured</td><td>Fail</td></tr>
+  </table>
+  <p>Document Number: USD00050010</p>
+</body></html>
+"""
+
+
+def test_html_extractor_strips_tags_to_text(tmp_path):
+    p = tmp_path / "report.html"
+    p.write_text(_SCAP_HTML, encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.TEXT
+    assert doc.title == "SCC Compliance Report"
+    # Visible report text is preserved and searchable.
+    assert "SCAP Results for win-01" in doc.text
+    assert "Audit subsystem enabled" in doc.text
+    assert "Account lockout configured" in doc.text
+    # script/style bodies are dropped.
+    assert "var x = 1" not in doc.text
+    assert "color:red" not in doc.text
+    # Labeled doc-number line is adopted as identity.
+    assert doc.doc_number == "USD00050010"
+
+
+def test_htm_extractor_registered(tmp_path):
+    p = tmp_path / "summary.htm"
+    p.write_text("<html><body><p>FIPS enforcing</p></body></html>", encoding="utf-8")
+    doc = extract_path(p)
+    assert doc.kind == EvidenceKind.TEXT
+    assert "FIPS enforcing" in doc.text
+
+
+def test_infer_kind_html():
+    assert infer_kind(Path("report.html")) == EvidenceKind.TEXT
+    assert infer_kind(Path("report.HTM")) == EvidenceKind.TEXT
 
 
 # ---------------------------------------------------------------------------
