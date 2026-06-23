@@ -211,30 +211,61 @@ export function IngestProgressStrip() {
   const total = running?.estimated_total ?? null;
   const isStarting = !running;
 
-  // started_at is an ISO string on IngestJob (unlike the numeric epoch on
-  // AssessBatchProgress) — parse it before any elapsed math.
-  const startedMs = running ? Date.parse(running.started_at) : NaN;
-  const elapsedSec = Number.isFinite(startedMs)
-    ? Math.max(0, (Date.now() - startedMs) / 1000)
-    : 0;
-
   const hasTotal = typeof total === "number" && total > 0;
-  const pct = hasTotal ? Math.min(100, Math.round((scanned / total) * 100)) : 0;
+  // Progress % tracks INGESTED (files fully processed), not SCANNED (files
+  // merely started). scanned jumps +1 the instant a slow LLM file BEGINS its
+  // ~20s judge, which would shoot the bar to 100% while the last file is still
+  // working. ingested advances only at file-finish, so it's the honest count.
+  const pct = hasTotal ? Math.min(100, Math.round((ingested / total) * 100)) : 0;
 
-  // ETA: remaining / observed rate. Only meaningful once we have a denominator
-  // and at least one scanned file to establish a rate.
+  // ---- Two-class ETA (bimodal-aware) ---------------------------------------
+  // Per-file cost is ~100x bimodal: deterministic files finish in ms; LLM-judged
+  // files take ~15-25s. A single blended rate gives a wildly optimistic ETA
+  // because the fast files front-load it. Instead the backend streams, split by
+  // class, the count + cumulative seconds for fast (deterministic) vs slow
+  // (LLM-judged) files. We estimate the per-class average and the observed LLM
+  // hit-fraction, then:
+  //     eta = remaining * [p_slow*avg_slow + (1-p_slow)*avg_fast]
+  // Cold-start prior (≈30% of files hit the LLM @ ~20s, fast files ~0.2s) anchors
+  // the estimate before enough real samples land, then real data takes over as
+  // the counts grow. This needs no client-side timers — it's a pure function of
+  // the backend's cumulative counters, so it survives remounts and poll jitter.
   let etaLabel: string | null = null;
-  if (hasTotal && scanned > 0 && elapsedSec > 0) {
-    const rate = scanned / elapsedSec; // files/sec
-    if (rate > 0) {
-      const remaining = Math.max(0, total - scanned);
-      etaLabel = formatEta(remaining / rate);
+  if (hasTotal && ingested >= 0) {
+    const fc = running?.fast_file_count ?? 0;
+    const fs = running?.fast_file_seconds ?? 0;
+    const sc = running?.slow_file_count ?? 0;
+    const ss = running?.slow_file_seconds ?? 0;
+
+    // Priors (pseudo-counts) — weak, so a handful of real files dominates them.
+    const PRIOR_FAST_N = 3;
+    const PRIOR_FAST_S = 3 * 0.2; // ~0.2s per deterministic file
+    const PRIOR_SLOW_N = 1;
+    const PRIOR_SLOW_S = 1 * 20; // ~20s per LLM-judged file
+    const PRIOR_P_SLOW = 0.3; // ~30% of files hit the LLM
+    const PRIOR_W = 4; // weight of the p_slow prior, in pseudo-files
+
+    const avgFast = (fs + PRIOR_FAST_S) / (fc + PRIOR_FAST_N);
+    const avgSlow = (ss + PRIOR_SLOW_S) / (sc + PRIOR_SLOW_N);
+    const doneClassified = fc + sc;
+    const pSlow =
+      (sc + PRIOR_P_SLOW * PRIOR_W) / (doneClassified + PRIOR_W);
+
+    const expectedPerFile = pSlow * avgSlow + (1 - pSlow) * avgFast;
+    const remaining = Math.max(0, total - ingested);
+    if (expectedPerFile > 0) {
+      etaLabel = formatEta(remaining * expectedPerFile);
     }
   }
 
   return (
     <div className="sticky top-0 z-30 border-b border-border bg-card/95 px-4 py-2 shadow-nuon-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
-      <div className="flex items-center gap-2">
+      {/* pr-[150px] on the header row keeps the percent/ETA (right-aligned via
+          ml-auto) clear of the custom WindowControls cluster, which is fixed at
+          the top-right (right-2, ~132px wide). Without it the ETA renders UNDER
+          the min/max/close buttons and is invisible. Only the top strip overlaps
+          them, so the padding lives here, not on the whole component. */}
+      <div className="flex items-center gap-2 pr-[150px]">
         <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
         <span className="text-sm font-medium">
           {isStarting

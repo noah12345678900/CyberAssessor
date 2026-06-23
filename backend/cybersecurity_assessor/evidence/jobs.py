@@ -105,6 +105,13 @@ class IngestJob:
     tags_created: int = 0
     findings_created: int = 0
     error_count: int = 0
+    # Two-class ETA inputs mirrored from IngestSummary (see ingest.py). Let the
+    # UI compute a bimodal-aware remaining time: fast (deterministic) vs slow
+    # (LLM-judged) file counts + cumulative seconds.
+    fast_file_count: int = 0
+    fast_file_seconds: float = 0.0
+    slow_file_count: int = 0
+    slow_file_seconds: float = 0.0
     # Full summary dict, populated on completion (status != "running").
     summary: dict | None = None
     # Fatal error (thread crashed). Per-file errors live in summary["errors"].
@@ -206,6 +213,10 @@ class JobRegistry:
                 job.tags_created = summary.tags_created
                 job.findings_created = summary.findings_created
                 job.error_count = len(summary.errors)
+                job.fast_file_count = summary.fast_file_count
+                job.fast_file_seconds = summary.fast_file_seconds
+                job.slow_file_count = summary.slow_file_count
+                job.slow_file_seconds = summary.slow_file_seconds
 
         # Acquire the shared writer lock before any SQLite writes. Blocking
         # is safe here: the only holder would be a single-file claim, which
