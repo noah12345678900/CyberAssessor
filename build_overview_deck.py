@@ -213,16 +213,16 @@ _grad_round(s, Inches(8.75), Inches(1.55), Inches(4.4), Inches(4.4),
 _grad_round(s, Inches(0.9), Inches(1.95), Inches(0.18), Inches(2.35),
             BLUE_BRIGHT, BLUE, angle=90, radius=0.5)
 
-_kicker(s, Inches(1.32), Inches(1.55), "Nuon  ·  AI-driven control assessment")
+_kicker(s, Inches(1.32), Inches(1.55), "Nuon  ·  AI-native control assessment")
 _text(s, Inches(1.3), Inches(1.95), Inches(11), Inches(1.4),
       [[("Cybersecurity Assessor", 48, WHITE, True, False)]])
 _text(s, Inches(1.32), Inches(3.0), Inches(10.6), Inches(1.0),
-      [[("Deterministic reasoning, machine learning, and AI validation working in tandem to assess like a human expert.",
+      [[("Reasons like a senior assessor, verifies like an auditor — backing every verdict with a cited artifact.",
          22, SKY, False, False)]])
 _text(s, Inches(1.32), Inches(3.95), Inches(10.4), Inches(1.4),
-      [[("Turn months of manual control assessment into days. Defensible verdicts, cited",
+      [[("Turn months of manual control assessment into hours. Defensible verdicts, cited",
          16, LIGHT, False, False)],
-       [("evidence, and an auditable trail — running entirely inside your own enclave.",
+       [("evidence, and an auditable trail — running on hardware you control, with the AI endpoint you choose.",
          16, LIGHT, False, False)]])
 
 # classification spectrum chips
@@ -285,7 +285,7 @@ _grad_bg(s, NAVY_DEEP, NAVY3, angle=60)
 _grad_rect(s, 0, 0, W, Inches(0.14), BLUE_BRIGHT, BLUE, angle=0)
 _kicker(s, Inches(0.8), Inches(0.45), "Built for every enclave", SKY)
 _text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
-      [[("From Unclassified to Top Secret — your data never leaves", 30, WHITE, True, False)]])
+      [[("From Unclassified to Top Secret — you control your data", 30, WHITE, True, False)]])
 _text(s, Inches(0.8), Inches(1.55), Inches(11.7), Inches(0.5),
       [[("The same engine runs from a CUI dev box to a TS/SCI accreditation. Only the AI endpoint changes.",
          15, SKY, False, False)]])
@@ -315,28 +315,23 @@ for lab, wseg, fill, tc in zip(seg_labels, seg_w, seg_fills, seg_txt):
 # three privacy pillars
 priv = [
     ("Lives inside your enclave",
-     "Installs and runs entirely on the assessor's workstation — no SaaS, no portal, no account. Your eMASS workbook and every artifact stay on the network they already live on. Air-gap friendly."),
+     "Installs and runs entirely on the assessor's workstation — no SaaS, no portal, no account. Your eMASS workbook and every artifact stay on the network they already live on; the engine and your chosen AI endpoint work together from inside your boundary."),
     ("You choose the AI boundary",
      "Point it at the model approved for your environment: a commercial key for unclassified work, or a GovCloud / in-boundary endpoint for higher enclaves. The only outbound call is to the endpoint you designate."),
     ("Nothing phones home",
-     "No telemetry, no analytics, no evidence upload. On-device learning means the model adapts to your team locally — your CUI, evidence, and the judgment it learns from never leave the box."),
+     "No telemetry, no analytics, no evidence files uploaded. Files stay on the workstation; only the prompt you assess — control text plus the evidence excerpts it cites — goes to the AI endpoint you designate. On-device learning stays local."),
 ]
 py = Inches(3.25)
 pw = Inches(3.84)
 pgap = Inches(0.1)
 for i, (title, body) in enumerate(priv):
     x = Inches(0.8) + (pw + pgap) * i
-    _round(s, x, py, pw, Inches(3.0), NAVY2, line=BLUE, line_w=Pt(1), radius=0.06)
+    _round(s, x, py, pw, Inches(3.2), NAVY2, line=BLUE, line_w=Pt(1), radius=0.06)
     _grad_rect(s, x, py, pw, Inches(0.09), BLUE_BRIGHT, BLUE, angle=0)
-    _text(s, x + Inches(0.32), py + Inches(0.3), pw - Inches(0.6), Inches(0.7),
+    _text(s, x + Inches(0.32), py + Inches(0.28), pw - Inches(0.6), Inches(0.72),
           [[(title, 17, WHITE, True, False)]], line_spacing=1.02)
-    _text(s, x + Inches(0.32), py + Inches(1.1), pw - Inches(0.6), Inches(1.8),
-          [[(body, 11.5, LIGHT, False, False)]], line_spacing=1.14)
-
-_text(s, Inches(0.8), Inches(6.55), Inches(11.7), Inches(0.5),
-      [[("Deterministic-only mode runs with no AI endpoint at all — rule-based resolution for fully air-gapped systems.",
-         12.5, SKY, False, True)]])
-
+    _text(s, x + Inches(0.32), py + Inches(1.04), pw - Inches(0.6), Inches(2.0),
+          [[(body, 12, LIGHT, False, False)]], line_spacing=1.13)
 
 # ===========================================================================
 # Slide 4 — How it works (the pipeline + kernel descriptor)
@@ -348,7 +343,7 @@ _kicker(s, Inches(0.8), Inches(0.4), "How it works", SKY)
 _text(s, Inches(0.8), Inches(0.74), Inches(11.7), Inches(0.8),
       [[("AI speed, kernel-grade rigor", 32, WHITE, True, False)]])
 _text(s, Inches(0.8), Inches(1.5), Inches(11.7), Inches(0.5),
-      [[("We didn't bolt a chatbot onto a spreadsheet. We built a reasoning engine that mimics how a senior assessor works — then has the LLM check it.",
+      [[("We didn't bolt a chatbot onto a spreadsheet. We built a reasoning engine that mimics how a senior assessor works — then checks the AI's judgment against it.",
          14, SKY, False, False)]])
 
 steps = [
@@ -369,20 +364,20 @@ for i, (title, body) in enumerate(steps):
     _grad_rect(s, x, by, bw, Inches(0.5), BLUE, BLUE_BRIGHT, angle=0)
     _text(s, x + Inches(0.14), by + Inches(0.04), bw - Inches(0.28), Inches(0.42),
           [[(title, 15, WHITE, True, False)]], anchor=MSO_ANCHOR.MIDDLE)
-    _text(s, x + Inches(0.2), by + Inches(0.64), bw - Inches(0.4), Inches(1.75),
-          [[(body, 11, LIGHT, False, False)]], line_spacing=1.12)
+    _text(s, x + Inches(0.2), by + Inches(0.62), bw - Inches(0.4), Inches(1.77),
+          [[(body, 12, LIGHT, False, False)]], line_spacing=1.12)
 
 # kernel descriptor strip
-_round(s, Inches(0.8), Inches(5.05), Inches(11.73), Inches(1.9), NAVY2, line=BLUE, line_w=Pt(1.25), radius=0.06)
-_grad_rect(s, Inches(0.8), Inches(5.05), Inches(0.18), Inches(1.9), BLUE_BRIGHT, BLUE, angle=90)
-_text(s, Inches(1.18), Inches(5.2), Inches(11.1), Inches(0.5),
-      [[("The Assessment Engine — reason like an assessor, verify like an auditor", 18, SKY, True, False)]])
-_text(s, Inches(1.18), Inches(5.67), Inches(11.1), Inches(1.2),
+_round(s, Inches(0.8), Inches(5.0), Inches(11.73), Inches(2.0), NAVY2, line=BLUE, line_w=Pt(1.25), radius=0.06)
+_grad_rect(s, Inches(0.8), Inches(5.0), Inches(0.18), Inches(2.0), BLUE_BRIGHT, BLUE, angle=90)
+_text(s, Inches(1.18), Inches(5.14), Inches(11.1), Inches(0.5),
+      [[("The Assessment Engine — two layers of intelligence, one defensible answer", 18, SKY, True, False)]])
+_text(s, Inches(1.18), Inches(5.62), Inches(11.1), Inches(1.32),
       [[("At the core is a proprietary reasoning engine that encodes how an experienced assessor actually works — which evidence matters, when a "
          "control is inherited, when scope excludes it, when the proof simply isn't there. It resolves everything it can prove on its own, then "
          "hands only the true judgment calls to the LLM as a second opinion — and re-validates that opinion before accepting it. ",
          13, LIGHT, False, False)],
-       [("Two layers of intelligence, one defensible answer: human-like reasoning for speed, deterministic + LLM validation for trust. When the evidence is ambiguous, it abstains rather than guess.",
+       [("The deterministic engine does the heavy lifting for speed and validates the AI's second opinion for trust — and when the evidence is ambiguous, it abstains rather than guess.",
          13, WHITE, True, False)]], line_spacing=1.1)
 
 
@@ -401,13 +396,13 @@ _text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
 eng = [
     ("Machine-learning evidence sweep",
      "Boundary-aware SharePoint triage",
-     "Point it at a 4,000-file SharePoint site and it surfaces the ~30 files that belong to THIS system — reading only metadata and search snippets, never downloading. It scores every candidate against the system's host inventory, control-family keywords, and the responsibility matrix, and proposes the control each one proves before a single byte is pulled."),
+     "Point it at a 4,000-file SharePoint site and it surfaces the ~30 files that belong to THIS system — reading only metadata and snippets, never downloading. It scores each candidate and proposes the control it proves before a byte is pulled."),
     ("A model that learns your judgment",
-     "Online behavioral learning",
-     "Every time an assessor includes or rejects a swept file, an online machine-learning model updates the scoring weights toward that behavior. The engine literally learns what THIS team treats as relevant evidence, and gets sharper with every assessment — no retraining cycle, no data leaving the workstation."),
+     "Learning",
+     "Each time an assessor includes or rejects a swept file, an online ML model shifts its scoring toward that choice. It learns what THIS team treats as relevant and sharpens every assessment — no retraining, nothing leaving the box."),
     ("A lie detector for vendor spreadsheets",
      "Adversarial CRM anomaly detection",
-     "When a cloud vendor says 'we handle this control,' the system can auto-pass it — a huge time-saver, IF the spreadsheet is honest. This engine vets every vendor responsibility matrix for 'too good to be true' claims: almost-everything-inherited, copy-pasted boilerplate, or claims that contradict your own scans. It compares each matrix to every one seen before and flags the outliers — so the system never rubber-stamps a control on a bad spreadsheet."),
+     "When a vendor claims 'we handle this control,' the system can auto-pass it — a real time-saver, IF the sheet is honest. This engine flags 'too good to be true' matrices that contradict your scans, so no control is rubber-stamped."),
 ]
 ey = Inches(2.25)
 ew = Inches(3.84)
@@ -416,13 +411,13 @@ for i, (title, tag, body) in enumerate(eng):
     x = Inches(0.8) + (ew + egap) * i
     _grad_round(s, x, ey, ew, Inches(4.35), NAVY, NAVY3, angle=60, radius=0.05)
     _grad_rect(s, x, ey, ew, Inches(0.09), BLUE_BRIGHT, BLUE, angle=0)
-    _text(s, x + Inches(0.3), ey + Inches(0.28), ew - Inches(0.6), Inches(0.95),
+    _text(s, x + Inches(0.3), ey + Inches(0.28), ew - Inches(0.6), Inches(0.8),
           [[(title, 16, WHITE, True, False)]], line_spacing=1.02)
-    _chip(s, x + Inches(0.3), ey + Inches(1.28), ew - Inches(0.6), Inches(0.42), tag, BLUE, WHITE, 10.5)
-    _text(s, x + Inches(0.3), ey + Inches(1.88), ew - Inches(0.6), Inches(2.4),
-          [[(body, 11, LIGHT, False, False)]], line_spacing=1.12)
+    _chip(s, x + Inches(0.3), ey + Inches(1.02), ew - Inches(0.6), Inches(0.5), tag, BLUE, WHITE, 13)
+    _text(s, x + Inches(0.3), ey + Inches(1.72), ew - Inches(0.6), Inches(2.5),
+          [[(body, 13, LIGHT, False, False)]], line_spacing=1.2)
 _text(s, Inches(0.8), Inches(6.8), Inches(11.7), Inches(0.4),
-      [[("All learning happens locally — your evidence and your team's judgment never leave the workstation.",
+      [[("All learning happens locally — the model's training and your team's judgment never leave the workstation.",
          12.5, BLUE, False, True)]])
 
 
@@ -434,12 +429,12 @@ _bg(s, WHITE)
 _accentbar(s)
 _kicker(s, Inches(0.8), Inches(0.45), "What it does")
 _text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
-      [[("One engine, end to end", 32, NAVY, True, False)]])
+      [[("One unified workflow, end to end", 32, NAVY, True, False)]])
 
 feats = [
     ("Multi-framework", "NIST 800-53, 800-171 (CMMC), CSF 2.0, ISO 27001, CIS v8, PCI DSS, and SOC 2 — one engine, seven frameworks."),
     ("Reads every artifact", "PDF, Word, PowerPoint, Excel, STIG .ckl/.cklb/XCCDF, Nessus/ACAS scans, Visio diagrams, and screenshots."),
-    ("OCR built in", "Pulls text out of config screenshots (MFA, GPO, lockout screens) so image evidence actually counts — fully offline."),
+    ("OCR + Vision", "OCR pulls verbatim text from config screenshots; an AI vision pass also reads diagrams and dashboards OCR can't — so image evidence counts."),
     ("Cited narratives", "Every verdict names the exact document, section, and STIG rule it relies on — no invented citations."),
     ("Multi-boundary aware", "Splits responsibility per cloud tenant (e.g. AWS GovCloud vs. Azure Government) with attribution that can't cross boundaries."),
     ("eMASS round-trip", "Reads the CCIS export and writes results back in place — comments, conditional formatting, and data validation survive."),
@@ -460,7 +455,7 @@ for i, (h, b) in enumerate(feats):
     _text(s, x + Inches(0.28), y + Inches(0.2), gw - Inches(0.5), Inches(0.45),
           [[(h, 15.5, NAVY, True, False)]])
     _text(s, x + Inches(0.28), y + Inches(0.64), gw - Inches(0.5), Inches(0.9),
-          [[(b, 11.5, INK, False, False)]], line_spacing=1.1)
+          [[(b, 12, INK, False, False)]], line_spacing=1.1)
 
 
 # ===========================================================================
@@ -477,11 +472,11 @@ _text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
 
 diffs = [
     ("Proprietary reasoning engine",
-     "Not prompt-wrapping. A purpose-built engine that encodes assessor judgment, learns your team's behavior, and uses the LLM as a checked second opinion."),
+     "Not prompt-wrapping. A purpose-built engine encodes assessor judgment and does the assessing — calling the LLM only for the hard judgment calls, then checking its answer."),
     ("Learns locally, privately",
-     "On-device machine learning adapts to how your team works — and your CUI, evidence, and judgment never leave the workstation. Offline-capable, OCR included."),
-    ("Defensible by construction",
-     "Every verdict is LLM-proposed, rule-validated, and traced to specific evidence — and abstains when unsure. Built to survive 3PAO / JAB scrutiny."),
+     "On-device machine learning adapts to how your team works — and the model's training never leaves the workstation. Files stay local; only the prompt you assess reaches the AI endpoint you choose. OCR + Vision included."),
+    ("Traceable by design",
+     "Every verdict is rule-validated and traced to specific evidence — the LLM only proposes, the engine decides. Built to survive 3PAO / JAB scrutiny."),
     ("Speaks eMASS natively",
      "Consumes the real CCIS workbook and writes results back in place — no re-keying, no broken formatting, no separate system to maintain."),
 ]
@@ -510,8 +505,6 @@ _accentbar(s)
 _kicker(s, Inches(0.8), Inches(0.45), "Return on investment")
 _text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
       [[("What one assessment is worth", 32, NAVY, True, False)]])
-_text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
-      [[("Computed from the app's built-in Metrics benchmarks, on a single full-system ATO package.*", 16, SLATE, False, False)]])
 
 roi = [
     ("$700 / control", 26, "manual A&A benchmark", "≈ $233 per CCI average"),
@@ -534,21 +527,22 @@ for i, (big, big_sz, mid, small) in enumerate(roi):
           [[(small, 11.5, LIGHT, False, False)]], align=PP_ALIGN.CENTER, line_spacing=1.1)
 
 # methodology / asterisk box
-_round(s, Inches(0.8), Inches(4.95), Inches(11.73), Inches(1.75), SOFT, line=LINE, line_w=Pt(1), radius=0.06)
-_grad_round(s, Inches(0.8), Inches(4.95), Inches(0.12), Inches(1.75), AMBER, RGBColor(0xF2, 0xB1, 0x55), angle=90, radius=0.5)
-_text(s, Inches(1.1), Inches(5.08), Inches(11.2), Inches(1.62),
-      [[("* Illustrative estimate, not a guarantee — uses the same benchmarks the app's Metrics tab ships with.", 12.5, NAVY, True, False)],
+_round(s, Inches(0.8), Inches(4.78), Inches(11.73), Inches(2.55), SOFT, line=LINE, line_w=Pt(1), radius=0.06)
+_grad_round(s, Inches(0.8), Inches(4.78), Inches(0.14), Inches(2.55), AMBER, RGBColor(0xF2, 0xB1, 0x55), angle=90, radius=0.5)
+_text(s, Inches(1.15), Inches(4.95), Inches(11.2), Inches(2.3),
+      [[("* Illustrative estimate, not a guarantee — uses the same benchmarks the app's Metrics tab ships with.", 13.5, NAVY, True, False)],
        [("Basis: a full-system FedRAMP Moderate ATO (~325 controls, ~975 CCIs). Manual A&A benchmark = $700/control "
-         "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, ", 11.5, INK, False, False),
-         ("GAO-24-106591", 11.5, BLUE, False, False, "https://www.gao.gov/products/GAO-24-106591"),
+         "(≈ $233/CCI at ~3 CCIs/control) and 8 hrs/control — the FedRAMP Mod 3PAO range ($150K–$300K, ", 13, INK, False, False),
+         ("GAO-24-106591", 13, BLUE, False, False, "https://www.gao.gov/products/GAO-24-106591"),
          (") over ~325 controls, and the industry-standard 8 hr/control per NIST SP 800-53A. Manual A&A "
-         "inter-rater agreement runs ~64% (Cohen's κ, ", 11.5, INK, False, False),
-         ("Radziwill & Benton 2017", 11.5, BLUE, False, False, "https://arxiv.org/abs/1707.02653"),
+         "inter-rater agreement runs ~64% (Cohen's κ, ", 13, INK, False, False),
+         ("Radziwill & Benton 2017", 13, BLUE, False, False, "https://arxiv.org/abs/1707.02653"),
          ("). Deterministic auto-resolution + AI-assisted assessment remove ~80% of hands-on effort: ≈$180K and "
-         "≈2,080 hrs of internal labor, against an outsourced 3PAO engagement of $150–300K it largely replaces.",
-         11.5, INK, False, False)],
+         "≈2,080 hrs of internal preparation and assessment labor. The platform reduces prep effort, improves "
+         "consistency, and lowers assessment costs while supporting assessor activities rather than replacing them.",
+         13, INK, False, False)],
        [("Actual savings vary by system size, baseline, evidence quality, and team. Your numbers will differ — these are planning estimates only.",
-         11.5, SLATE, False, True)]], line_spacing=1.1)
+         13, SLATE, False, True)]], line_spacing=1.12)
 
 
 # ===========================================================================
@@ -564,7 +558,7 @@ _text(s, Inches(0.8), Inches(0.95), Inches(11.7), Inches(0.9),
 
 stats = [
     ("7", "frameworks supported"),
-    ("23", "evidence file formats read"),
+    ("27", "evidence file types read"),
     ("5-tier", "evidence-to-control engine"),
     ("U → TS", "every classification enclave"),
 ]
@@ -583,7 +577,8 @@ _grad_round(s, Inches(0.8), Inches(4.0), Inches(11.73), Inches(1.5), NAVY2, NAVY
 _grad_rect(s, Inches(0.8), Inches(4.0), Inches(0.16), Inches(1.5), BLUE_BRIGHT, BLUE, angle=90)
 _text(s, Inches(1.2), Inches(4.22), Inches(11.0), Inches(1.1),
       [[("Cybersecurity Assessor compresses the slowest, most error-prone phase of authorization into a fast, "
-         "repeatable, auditable workflow — without ever sending your data off the workstation.",
+         "repeatable, auditable workflow — your files stay on the workstation, and only the prompt you assess "
+         "goes to the AI endpoint you control.",
          15, WHITE, False, False)]], line_spacing=1.18)
 
 _text(s, Inches(0.8), Inches(5.8), Inches(11.7), Inches(0.6),
@@ -591,6 +586,129 @@ _text(s, Inches(0.8), Inches(5.8), Inches(11.7), Inches(0.6),
 _text(s, Inches(0.8), Inches(6.45), Inches(11.7), Inches(0.5),
       [[("Cybersecurity Assessor — assess with confidence, defend with evidence.  ·  Nuon", 13, MIST, False, True)]])
 
+
+# ===========================================================================
+# Slide 10 — Competitive differentiation (capability contrast, unnamed)
+# ===========================================================================
+s = prs.slides.add_slide(BLANK)
+_grad_bg(s, NAVY_DEEP, NAVY3, angle=60)
+_grad_rect(s, 0, 0, W, Inches(0.14), BLUE_BRIGHT, BLUE, angle=0)
+_kicker(s, Inches(0.8), Inches(0.45), "How it's different", SKY)
+_text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
+      [[("Built to assess, not just to track", 32, WHITE, True, False)]])
+_text(s, Inches(0.8), Inches(1.55), Inches(11.7), Inches(0.5),
+      [[("The work other tools leave to you — finding evidence, mapping it, writing the verdict — this one does for you.",
+         15, SKY, False, False)]])
+
+# left card — typical platforms (muted)
+lx, ly = Inches(0.8), Inches(2.05)
+cardw, cardh = Inches(5.75), Inches(4.55)
+_round(s, lx, ly, cardw, cardh, NAVY2, line=SLATE, line_w=Pt(1), radius=0.05)
+_grad_rect(s, lx, ly, cardw, Inches(0.09), SLATE, MIST, angle=0)
+_text(s, lx + Inches(0.4), ly + Inches(0.28), cardw - Inches(0.8), Inches(0.5),
+      [[("Other tools — you do it by hand", 17, MIST, True, False)]])
+typical = [
+    "Hunt for the right artifact across SharePoint, shares, and inboxes.",
+    "Map each artifact to the CCI and control it proves, manually.",
+    "Read every scan, STIG, and screenshot and write each verdict yourself.",
+    "Hand-type results back into eMASS, then fix the broken formatting.",
+    "Build POA&M entries for every gap from scratch.",
+    "Re-key citations and hope they survive a 3PAO's scrutiny.",
+    "Assemble the Security Assessment Report (SAR) by hand at the end.",
+]
+_text(s, lx + Inches(0.4), ly + Inches(0.95), cardw - Inches(0.8), Inches(3.3),
+      [[("•  " + t, 12, LIGHT, False, False)] for t in typical], line_spacing=1.04, space_after=5)
+
+# right card — Cybersecurity Assessor (highlighted)
+rx = lx + cardw + Inches(0.4)
+_grad_round(s, rx, ly, cardw, cardh, NAVY, NAVY3, angle=60, line=BLUE, line_w=Pt(1.5), radius=0.05)
+_grad_rect(s, rx, ly, cardw, Inches(0.09), BLUE_BRIGHT, BLUE, angle=0)
+_text(s, rx + Inches(0.4), ly + Inches(0.28), cardw - Inches(0.8), Inches(0.5),
+      [[("Cybersecurity Assessor — done for you", 17, WHITE, True, False)]])
+ours = [
+    "Sweeps your evidence sources and surfaces the files that matter.",
+    "Auto-correlates 27 file types to the exact control they prove.",
+    "Proposes a cited verdict for every control — engine-led, AI-assisted.",
+    "Writes results back into eMASS in place — formatting preserved.",
+    "Generates grounded POA&M entries for every gap automatically.",
+    "Cites the exact document, section, and STIG rule — built to defend.",
+    "Produces the Security Assessment Report (SAR) when you're done.",
+]
+_text(s, rx + Inches(0.4), ly + Inches(0.95), cardw - Inches(0.8), Inches(3.4),
+      [[("✓  " + t, 12, LIGHT, False, False)] for t in ours], line_spacing=1.04, space_after=5)
+
+# accuracy proof band
+_text(s, Inches(0.8), Inches(6.9), Inches(11.7), Inches(0.4),
+      [[(">90% verdict accuracy", 14, SKY, True, False),
+        ("  ·  validated across 3 real-world system assessments", 14, LIGHT, False, False)]],
+      align=PP_ALIGN.CENTER)
+
+
+# ===========================================================================
+# Slide 11 — Why assessors trust it
+# ===========================================================================
+s = prs.slides.add_slide(BLANK)
+_bg(s, WHITE)
+_accentbar(s)
+_kicker(s, Inches(0.8), Inches(0.45), "Why assessors trust it")
+_text(s, Inches(0.8), Inches(0.8), Inches(11.7), Inches(0.8),
+      [[("Defensible by construction, not by claim", 32, NAVY, True, False)]])
+_text(s, Inches(0.8), Inches(1.6), Inches(11.7), Inches(0.5),
+      [[("Every design choice answers one question: can the assessor defend this verdict to a reviewer?",
+         16, SLATE, False, False)]])
+
+trust = [
+    ("Deterministic-first logic",
+     "Rules modeled on assessor judgment resolve the clear cases first — repeatable, inspectable, and identical on every run."),
+    ("Engine leads, AI assists",
+     "Your engine does the assessing and calls the LLM only on genuine judgment calls — then re-validates its answer. Never an unchecked oracle."),
+    ("Evidence-backed decisions",
+     "Every verdict cites the exact document, section, and STIG rule it rests on — no invented or unsourced citations."),
+    ("Full audit trail",
+     "Each decision stores the precise evidence snippet behind it, so a reviewer can replay exactly what the assessor saw."),
+    ("Human makes the call",
+     "Nothing is final until a person accepts it — proposals are editable, and every change is captured for the record."),
+    ("Knows its limits — few as they are",
+     "Every proposal is confidence-scored; when evidence is thin, it routes the control to a human instead of guessing."),
+]
+gx, gy = Inches(0.8), Inches(2.2)
+gw, gh = Inches(3.84), Inches(1.95)
+ggap = Inches(0.1)
+for i, (h, b) in enumerate(trust):
+    col = i % 3
+    rowi = i // 3
+    x = gx + (gw + ggap) * col
+    y = gy + (gh + Inches(0.18)) * rowi
+    _round(s, x, y, gw, gh, SOFT, line=LINE, line_w=Pt(1), radius=0.06)
+    _grad_rect(s, x, y, gw, Inches(0.08), BLUE, BLUE_BRIGHT, angle=0)
+    _text(s, x + Inches(0.28), y + Inches(0.2), gw - Inches(0.5), Inches(0.7),
+          [[(h, 15.5, NAVY, True, False)]], line_spacing=1.0)
+    _text(s, x + Inches(0.28), y + Inches(0.92), gw - Inches(0.5), Inches(0.95),
+          [[(b, 12, INK, False, False)]], line_spacing=1.1)
+
+# bottom-line banner: the one idea worth keeping from the old "when AI is wrong" slide
+_round(s, Inches(0.8), Inches(6.62), Inches(11.73), Inches(0.6), NAVY, line=BLUE, line_w=Pt(1.25), radius=0.18)
+_text(s, Inches(0.8), Inches(6.62), Inches(11.73), Inches(0.6),
+      [[("Designed so the AI can't be wrong silently: an unsupported proposal degrades to ", 13, LIGHT, False, False),
+        ("“needs human review,”", 13, SKY, True, False),
+        (" never a wrong verdict written into eMASS.", 13, LIGHT, False, False)]],
+      align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+
+
+# ---------------------------------------------------------------------------
+# Reorder: the two credibility slides (competitive / trust) are built last
+# (indices 9,10) but belong AFTER "Why it's different" (index 6) and BEFORE
+# ROI (index 7) + close (index 8). Reorder the sldIdLst so the narrative flows.
+# Build order (0-based): 0 Title,1 Problem,2 Enclave,3 How,4 Hood,5 What,
+#   6 Why-different,7 ROI,8 Bottom-line,9 Competitive,10 Trust
+# Target order:          0,1,2,3,4,5,6, 9,10, 7,8
+target = [0, 1, 2, 3, 4, 5, 6, 9, 10, 7, 8]
+sldIdLst = prs.slides._sldIdLst
+ids = list(sldIdLst)
+for sid in ids:
+    sldIdLst.remove(sid)
+for i in target:
+    sldIdLst.append(ids[i])
 
 out = Path(__file__).resolve().parent / "Cybersecurity_Assessor_Overview.pptx"
 prs.save(str(out))
