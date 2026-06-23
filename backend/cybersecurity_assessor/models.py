@@ -570,6 +570,19 @@ class Evidence(SQLModel, table=True):
     # column existed — asset_crosscheck falls back to the re-parse path for
     # those when the file is locally resolvable.
     host_inventory: str | None = None
+    # JSON-encoded list of {"ip": ..., "fqdn": ...} device-identity pairs
+    # observed together on one live host by a CREDENTIALED scan (Nessus
+    # HostProperties reports the IP and the OS-resolved FQDN/netbios for the
+    # same box). This is the device-centric join key: it lets the asset
+    # cross-check collapse multiple scanned IPs under ONE device (hostname)
+    # and stamp Asset.ip_address / Asset.fqdn, instead of counting each IP as
+    # a separate host. SIBLING to host_inventory on purpose — host_inventory
+    # stays a flat JSON list[str] of bare hostnames that engine.evidence_bundle,
+    # engine.finding_corroboration, and evidence.sources.sweep all read; this
+    # column carries the structured pairing without changing that contract.
+    # NULL for uncredentialed scans (IP only, no fqdn), single-host formats
+    # that carry no IP, and rows ingested before this column existed.
+    host_pairs: str | None = None
     # Sweep Context (v0.2): the assessor flags an Evidence row as a
     # boundary-defining artifact (SSP, SSPP, ATO letter, network diagram).
     # The BoundaryDocsContextSource adapter pulls every row where

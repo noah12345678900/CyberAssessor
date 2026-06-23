@@ -133,3 +133,10 @@ class StigParseResult:
     title: str | None = None
     host: str | None = None
     hosts: List[str] = field(default_factory=list)
+    # (ip, fqdn) pairs observed together on one ReportHost — the device-identity
+    # join key. A credentialed scan reports both the IP and the OS-reported FQDN/
+    # netbios for the same live box, so this pairing lets the asset cross-check
+    # collapse multiple IPs under one device (hostname) instead of counting each
+    # IP as a separate host. Empty for uncredentialed scans (IP only) and for
+    # single-host formats that carry no IP. Each entry: {"ip": str, "fqdn": str}.
+    host_pairs: List[dict] = field(default_factory=list)
