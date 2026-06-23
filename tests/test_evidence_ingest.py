@@ -368,7 +368,9 @@ def test_ingest_admits_images_and_diagrams_and_flags_untagged(
 
     # Keep the test offline + fast: no Tier-5 LLM judge (it would retry against
     # a dead endpoint). Deterministic tiers are what this test exercises.
-    monkeypatch.setattr(ingest_mod, "_build_tagger_llm", lambda: (None, None))
+    monkeypatch.setattr(
+        ingest_mod, "_build_tagger_llm", lambda: (None, None, "disabled")
+    )
 
     root = tmp_path / "ev"
     root.mkdir()
@@ -423,6 +425,43 @@ def test_normalize_host_keeps_ip_addresses_whole() -> None:
     # A set of distinct scanned IPs stays distinct (no collapse to "172").
     ips = ["172.20.8.86", "172.20.4.179", "172.20.6.6"]
     assert len({_normalize_host(h) for h in ips}) == 3
+    # host:port / trailing-dot guard: a port suffix or DNS-root dot must be
+    # stripped BEFORE the IP check so "1.2.3.4:443" isn't dot-split to "1".
+    assert _normalize_host("1.2.3.4:443") == "1.2.3.4"
+    assert _normalize_host("10.0.0.5:8089") == "10.0.0.5"
+    assert _normalize_host("host:8080") == "host"
+    assert _normalize_host("host.dom.mil.") == "host"
+    # IPv6 has multiple colons → the single-colon port guard must NOT touch it.
+    assert _normalize_host("::1") == "::1"
+    assert _normalize_host("fe80::1") == "fe80::1"
+
+
+def test_normalize_port_dot_guard_consistent_across_all_three() -> None:
+    """The host:port / trailing-dot guard must be identical in all 3 sites.
+
+    ingest._normalize_host, asset_crosscheck._normalize, and
+    scope_backfill._normalize_host each carry their own copy (kept local to
+    avoid an import cycle). They MUST agree, or an ingest-time key won't match
+    a query-time key and a host silently splits in the coverage report.
+    """
+    from cybersecurity_assessor.evidence.asset_crosscheck import _normalize as cc_norm
+    from cybersecurity_assessor.evidence.ingest import _normalize_host as ing_norm
+    from cybersecurity_assessor.evidence.scope_backfill import (
+        _normalize_host as bf_norm,
+    )
+
+    for raw, expected in [
+        ("1.2.3.4:443", "1.2.3.4"),
+        ("host:8080", "host"),
+        ("host.dom.mil.", "host"),
+        ("::1", "::1"),
+        ("fe80::1", "fe80::1"),
+        ("Server01.dom.mil", "server01"),
+        ("172.20.8.86", "172.20.8.86"),
+    ]:
+        assert ing_norm(raw) == expected, f"ingest: {raw}"
+        assert cc_norm(raw) == expected, f"crosscheck: {raw}"
+        assert bf_norm(raw) == expected, f"backfill: {raw}"
 
 
 def test_asset_crosscheck_normalize_matches_ingest_ip_guard() -> None:

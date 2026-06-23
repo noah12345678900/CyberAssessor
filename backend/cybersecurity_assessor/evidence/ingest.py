@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -104,6 +105,19 @@ class IngestSummary:
     judge_invoked: int = 0
     judge_accepted: int = 0
     judge_errored: int = 0
+    # Two-class ETA instrumentation (2026-06-23). Per-file wall time is bimodal:
+    # deterministic-tier files finish in milliseconds; LLM-judged files pay
+    # HyDE + ~15 Opus judge calls (~15-25s). A single blended rate gives a wildly
+    # optimistic ETA (the fast files front-load it). We accumulate count + total
+    # seconds SEPARATELY for the two classes so the UI can compute
+    #   eta = remaining * [p_llm * avg_slow + (1-p_llm) * avg_fast]
+    # which is stable under the 100x cost spread. "slow" = a file that invoked
+    # the judge; "fast" = everything else (deterministic-cleared, skips, errors).
+    # Verdict-neutral pure observation.
+    fast_file_count: int = 0
+    fast_file_seconds: float = 0.0
+    slow_file_count: int = 0
+    slow_file_seconds: float = 0.0
     # Artifacts that ingested successfully but mapped to ZERO controls (no
     # tag from any tier). These are silently invisible on every control page
     # unless we surface them — the failure mode behind the NESSUS / screenshot
@@ -113,6 +127,14 @@ class IngestSummary:
     # ``{"path": uri, "reason": "..."}`` where reason hints WHY (no text
     # extracted, no doc/CCI/control-id signal, etc.).
     untagged: list[dict] = field(default_factory=list)
+    # Tagger LLM availability for THIS ingest: "ok" (judge ran), "disabled"
+    # (kill-switch off — user's choice), or "error" (client construction failed
+    # unexpectedly). When not "ok", the hybrid-RAG folder lane + vision were
+    # skipped, so structural evidence may have tagged to zero controls. The UI
+    # raises a banner on "error" (and notes "disabled") so a degraded ingest is
+    # never silent. Defaults "ok" so callers/tests that build a summary directly
+    # are unaffected.
+    tagger_status: str = "ok"
 
     def as_dict(self) -> dict:
         return {
@@ -132,7 +154,12 @@ class IngestSummary:
             "judge_invoked": self.judge_invoked,
             "judge_accepted": self.judge_accepted,
             "judge_errored": self.judge_errored,
+            "fast_file_count": self.fast_file_count,
+            "fast_file_seconds": self.fast_file_seconds,
+            "slow_file_count": self.slow_file_count,
+            "slow_file_seconds": self.slow_file_seconds,
             "untagged": self.untagged,
+            "tagger_status": self.tagger_status,
             "errors": self.errors,
         }
 
@@ -295,9 +322,30 @@ def _normalize_host(name: str) -> str:
     "1 host"). Mirror the same guard in ``asset_crosscheck._normalize`` so
     ingest-time and query-time keys stay identical.
     """
-    n = (name or "").strip().lower()
+    n = _clean_host_token(name)
     if "." in n and not _looks_like_ip(n):
         n = n.split(".", 1)[0]
+    return n
+
+
+def _clean_host_token(name: str) -> str:
+    """Lowercase + drop a trailing dot and a ``:port`` suffix before IP checks.
+
+    A host token can arrive as ``1.2.3.4:443`` (scan target with port),
+    ``host.dom.mil.`` (FQDN with the DNS root dot), or ``HOST``. Without
+    stripping the port/trailing-dot first, ``1.2.3.4:443`` fails the
+    ``ip_address()`` guard and gets dot-split to the bogus key ``"1"`` — the
+    exact subnet-collapse class the IP guard was added to prevent, just via a
+    different input shape. A ``:port`` is removed ONLY when there is exactly
+    one colon and an all-digit suffix, so a bare IPv6 literal (``::1``,
+    multiple colons) is never mangled. Shared by all three ``_normalize``
+    sites (ingest / asset_crosscheck / scope_backfill) so keys stay identical.
+    """
+    n = (name or "").strip().lower().rstrip(".")
+    if n.count(":") == 1:
+        head, _, tail = n.partition(":")
+        if head and tail.isdigit():
+            n = head
     return n
 
 
@@ -356,6 +404,18 @@ def _capture_host_inventory(metadata: dict) -> str | None:
     hostnames = metadata.get("hostnames")
     if isinstance(hostnames, list):
         raw.extend(str(h) for h in hostnames if h)
+    # Fold the FQDN side of every (ip, fqdn) pair into the bare-hostname list.
+    # The device-centric model treats the hostname (not the IP) as the device
+    # identity, so the resolved FQDN must appear here even when the only place
+    # that names the device is the credentialed-scan pairing. The IP side is
+    # NOT added — _normalize_host's IP guard would keep it whole and it would
+    # then count as its own "host", which is exactly the per-IP sprawl the
+    # pairing exists to collapse. The IP lives structurally in host_pairs.
+    for pair in metadata.get("host_pairs") or []:
+        if isinstance(pair, dict):
+            fqdn = pair.get("fqdn")
+            if isinstance(fqdn, str) and fqdn:
+                raw.append(fqdn)
     seen: set[str] = set()
     for r in raw:
         norm = _normalize_host(r)
@@ -366,28 +426,86 @@ def _capture_host_inventory(metadata: dict) -> str | None:
     return json.dumps(sorted(seen))
 
 
-def _build_tagger_llm() -> tuple[Any | None, str | None]:
+def _capture_host_pairs(metadata: dict) -> str | None:
+    """Build the JSON ``host_pairs`` sibling blob from extractor metadata.
+
+    Reads ``metadata["host_pairs"]`` — a list of ``{"ip","fqdn"}`` dicts that
+    a CREDENTIALED scan emits when it observes both the IP and the OS-resolved
+    FQDN/netbios for the same live box (see ``extractors/nessus.py``). Stored
+    SEPARATELY from ``host_inventory`` (a flat ``list[str]`` consumed by the
+    evidence bundle / corroboration / sweep) so the structured pairing is
+    available to scope-backfill (stamp ``Asset.ip_address`` / ``Asset.fqdn``)
+    and the asset cross-check (collapse IPs under one device) WITHOUT changing
+    the host_inventory contract those other modules depend on.
+
+    Normalizes nothing — the raw IP and FQDN are both load-bearing for the
+    device join. Drops malformed entries (missing either half, non-dict).
+    Returns the JSON string, or ``None`` when no usable pair was captured
+    (uncredentialed scan, single-host format, legacy row) so the column
+    stays NULL and the migration stays cheap.
+    """
+    raw = metadata.get("host_pairs")
+    if not isinstance(raw, list):
+        return None
+    pairs: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        ip = entry.get("ip")
+        fqdn = entry.get("fqdn")
+        if not (isinstance(ip, str) and ip and isinstance(fqdn, str) and fqdn):
+            continue
+        key = (ip.strip(), fqdn.strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({"ip": key[0], "fqdn": key[1]})
+    if not pairs:
+        return None
+    return json.dumps(pairs)
+
+
+def _build_tagger_llm() -> tuple[Any | None, str | None, str]:
     """Construct the optional Tier 5-LLM judge client for the tagger.
 
-    Returns ``(client, judge_model)``. Returns ``(None, None)`` when the
-    ``tagger_llm_enabled`` kill-switch is off OR client construction raises
-    (no provider key, import failure, offline) — in which case the tagger's
-    deterministic TF-IDF Tier 5 runs instead. We deliberately do NOT probe the
-    API here (no key validation round-trip): construction is cheap and the
-    per-candidate judge calls in the tagger already degrade gracefully on any
-    network/auth error, falling back to TF-IDF only when every call fails.
+    Returns ``(client, judge_model, status)``. ``status`` is one of:
+
+    * ``"ok"``       — client built; the hybrid-RAG judge (and vision) will run.
+    * ``"disabled"`` — the ``tagger_llm_enabled`` kill-switch is off; the user
+                       intentionally turned the judge off. Deterministic-only.
+    * ``"error"``    — client construction RAISED (no provider key, import
+                       failure, etc.). This is an UNINTENDED degradation — the
+                       caller surfaces it loudly so a crippled ingest is never
+                       mistaken for a healthy one.
+
+    Why the status matters: when the client is absent the hybrid-RAG folder
+    lane AND vision both skip, so structural evidence (a file under ``01.AC/``,
+    a screenshot) can tag to ZERO controls. That outcome is acceptable ONLY if
+    the assessor KNOWS the judge was unavailable and can re-ingest — a SILENT
+    degrade looks identical to a healthy ingest and hides the gap. We do not
+    probe the API here (no key round-trip); construction is cheap and the
+    per-candidate judge calls degrade gracefully on their own.
     """
     try:
         cfg = load_config()
         if not getattr(cfg, "tagger_llm_enabled", True):
-            return None, None
+            log.info("tagger LLM disabled by kill-switch; deterministic Tier 5 only")
+            return None, None, "disabled"
         from ..llm.client import make_client
 
         client = make_client(cfg)
-        return client, getattr(cfg, "llm_judge_model", None)
+        return client, getattr(cfg, "llm_judge_model", None), "ok"
     except Exception:  # pragma: no cover - never let LLM setup abort an ingest
-        log.warning("tagger LLM client unavailable; using deterministic Tier 5", exc_info=True)
-        return None, None
+        # ERROR (not the kill-switch): construction failed unexpectedly. Log the
+        # real cause AND let the caller raise a degraded-ingest warning so the
+        # zero-tag-on-structural-evidence outcome is visible, not silent.
+        log.warning(
+            "tagger LLM client construction FAILED; ingest will run degraded "
+            "(deterministic Tier 5 only) — files may tag to zero controls",
+            exc_info=True,
+        )
+        return None, None, "error"
 
 
 def _vision_enabled() -> bool:
@@ -537,7 +655,12 @@ def ingest_source(
     # walk (one provider/key resolution, not 400). When the kill-switch is off or
     # construction fails (no key, offline), tag_evidence falls back to the
     # deterministic TF-IDF Tier 5 — so a missing client never aborts an ingest.
-    tagger_client, tagger_judge_model = _build_tagger_llm()
+    tagger_client, tagger_judge_model, tagger_status = _build_tagger_llm()
+    # Record availability so the UI can raise a degraded-ingest banner. "error"
+    # = construction failed unexpectedly (the silent-degrade defect); "disabled"
+    # = user turned the judge off on purpose. Either way the folder lane +
+    # vision skip, so structural files may tag to zero controls.
+    summary.tagger_status = tagger_status
     # Resolve the vision + corpus-augmentation gates ONCE for the whole walk
     # (config knobs, not per-file properties).
     vision_on = _vision_enabled()
@@ -585,6 +708,8 @@ def ingest_source(
         return summary
 
     for sf in files_iter:
+        _file_t0 = time.monotonic()  # per-file wall clock for the two-class ETA
+        _file_judged = False  # set True if this file invoked the LLM judge
         summary.scanned += 1
         uri = sf.uri
         name = sf.name
@@ -748,6 +873,7 @@ def ingest_source(
             doc_number=doc.doc_number,
             archive_uri=archive_uri,
             host_inventory=_capture_host_inventory(doc.metadata or {}),
+            host_pairs=_capture_host_pairs(doc.metadata or {}),
             # PR 2: workbook_id is structurally required (the ingest_source
             # precondition above raises on None). source_kind records URI
             # provenance for the future "% unknown source" audit.
@@ -832,6 +958,7 @@ def ingest_source(
                 summary.det_cleared += 1
             if tag_result.judge_invoked:
                 summary.judge_invoked += 1
+                _file_judged = True
             summary.judge_accepted += tag_result.judge_accepted
             summary.judge_errored += tag_result.judge_errored
             # Surface artifacts that mapped to ZERO controls so they don't
@@ -844,6 +971,23 @@ def ingest_source(
                         "No text could be extracted (image, diagram, scanned "
                         "PDF, or binary) — nothing for the tagger to match."
                     )
+                elif tagger_status != "ok":
+                    # The judge / hybrid-RAG folder lane did NOT run this ingest
+                    # (client disabled or construction failed), so a structural
+                    # file under e.g. 01.AC/ never got its family in front of the
+                    # judge. Name THAT cause distinctly from "no CCI found" so the
+                    # assessor re-ingests with the tagger LLM available rather
+                    # than hand-tagging a file the judge would have placed.
+                    why = (
+                        "the tagger LLM is disabled in Settings"
+                        if tagger_status == "disabled"
+                        else "the tagger LLM client failed to start"
+                    )
+                    reason = (
+                        f"Tagger LLM unavailable ({why}) — semantic tagging was "
+                        "skipped for this ingest. Re-ingest with the tagger LLM "
+                        "enabled, or tag manually."
+                    )
                 else:
                     reason = (
                         "No document number, CCI, or control ID found — "
@@ -855,6 +999,16 @@ def ingest_source(
             summary.errors.append({"path": uri, "error": f"tagger: {exc}"})
 
         summary.ingested += 1
+        # Two-class ETA timing: bucket this file's wall time by whether it hit
+        # the LLM judge (slow) or was served deterministically (fast). The UI
+        # uses the two averages + observed p_llm for a stable bimodal ETA.
+        _file_elapsed = time.monotonic() - _file_t0
+        if _file_judged:
+            summary.slow_file_count += 1
+            summary.slow_file_seconds += _file_elapsed
+        else:
+            summary.fast_file_count += 1
+            summary.fast_file_seconds += _file_elapsed
         batch_since_commit += 1
         if batch_since_commit >= commit_batch_size:
             session.commit()

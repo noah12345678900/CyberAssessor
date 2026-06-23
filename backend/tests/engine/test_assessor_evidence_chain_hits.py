@@ -47,6 +47,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -78,11 +79,24 @@ from tests.engine.test_assessor_e2e import StubLlmClient, _row  # noqa: E402
 
 @pytest.fixture
 def session():
+    # ``timeout=60`` mirrors production db.py: the LLM-accept assess path fans
+    # judge calls out across threads that share this StaticPool connection, and
+    # without a busy-wait one thread's write loses the lock race and instantly
+    # raises "database is locked" (a flaky failure under the threaded fan-out).
+    # The 60s busy-timeout makes the loser wait instead of erroring — same guard
+    # the real engine uses.
     engine = create_engine(
         "sqlite://",
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 60},
         poolclass=StaticPool,
     )
+
+    @event.listens_for(engine, "connect")
+    def _busy_timeout(dbapi_conn, _rec):  # pragma: no cover - trivial
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA busy_timeout=60000")
+        cur.close()
+
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
         yield s
