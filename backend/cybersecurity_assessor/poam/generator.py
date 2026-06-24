@@ -544,12 +544,17 @@ def _render_cite_refresh_block(
 # over-recall rule applied to the narrative surface: never imply we located
 # evidence we didn't actually find.
 
-# Soft cap for the rendered text. eMASS column D has no hard char limit in the
-# template, but workbooks beyond ~4K characters render awkwardly in the cell
-# preview pane and start to truncate in the SAR auto-table. We trim the
-# assessor-excerpt section first (it's the most paraphrasable), then host list,
-# then findings.
-_VULN_DESC_CAP = 4000
+# Cap for the rendered text. eMASS column D has no hard char limit, but Excel
+# itself caps a single cell at 32,767 characters — exceed that and openpyxl
+# raises / the cell is silently lost. We sit just under that hard ceiling so the
+# vulnerability description keeps its full content (assessor excerpts, host
+# lists, findings) instead of being trimmed for cosmetics. The prior 4000 was a
+# COSMETIC soft cap ("renders awkwardly in the cell preview") that was dropping
+# real evidence detail — completeness/defensibility wins over preview tidiness.
+# The priority-trim ladder below now only fires for genuinely enormous
+# descriptions approaching Excel's limit, as a last-resort safety net.
+_EXCEL_CELL_HARD_LIMIT = 32767
+_VULN_DESC_CAP = 32000
 
 # _SEVERITY_RANK and _severity_sort_key now live in engine.finding_corroboration
 # (canonical home — shared by the assessor evidence bundle). Imported above and
