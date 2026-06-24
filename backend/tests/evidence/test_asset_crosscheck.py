@@ -999,3 +999,61 @@ def test_scope_backfill_backfills_fqdn_ip_when_credentialed_row_is_later(session
     assert dca[0].fqdn == "dca.dom.mil"
     assert dca[0].ip_address == "10.0.0.5"
     assert summary.assets_created == 1
+
+
+def test_paired_ip_not_double_counted_in_headline(session):
+    """Headline union must equal the device-centric count (no IP double-count).
+
+    A credentialed scan reports the SAME box as both a bare IP (10.0.0.5) and a
+    resolved hostname (dca). Before the fix, the headline union counted BOTH the
+    IP and the hostname as separate hosts (inflated count), while the
+    source-type card correctly collapsed them — so the two GUI numbers
+    disagreed (the live 154-vs-86 bug). The paired IP must NOT inflate the
+    headline; its device hostname supplies the count. The IP attribute row is
+    still kept in report.hosts (nothing vanishes).
+    """
+    _make_evidence(
+        session,
+        path="file:///boe/cred.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dca", "10.0.0.5"],  # scan reports device AND its IP
+        title="credentialed scan",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dca.dom.mil"}],
+    )
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    union = len(report.scanned_set | report.checklisted_set | report.declared_set)
+    device_card = report.distinct_ips + report.resolved_devices
+    # Headline and device card AGREE — the paired IP folded under its device.
+    assert union == device_card
+    # One device (dca), zero unmapped IPs (10.0.0.5 is paired).
+    assert report.resolved_devices == 1
+    assert report.distinct_ips == 0
+    assert union == 1
+    # The IP attribute row is preserved in the per-host list (nothing lost).
+    hostnames = {h.hostname for h in report.hosts}
+    assert "dca" in hostnames and "10.0.0.5" in hostnames
+
+
+def test_unpaired_ip_still_counts_once(session):
+    """A genuinely unpaired scanned IP (no host_pairs) must still count once.
+
+    The dedup must NOT under-count: an uncredentialed scan IP with no resolved
+    device is its own asset and belongs in the headline + distinct_ips.
+    """
+    _make_evidence(
+        session,
+        path="file:///boe/uncred.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["192.168.50.9"],  # bare IP, NO host_pairs
+        title="uncredentialed scan",
+    )
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    union = len(report.scanned_set | report.checklisted_set | report.declared_set)
+    assert union == 1
+    assert report.distinct_ips == 1
+    assert report.resolved_devices == 0
+    assert union == report.distinct_ips + report.resolved_devices

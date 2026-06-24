@@ -18,10 +18,16 @@ manual tagging required:
   / XCCDF). The ``Evidence.title`` carries the STIG name (e.g. "Microsoft
   Windows Server 2022 STIG"), so we get "which STIGs were applied to which
   hosts" as a side-effect.
-* **declared** — XLSX / CSV inventories the assessor explicitly flagged as
-  authoritative (``is_asset_list = True``). This is the only remaining
-  use of the manual flag — a vendor parts catalog and an HW/SW inventory
-  look identical by column shape, so we will not auto-classify them.
+* **declared** — XLSX / CSV inventories the assessor flagged authoritative
+  (``is_asset_list = True``). Per CM-8 the org's documented inventory IS the
+  authority; scans/checklists VERIFY it (that's why declared seeds the host
+  universe — so a declared-but-never-observed host surfaces as a CM-8 ghost).
+  The flag is no longer a blind file-extension check: the ingest classifier
+  (extractors/xlsx.py ``_classify_asset_workbook`` + hostname-column sniff)
+  must have parsed the spreadsheet as a host inventory (non-empty
+  ``host_inventory``) before it can be flagged — a budget or parts catalog with
+  no host columns is rejected. The flag stays MANUAL (the assessor confirms
+  which inventory is authoritative), but is now content-gated.
 
 Host names are normalized to bare lowercase short form so ``server01``
 in an HW/SW workbook lines up with ``server01.dom.mil`` in a CKL and
@@ -708,12 +714,27 @@ def summarize_asset_coverage(
             if rec is None:
                 rec = HostRecord(hostname=h, boundary=boundary)
                 host_index[key] = rec
+            # Headline-count de-dup: a bare IP that a credentialed scan PAIRED
+            # with a device (same boundary, in mapped_ips) is the SAME physical
+            # asset as that device's hostname row — counting both inflated the
+            # headline (154) above the device-centric card (86). Skip the paired
+            # IP from the count SETS only; its device's hostname row supplies the
+            # count. The per-host map / gaps keep the full key so the IP still
+            # shows as an attribute row. A genuinely unpaired IP is NOT in
+            # mapped_ips, so it still counts once (matches distinct_ips). Gated on
+            # (boundary, h) so a paired IP in CRN-A never suppresses the same IP
+            # bare-scanned in CRN-B.
+            count_in_headline = not (
+                _looks_like_ip(h) and (boundary, h) in mapped_ips
+            )
             if category == "scanned":
                 rec.scanned_in.append(ref)
-                scanned_set.add(key)
+                if count_in_headline:
+                    scanned_set.add(key)
             elif category == "checklisted":
                 rec.checklisted_in.append(ref)
-                checklisted_set.add(key)
+                if count_in_headline:
+                    checklisted_set.add(key)
                 # Evidence.title for CKL/CKLB/XCCDF carries the STIG name.
                 # Skip when missing rather than substituting the filename
                 # — a filename like "WIN2022.ckl" is not the STIG title and
@@ -722,7 +743,8 @@ def summarize_asset_coverage(
                     stigs_by_host[key].add(ev.title)
             else:  # declared
                 rec.declared_in.append(ref)
-                declared_set.add(key)
+                if count_in_headline:
+                    declared_set.add(key)
 
     # Attach STIG titles to each host, sorted for stable display.
     for key, rec in host_index.items():
