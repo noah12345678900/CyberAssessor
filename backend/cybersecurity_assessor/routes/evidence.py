@@ -10,6 +10,7 @@ via the :class:`Source` protocol.
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Union
@@ -53,6 +54,7 @@ from ..models import (
     EvidenceAsset,
     EvidenceBoundary,
     EvidenceComponent,
+    EvidenceKind,
     EvidenceTag,
     Objective,
     PoamEvidence,
@@ -105,6 +107,30 @@ def _leaf_name(uri: str) -> str:
     return PurePosixPath(unquote(path)).name or uri
 
 
+def _host_inventory_count(e: Evidence) -> int:
+    """Count of hosts the ingest classifier enumerated for this Evidence.
+
+    Reads the ``host_inventory`` JSON (a flat ``list[str]`` of normalized
+    hostnames) the extractor populated at ingest. Zero for a spreadsheet with
+    no detectable host/asset columns (a budget, a parts catalog) — which is
+    exactly the signal that gates the "declared authoritative" flag. Malformed
+    / missing blob → 0.
+    """
+    raw = getattr(e, "host_inventory", None)
+    if not raw:
+        return 0
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return 0
+    return len(data) if isinstance(data, list) else 0
+
+
+def _has_host_inventory(e: Evidence) -> bool:
+    """True if the classifier found ≥1 host — the content gate for declaration."""
+    return _host_inventory_count(e) > 0
+
+
 def _serialize(e: Evidence) -> dict:
     return {
         "id": e.id,
@@ -124,6 +150,12 @@ def _serialize(e: Evidence) -> dict:
         "is_boundary_doc": e.is_boundary_doc,
         "boundary_doc_kind": e.boundary_doc_kind,
         "workbook_id": e.workbook_id,
+        # Count of hosts the ingest classifier enumerated. Drives the UI's
+        # "declared authoritative" eligibility: a spreadsheet is flaggable only
+        # when it actually parsed as a host inventory (count > 0), replacing the
+        # blind file-extension check. Host-bearing scan/checklist KINDS stay
+        # eligible regardless (their enumeration is intrinsic).
+        "host_count": _host_inventory_count(e),
         # v0.3-ready: connector telemetry. Nullable because pre-migration
         # rows have no source_kind stamped — the UI renders "unknown" then.
         "source_kind": e.source_kind,
@@ -819,13 +851,21 @@ def set_asset_list(
     # An artifact may be flagged "declared authoritative source" only if it
     # actually ENUMERATES HOSTS — otherwise the asset cross-check has nothing to
     # read from it. Two eligible classes:
-    #   * spreadsheets (.xlsx/.xlsm/.xls/.csv) — a manually-authored HW/SW
-    #     inventory whose column shape is ambiguous, so the assessor flags it; and
     #   * host-enumerating evidence KINDS — a Nessus/ACAS scan or a STIG
     #     checklist (incl. the STIG-report xlsx, which ingests as STIG_CKL).
     #     These auto-derive hosts; marking one authoritative lets it win the
     #     asset-identity trust order (a credentialed scan IS often the canonical
-    #     host enumeration for a system — user request E2).
+    #     host enumeration for a system — user request E2); AND
+    #   * spreadsheets (.xlsx/.xlsm/.xls/.csv) that the ingest classifier
+    #     actually parsed as a host inventory — i.e. ``host_inventory`` is
+    #     non-empty. This replaces the prior BLIND extension check: a
+    #     budget/parts-catalog .xlsx with no host columns has an empty
+    #     host_inventory and is now REJECTED, instead of being flaggable as the
+    #     authoritative boundary. The classifier (extractors/xlsx.py
+    #     ``_classify_asset_workbook`` + hostname-column sniff) already populated
+    #     host_inventory at ingest, so this is a free, content-grounded gate —
+    #     not a second parse. (CM-8: the declared inventory stays the authority;
+    #     we only stop letting a non-inventory file claim that role.)
     # Reject anything else rather than accept a flag the cross-check can't use.
     if body.is_asset_list:
         leaf = _leaf_name(ev.path)
@@ -845,6 +885,20 @@ def set_asset_list(
                     "Declared authoritative sources must be a host inventory "
                     "spreadsheet (.xlsx/.xlsm/.xls/.csv) or a host-enumerating "
                     f"scan/checklist (Nessus/STIG); '{leaf}' is neither."
+                ),
+            )
+        # Content gate for spreadsheets: must have detected hosts. Host-bearing
+        # KINDS (scans/checklists) are exempt — their host enumeration is
+        # intrinsic and may be re-derived from findings even when the flat
+        # host_inventory JSON is empty for a given row.
+        if is_spreadsheet and not is_host_kind and not _has_host_inventory(ev):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{leaf}' has no detectable host/asset columns "
+                    "(hostname, IP, MAC, asset tag, …), so it can't be a "
+                    "declared authoritative inventory. A budget, parts catalog, "
+                    "or other non-inventory spreadsheet is not an asset list."
                 ),
             )
     ev.is_asset_list = body.is_asset_list
