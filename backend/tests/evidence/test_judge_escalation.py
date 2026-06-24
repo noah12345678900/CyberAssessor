@@ -322,14 +322,15 @@ def test_no_escalation_when_haiku_accepted_at_least_one(session, catalog):
 # 3. KEY PRECISION TEST: command-error file does NOT escalate
 # ===========================================================================
 def test_command_error_file_does_not_escalate(session, catalog):
-    """The real [FATAL] aide_step10 body (31 tokens) must NOT escalate or tag.
+    """The real [FATAL] aide_step10 body (31 tokens) must NOT escalate to Opus.
 
     This is the case the 25-token substance gate FAILS to catch (31 > 25), so
     without the ``_is_command_error_only`` rail the file would reach Opus, and a
-    more-generous Opus pass could tag AC-17/SI-7 from the bare 'aide' token --
-    a false positive on a genuinely-empty file. The deterministic command-error
-    guard is the rail; the judge is only the second rail. Even if Opus would
-    accept, escalation must be SUPPRESSED for this body.
+    more-generous Opus pass could AFFIRM AC-17/SI-7 from the bare 'aide' token --
+    a false-COMPLIANT on a failed command. The deterministic command-error guard
+    suppresses ESCALATION (no Opus affirming tag). NOTE: the file is STILL
+    located (see test_command_error_file_is_located_nonaffirming) -- it just must
+    never earn an affirming source="llm" tag via escalation.
     """
     e = _evidence(session, "C:/fake/CTP-014_aide_step10.txt")
     judge = _TwoModelJudge(
@@ -338,7 +339,6 @@ def test_command_error_file_does_not_escalate(session, catalog):
             _OPUS: {"ac-17": 0.95},  # Opus WOULD over-accept -- must not be asked
         }
     )
-    # REQUIRES: Change 1 -- escalation_model kwarg + _is_command_error_only guard.
     result = tag_evidence(
         session,
         e,
@@ -352,12 +352,72 @@ def test_command_error_file_does_not_escalate(session, catalog):
     assert _OPUS not in judge.models_called, (
         "command-error file must NOT reach the Opus escalation pass"
     )
-    # REQUIRES: Change 1 -- judge_escalated field stays False for command-errors.
     assert result.judge_escalated is False
+    # The CRITICAL precision invariant: a failed command never earns an
+    # AFFIRMING (source="llm") tag. (It MAY be LOCATED as located_nonaffirming;
+    # that is asserted separately and is NOT compliant evidence.)
     assert _llm_tags(session, e.id) == [], (
-        "no tag may be emitted for a [FATAL] command-error file even though a "
-        "tool name (aide) is present and the body clears the substance gate"
+        "a [FATAL] command-error file must NEVER earn an affirming source=llm "
+        "tag, even though a tool name (aide) is present"
     )
+
+
+def test_command_error_file_is_located_nonaffirming(session, catalog):
+    """LOCATE-don't-drop: a [FATAL] file whose tool maps to a CATALOG control is
+    TAGGED ``located_nonaffirming`` (not dropped), so the artifact is citable
+    under its control -- but never as affirming/compliant evidence.
+
+    The judge ran and rejected (production reality for these files); the
+    single-purpose floor therefore emits the located-non-affirming disposition
+    rather than vanishing the file (the user-flagged bug). Uses a body whose
+    tool token (``xrdp``) maps to a control SEEDED in the catalog (AC-17) so the
+    floor can resolve objectives -- aide->SI-7/CM-3 aren't seeded here.
+    """
+    from cybersecurity_assessor.evidence.tagger import _SOURCE_LOCATED_NONAFFIRMING
+
+    # xrdp is single-purpose -> AC-17 (seeded). Body is a command that FAILED to
+    # execute, so it must be located-non-affirming, not affirming. The body
+    # carries a bare ``xrdp`` token (as the real CTP-010_xrdp_step12.txt does --
+    # ``systemctl status xrdp``) so the tool-floor derivation matches; the
+    # command itself errors out (command not found), so it is non-affirming.
+    fatal_xrdp = (
+        "Script started on 2026-05-18 21:40:27+00:00\n"
+        "[cybertestadmin@host CTP-010]$ systemctl status xrdp\n"
+        "sudo: systemctl: command not found\n"
+        "[cybertestadmin@host CTP-010]$ exit\n"
+    )
+    e = _evidence(session, "C:/fake/CTP-010_xrdp_step12.txt")
+    judge = _TwoModelJudge(
+        {
+            _HAIKU: {"ac-17": 0.0},  # judge ran and rejected
+            _OPUS: {"ac-17": 0.0},  # escalation suppressed anyway (command error)
+        }
+    )
+    tag_evidence(
+        session,
+        e,
+        text=fatal_xrdp,
+        client=judge,
+        judge_model=_HAIKU,
+        escalation_model=_OPUS,
+        # No override -> derive tool_floor from the body ('xrdp' -> AC-17).
+    )
+
+    all_tags = session.exec(
+        select(EvidenceTag).where(EvidenceTag.evidence_id == e.id)
+    ).all()
+    # LOCATED: AC-17 children tagged, but with the non-affirming disposition.
+    tagged = {t.objective_id for t in all_tags}
+    for oid in catalog["ac-17"]:
+        assert oid in tagged, "command-error file must be LOCATED to AC-17, not dropped"
+    assert all(
+        t.source == _SOURCE_LOCATED_NONAFFIRMING
+        for t in all_tags
+        if t.objective_id in catalog["ac-17"]
+    ), "located AC-17 tags must carry the located_nonaffirming source"
+    # NON-AFFIRMING: never an affirming source.
+    assert not _llm_tags(session, e.id), "must not be affirming source=llm"
+    assert not any(t.source == "auto" for t in all_tags), "must not be source=auto"
 
 
 def test_is_command_error_only_classifies_brief_phrases():
