@@ -611,6 +611,13 @@ class TaggingResult:
     judge_attempted: int = 0  # candidate controls actually sent to the judge
     judge_accepted: int = 0  # candidates the judge accepted (== llm_hits per-control)
     judge_errored: int = 0  # judge calls that raised (API/network), not abstentions
+    # Tier-5 escalation re-judge (added 2026-06-24, verdict-neutral). When the
+    # cheap judge cleanly abstained on a substantive, non-command-error body, a
+    # stronger model re-judges once. These count that second pass; the per-control
+    # accepts are ALSO folded into judge_attempted/judge_accepted/llm_hits above
+    # (accumulated, not overwritten) so the corpus ratios stay correct.
+    judge_escalated: bool = False  # True = a stronger-model re-judge actually ran
+    judge_escalated_accepted: int = 0  # controls the escalation pass accepted
 
 
 def _existing_pairs(session: Session, evidence_id: int) -> set[int]:
@@ -870,6 +877,78 @@ def _distinct_significant_tokens(text: str) -> int:
     return len({m.group(0).lower() for m in _TIER5_TOKEN_RE.finditer(cleaned)})
 
 
+# Tier-5 escalation guards (2026-06-24). A clean Haiku all-abstain on an
+# under-tagged file triggers ONE Opus re-judge — but only when the body is real
+# evidence, not a transcript of a command that never ran. Two design rules
+# settled by architecture review + external second opinions:
+#   * Do NOT use a "success-signal allow-list" (it would exclude valid non-zero
+#     evidence like ``capsh | grep cap_sys_chroot`` rc=1 = good CM-7 evidence).
+#   * Do NOT treat ``Permission denied`` / a bare non-zero exit as a command
+#     error — in security evidence those are PROOF a control enforces (a blocked
+#     connection, a locked file). The disqualifier is the script FAILING TO RUN,
+#     not the script running and returning a restrictive result.
+# So the guard matches only FAILURE-TO-EXECUTE signals: the interpreter/shell
+# could not launch the command (typo, missing arg, bad path, syntax error).
+_FAILURE_TO_EXECUTE_RES = (
+    re.compile(r"\bcommand not found\b", re.IGNORECASE),
+    re.compile(r"\[FATAL\]"),
+    re.compile(r"\bmissing\b.*\bargument\b", re.IGNORECASE),
+    re.compile(r"\bunrecognized option\b", re.IGNORECASE),
+    re.compile(r"\bsyntax error\b", re.IGNORECASE),
+    re.compile(r"\bNo such file or directory\b", re.IGNORECASE),
+    re.compile(r"\bNot a directory\b", re.IGNORECASE),
+)
+# A token that signals the command actually produced real output / ran to
+# completion — when present alongside an error, the body is NOT "error-only"
+# (e.g. a long config dump that also happens to contain the word "fatal").
+_SUCCESSFUL_OUTPUT_RES = (
+    re.compile(r"\brc[:=]\s*['\"]?0\b", re.IGNORECASE),     # result.rc: '0'
+    re.compile(r"\bchanged:\s*\[", re.IGNORECASE),           # ansible changed: [host]
+    re.compile(r"\bok:\s*\[", re.IGNORECASE),                # ansible ok: [host]
+    re.compile(r"\bactive\s*\(running\)", re.IGNORECASE),    # systemctl status
+    re.compile(r"\bis-active\b.*\bactive\b", re.IGNORECASE),
+)
+
+
+def _is_command_error_only(text: str) -> bool:
+    """True when the body's only signal is a command that FAILED TO EXECUTE.
+
+    Used as a deterministic escalation rail: a file like
+    ``[FATAL] Missing playbook argument`` clears the 25-token substance gate
+    (its ANSI scaffolding alone is >25 tokens) yet contains NO observed control
+    state — escalating it to a stronger, more generous judge risks a false
+    positive on a genuinely-empty file. This guard suppresses that escalation.
+
+    Returns True iff a failure-to-execute signal is present AND no successful
+    command output is present. ``Permission denied`` and bare non-zero exit
+    codes are deliberately NOT failure-to-execute signals (they are valid
+    enforcement evidence), so a transcript whose only "error" is a denial is
+    NOT classified as command-error-only and remains eligible to escalate.
+    """
+    if not text:
+        return False
+    cleaned = _strip_terminal_noise(text)
+    if not any(rx.search(cleaned) for rx in _FAILURE_TO_EXECUTE_RES):
+        return False
+    # A real command also ran (success signal present) → not error-only.
+    if any(rx.search(cleaned) for rx in _SUCCESSFUL_OUTPUT_RES):
+        return False
+    return True
+
+
+# Structural escalation rail: a body with too few real content lines is noise,
+# not evidence. The 0-byte file is already blocked upstream by ``text.strip()``;
+# this catches a 1-3 line fragment that clears the token gate via repetition.
+_ESCALATION_MIN_LINES = 4
+
+
+def _too_few_lines_to_escalate(text: str) -> bool:
+    """True when the stripped body has fewer than _ESCALATION_MIN_LINES of content."""
+    cleaned = _strip_terminal_noise(text or "")
+    nonblank = [ln for ln in cleaned.splitlines() if ln.strip()]
+    return len(nonblank) < _ESCALATION_MIN_LINES
+
+
 def _tier3_relevance_scores(
     artifact_text: str, control_texts: list[str]
 ) -> list[float]:
@@ -1000,7 +1079,36 @@ Scoring rubric:
 Be strict and precise. Abstain by scoring low (<=0.4) when you genuinely \
 cannot tell — never inflate a score to be helpful. A wrong tag costs the \
 assessor more than a missed one. Judge ONLY from the artifact text shown; do \
-not assume facts that are not present."""
+not assume facts that are not present.
+
+EVIDENCE-TYPE ROUTING (apply exactly one branch):
+
+[A] If the evidence is a TERMINAL TRANSCRIPT (text, shell output, logs):
+    Score 0.0 if the transcript shows the command did not execute as
+    intended: command-not-found, missing/invalid argument, usage/help
+    banner, syntax error, fatal initialization error, or an interpreter
+    failing to load the script. Filenames, comments, and stated intent
+    to run a control are NOT evidence. Score >= 0.6 ONLY when the
+    output actively demonstrates a compliance state.
+
+    Non-zero exit codes and "Permission denied" are VALID evidence when
+    they demonstrate a control property (e.g., capability absent,
+    access restricted, module blocked). The disqualifier is the script
+    failing to run, not the script running and returning a restrictive
+    result.
+
+[B] If the evidence is an IMAGE (screenshot, dashboard, console UI; the
+    artifact body begins with a [vision] description):
+    Score on the PRESENCE of a deployed compliance mechanism visible
+    in the UI (e.g., Rancher policy view, Splunk index, MFA enrollment
+    screen, configured retention setting). A failed or incomplete
+    verification step within the screenshot does NOT reduce the score
+    if the underlying mechanism is visibly deployed and configured.
+    Score >= 0.6 when the mechanism is identifiable and its
+    configuration is legible.
+
+Do not blend the two branches. Terminal failure-to-execute is
+disqualifying; image verification-step failure is not."""
 
 
 def _build_llm_brief(title: str, body: str) -> list[dict]:
@@ -1469,7 +1577,9 @@ def tag_evidence(
     framework_id: int | None = None,
     client: Any | None = None,
     judge_model: str | None = None,
+    escalation_model: str | None = None,
     augment_corpus: bool = True,
+    tool_candidate_cids: set[str] | None = None,
 ) -> TaggingResult:
     """Apply doc-number, CCI-direct, control-ID, evidence-type, and (as a
     low-tag backstop) semantic-recall tags.
@@ -1539,6 +1649,8 @@ def tag_evidence(
     judge_attempted = 0
     judge_accepted = 0
     judge_errored = 0
+    judge_escalated = False
+    judge_escalated_accepted = 0
     # Track objectives that received a new tag this call so we can invalidate
     # their stale Assessment rows in one UPDATE at the end (e.g. a CCI that
     # short-circuited via rule_no_evidence before this artifact landed must
@@ -1860,10 +1972,15 @@ def tag_evidence(
     #        judge confirms/rejects each against the file's actual content) and,
     #        for SINGLE-PURPOSE tools only, used as a post-judge recall FLOOR when
     #        the judge accepts nothing (or runs offline).
-    #      * ``tool_candidate_cids`` = every matched tool's controls (judge bias).
+    #      * ``tool_candidate_cids_derived`` = every matched tool's controls
+    #        (judge bias). A caller MAY pass ``tool_candidate_cids`` to OVERRIDE
+    #        this derivation (tests pin a specific candidate independent of body
+    #        tokens); when None we derive from the path/title/body as usual.
     #      * ``tool_floor_cids`` = controls from UNAMBIGUOUS (single-purpose)
-    #        tools only — the safe set eligible for the deterministic floor.
-    tool_candidate_cids: set[str] = set()
+    #        tools only — the safe set eligible for the deterministic floor. This
+    #        is ALWAYS derived from real tokens (never the override), so a test
+    #        injecting a candidate doesn't accidentally widen the offline floor.
+    tool_candidate_cids_derived: set[str] = set()
     tool_floor_cids: set[str] = set()
     tool_floor_tools: dict[str, set[str]] = {}  # cid -> {single-purpose tools}
     tool_haystack_parts = [
@@ -1879,10 +1996,16 @@ def tag_evidence(
                 continue
             cids, ambiguous = _TOOL_NAME_TO_CONTROLS[tool]
             for cid in cids:
-                tool_candidate_cids.add(cid)
+                tool_candidate_cids_derived.add(cid)
                 if not ambiguous:
                     tool_floor_cids.add(cid)
                     tool_floor_tools.setdefault(cid, set()).add(tool)
+    # Caller override takes precedence for JUDGE candidates only (not the floor).
+    tool_candidate_cids_effective = (
+        set(tool_candidate_cids)
+        if tool_candidate_cids is not None
+        else tool_candidate_cids_derived
+    )
 
     # 5. Semantic recall backstop (Tier 5, added 2026-06-10). Some real
     #    evidence names no doc number, no CCI, no control ID, and matches no
@@ -1944,7 +2067,7 @@ def tag_evidence(
                     evidence_path=evidence.path,
                     framework_id=framework_id,
                     augment_corpus=augment_corpus,
-                    tool_candidate_cids=tool_candidate_cids or None,
+                    tool_candidate_cids=tool_candidate_cids_effective or None,
                 )
                 # Instrumentation only — does not alter any verdict. judge_invoked
                 # marks that the gate passed AND a client was present (the doc
@@ -1954,13 +2077,65 @@ def tag_evidence(
                 judge_attempted = attempted
                 judge_accepted = llm_hits
                 judge_errored = errored
+
+                # Tier-5 ESCALATION (2026-06-24). The cheap judge (Haiku) was
+                # handed the correct candidate (tool-injected xrdp→AC-17,
+                # chrony→AU-8, …) yet scored every one < 0.6 on ANSI-noisy
+                # terminal transcripts a stronger model reads correctly. When the
+                # Haiku pass is a CLEAN all-abstain — it actually ran (attempted>0),
+                # accepted nothing (llm_hits==0), and did NOT error (errored==0,
+                # so this is a confident "nothing fit", not an outage) — re-judge
+                # ONCE with the stronger escalation model. Three rails keep this
+                # from tagging a genuinely-empty file:
+                #   1. structural: a body with < _ESCALATION_MIN_LINES of content.
+                #   2. failure-to-execute: a transcript whose only signal is a
+                #      command that never ran ([FATAL]/command-not-found/bad arg).
+                #      NB: "Permission denied"/non-zero exit are VALID evidence and
+                #      are deliberately NOT treated as command errors.
+                #   3. the rubric's [A] branch tells the judge to score such
+                #      failures 0.0 — model-level defense in depth behind 1+2.
+                # None escalation_model (offline/eval default) disables this
+                # entirely — we must check it BEFORE the call, else judge_model
+                # None would fall through to the client's constructor model.
+                if (
+                    escalation_model
+                    and escalation_model != judge_model
+                    and attempted > 0
+                    and llm_hits == 0
+                    and errored == 0
+                    and not _too_few_lines_to_escalate(text)
+                    and not _is_command_error_only(text)
+                ):
+                    esc_hits, esc_attempted, esc_errored = _tag_via_llm(
+                        text,
+                        client=client,
+                        judge_model=escalation_model,
+                        all_by_control=all_by_control,
+                        artifact_title=artifact_title,
+                        add=_add,  # same closure → existing-set dedup, no double tag
+                        hyde_prose=hyde_prose,  # reuse; don't pay HyDE twice
+                        evidence_path=evidence.path,
+                        framework_id=framework_id,
+                        augment_corpus=augment_corpus,
+                        tool_candidate_cids=tool_candidate_cids_effective or None,
+                    )
+                    judge_escalated = True
+                    judge_escalated_accepted = esc_hits
+                    # Accumulate (NOT overwrite) so corpus ratios stay correct.
+                    llm_hits += esc_hits
+                    judge_attempted += esc_attempted
+                    judge_accepted += esc_hits
+                    judge_errored += esc_errored
+
                 # Trust partial LLM success. Only fall back to the deterministic
                 # TF-IDF backstop when EVERY judge call errored (network/API
                 # outage) — never when the judge simply abstained on every
                 # candidate. An all-abstain result is a confident "nothing here
                 # is relevant"; spraying TF-IDF guesses on top would defeat the
-                # precision the LLM tier exists to provide.
-                run_tfidf = attempted > 0 and errored == attempted
+                # precision the LLM tier exists to provide. Uses the post-
+                # escalation totals so a successful Opus pass correctly suppresses
+                # the TF-IDF fallback.
+                run_tfidf = judge_attempted > 0 and judge_errored == judge_attempted
             if not run_tfidf:
                 all_by_control = {}  # skip the TF-IDF block below
             # Substance gate (deterministic path only). A body too short to carry
@@ -2077,7 +2252,8 @@ def tag_evidence(
     # det_cleared=True means Tiers 1-4 alone satisfied the low-tag gate (no LLM).
     log.info(
         "tier5_judge evidence_id=%s det_tags=%d det_cleared=%s judge_invoked=%s "
-        "judge_attempted=%d judge_accepted=%d judge_errored=%d",
+        "judge_attempted=%d judge_accepted=%d judge_errored=%d judge_escalated=%s "
+        "judge_escalated_accepted=%d",
         evidence.id,
         tier1_4_tags,
         gate_cleared_by_det,
@@ -2085,6 +2261,8 @@ def tag_evidence(
         judge_attempted,
         judge_accepted,
         judge_errored,
+        judge_escalated,
+        judge_escalated_accepted,
     )
 
     return TaggingResult(
@@ -2103,4 +2281,6 @@ def tag_evidence(
         judge_attempted=judge_attempted,
         judge_accepted=judge_accepted,
         judge_errored=judge_errored,
+        judge_escalated=judge_escalated,
+        judge_escalated_accepted=judge_escalated_accepted,
     )

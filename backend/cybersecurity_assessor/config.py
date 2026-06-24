@@ -177,6 +177,17 @@ class AppConfig(BaseModel):
     # (sweep_judge_enabled=False) falls back to pure keyword scoring.
     # ------------------------------------------------------------------
     llm_judge_model: str = Field(default="claude-haiku-4-5-20251001")
+    # Tier-5 escalation re-judge (2026-06-24). When the cheap ``llm_judge_model``
+    # (Haiku) runs on an under-tagged artifact and CLEANLY abstains on every
+    # candidate (attempted>0, accepted==0, errored==0) on a substantive,
+    # non-command-error body, the tagger re-judges ONCE with this stronger model.
+    # Measured cause: Haiku, handed the correct candidate (xrdp→AC-17,
+    # chrony→AU-8) on ANSI-noisy terminal transcripts, scored it <0.6 where a
+    # stronger model recognizes the deployed mechanism. Fires only on the small
+    # all-abstain subset, so the Opus cost is bounded. ``None`` disables
+    # escalation entirely (pure single-pass E+A) — the safe default for
+    # offline/eval, where there is no client to escalate with anyway.
+    llm_judge_escalation_model: str | None = Field(default="claude-4-8-opus")
     sweep_cost_cap_usd: float = Field(default=0.0)
     sweep_judge_workers: int = Field(default=16)
     sweep_judge_enabled: bool = Field(default=True)

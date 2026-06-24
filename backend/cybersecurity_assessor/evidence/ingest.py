@@ -661,6 +661,18 @@ def ingest_source(
     # = user turned the judge off on purpose. Either way the folder lane +
     # vision skip, so structural files may tag to zero controls.
     summary.tagger_status = tagger_status
+    # Tier-5 escalation model (2026-06-24). Resolved ONCE for the walk. Only
+    # meaningful when the judge client is actually live (status "ok"); offline /
+    # disabled ingests have no client to escalate with, so we leave it None and
+    # tag_evidence never enters the escalation path. None in config also disables.
+    tagger_escalation_model: str | None = None
+    if tagger_status == "ok":
+        try:
+            tagger_escalation_model = getattr(
+                load_config(), "llm_judge_escalation_model", None
+            )
+        except Exception:  # pragma: no cover - never let config wedge an ingest
+            tagger_escalation_model = None
     # Resolve the vision + corpus-augmentation gates ONCE for the whole walk
     # (config knobs, not per-file properties).
     vision_on = _vision_enabled()
@@ -949,6 +961,7 @@ def ingest_source(
                 framework_id=framework_id,
                 client=tagger_client,
                 judge_model=tagger_judge_model,
+                escalation_model=tagger_escalation_model,
                 augment_corpus=augment_corpus_on,
             )
             summary.tags_created += tag_result.tags_created
