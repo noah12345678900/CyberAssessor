@@ -1511,32 +1511,51 @@ class AnthropicClient:
         the caller can mark the row as judge-failed and degrade to
         keyword-only without crashing the sweep.
         """
-        response = self._messages_create_temperature_aware(
-            label="anthropic.judge_relevance",
-            model=model or self._model,
-            max_tokens=256,
-            temperature=0.0,
-            system=system_blocks,
-            messages=[{"role": "user", "content": user_text}],
-            # Bound this single request so a stalled endpoint can't freeze the
-            # sweep. The SDK raises on timeout; the concurrent judge treats that
-            # like any other transient failure and degrades to keyword-only.
-            timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
-        )
-        raw_text = _extract_text(response).strip()
-        usage = _UsageBlock.from_sdk(getattr(response, "usage", None))
-        try:
-            obj = _parse_extraction_json(raw_text)
-            score_raw = obj.get("score", obj.get("relevance", 0.0))
-            score = float(score_raw)
-            if score < 0.0:
-                score = 0.0
-            elif score > 1.0:
-                score = 1.0
-            reasoning = str(obj.get("reasoning") or obj.get("why") or "")[:200]
-        except (ValueError, TypeError, KeyError) as exc:
-            return 0.0, f"[parse_error] {exc}: {raw_text[:80]!r}", usage
-        return score, reasoning, usage
+        # One retry on a MALFORMED envelope. A parse failure previously returned
+        # score 0.0 — indistinguishable from a genuine "not relevant" verdict, so
+        # a truncated/garbled JSON response silently DROPPED a tag (a recall
+        # hole, since the caller treats < threshold as "reject"). At max_tokens
+        # 256 a truncated envelope is the likely failure. We re-issue the SAME
+        # call once (temperature stays 0.0 — this is a re-request, NOT sampling
+        # for variety) with a terse corrective nudge appended; if it STILL fails
+        # to parse, we surface a NEGATIVE sentinel score (-1.0) so the caller can
+        # tell "judge errored" apart from "judge said 0.0" and degrade/fall back
+        # rather than silently drop. Usage from the last attempt is returned.
+        attempts = (user_text, user_text + "\n\nReturn ONLY the JSON object, nothing else.")
+        usage: "_UsageBlock" | None = None
+        last_raw = ""
+        last_exc: Exception | None = None
+        for turn in attempts:
+            response = self._messages_create_temperature_aware(
+                label="anthropic.judge_relevance",
+                model=model or self._model,
+                max_tokens=256,
+                temperature=0.0,
+                system=system_blocks,
+                messages=[{"role": "user", "content": turn}],
+                # Bound this single request so a stalled endpoint can't freeze the
+                # sweep. The SDK raises on timeout; the concurrent judge treats
+                # that like any other transient failure and degrades to keyword-only.
+                timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
+            )
+            last_raw = _extract_text(response).strip()
+            usage = _UsageBlock.from_sdk(getattr(response, "usage", None))
+            try:
+                obj = _parse_extraction_json(last_raw)
+                score_raw = obj.get("score", obj.get("relevance", 0.0))
+                score = float(score_raw)
+                if score < 0.0:
+                    score = 0.0
+                elif score > 1.0:
+                    score = 1.0
+                reasoning = str(obj.get("reasoning") or obj.get("why") or "")[:200]
+                return score, reasoning, usage
+            except (ValueError, TypeError, KeyError) as exc:
+                last_exc = exc
+                continue
+        # Both attempts unparseable → negative sentinel so the caller counts this
+        # as judge-ERRORED (retryable / fall-back), NOT a 0.0 abstention.
+        return -1.0, f"[parse_error] {last_exc}: {last_raw[:80]!r}", usage
 
     # ------------------------------------------------------------------
     # HyDE query-expansion — bridge the config→policy vocabulary gap
