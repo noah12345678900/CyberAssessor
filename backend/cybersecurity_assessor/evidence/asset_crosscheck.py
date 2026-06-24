@@ -75,6 +75,7 @@ from ..models import (
     EvidenceAsset,
     EvidenceBoundary,
     EvidenceKind,
+    StigFinding,
 )
 
 # Sentinel boundary for hosts whose evidence carries no boundary signal —
@@ -210,9 +211,13 @@ class AssetCoverageReport:
     #                     physical/virtual box regardless of how many IPs it has.
     # checklists_regular — count of checklist Evidence rows whose file is a real
     #                     .ckl / .cklb / XCCDF checklist.
-    # checklists_xlsx   — count of checklist Evidence rows that are actually a
-    #                     DISA STIG-report .xlsx/.xlsm (kind STIG_CKL but the
-    #                     file is a spreadsheet, distinguished by extension).
+    # checklists_xlsx   — count of distinct (benchmark × host) checklists inside
+    #                     DISA STIG-report .xlsx/.xlsm files. NOT a file count:
+    #                     one such spreadsheet bundles one sheet per benchmark ×
+    #                     one column per host, so it carries many checklists. We
+    #                     count the distinct (rule_version, host) pairs its
+    #                     StigFinding rows establish (see _xlsx_checklist_count),
+    #                     falling back to 1-per-file for any that didn't parse.
     distinct_ips: int = 0
     resolved_devices: int = 0
     checklists_regular: int = 0
@@ -379,6 +384,55 @@ def _is_stig_xlsx(ev: Evidence) -> bool:
     except (TypeError, ValueError):
         return False
     return suffix in _STIG_XLSX_SUFFIXES
+
+
+def _xlsx_checklist_count(
+    session: Session, xlsx_evidence_ids: list[int]
+) -> int:
+    """Count distinct (benchmark × host) checklists inside STIG-report xlsx files.
+
+    A DISA STIG-report ``.xlsx`` is ONE Evidence row but bundles MANY checklists:
+    the extractor parses one sheet PER BENCHMARK and one result column PER HOST,
+    emitting a :class:`StigFinding` per (rule × host) where ``rule_version`` is
+    the benchmark/STIG id and ``comments`` carries ``host=<hn>`` (see
+    ``extractors/xlsx.py``). Counting the *files* (the old ``+= 1`` per row) badly
+    understated coverage — a single SCAP/OSCAP export can carry dozens of
+    benchmark×host checklists. We count the distinct (rule_version, host) pairs
+    its findings actually establish, which is the SCAP-correct "checklist" unit
+    and lines up with how ``.ckl``/XCCDF (inherently one-benchmark-one-host) are
+    already counted one-apiece.
+
+    Falls back to one-per-file for any xlsx that produced NO parseable findings
+    (a spreadsheet we classified as STIG-report by extension but couldn't parse
+    into benchmark×host rows) so the count never drops BELOW the file count.
+    """
+    if not xlsx_evidence_ids:
+        return 0
+    # (benchmark, host) pairs across all the xlsx files, plus which files yielded
+    # at least one parseable finding (so the rest get the 1-per-file fallback).
+    pairs: set[tuple[str, str]] = set()
+    files_with_findings: set[int] = set()
+    for batch in chunked(xlsx_evidence_ids):
+        rows = session.exec(
+            select(
+                StigFinding.evidence_id,
+                StigFinding.rule_version,
+                StigFinding.comments,
+            ).where(StigFinding.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        ).all()
+        for eid, rule_version, comments in rows:
+            files_with_findings.add(eid)
+            benchmark = (rule_version or "").strip() or "UNKNOWN_BENCHMARK"
+            host = ""
+            if comments and comments.startswith("host="):
+                host = comments[len("host="):].strip()
+            pairs.add((benchmark, host))
+    parsed_count = len(pairs)
+    # Files we tagged as STIG-xlsx but that produced zero findings still count
+    # once each (the artifact exists and was processed, just not parseable into
+    # benchmark×host rows).
+    unparsed_files = len(set(xlsx_evidence_ids) - files_with_findings)
+    return parsed_count + unparsed_files
 
 
 def _device_ip_map(
@@ -668,11 +722,14 @@ def summarize_asset_coverage(
     checklisted_set: set[tuple[str, str]] = set()
     declared_set: set[tuple[str, str]] = set()
 
-    # Source-type breakdown tallies (additive). Checklist counts are by
-    # Evidence row (one .ckl file = one regular checklist); device/IP counts
-    # are derived from the host universe after the loop.
+    # Source-type breakdown tallies. A regular .ckl/.cklb/XCCDF is one checklist
+    # per file (inherently one benchmark × one host). A STIG-report .xlsx is ONE
+    # file but MANY checklists (one sheet per benchmark × one column per host) —
+    # so we collect its evidence ids here and count distinct (benchmark, host)
+    # pairs from its StigFinding rows AFTER the loop (see _xlsx_checklist_count).
+    # device/IP counts are derived from the host universe after the loop.
     checklists_regular = 0
-    checklists_xlsx = 0
+    xlsx_checklist_ids: list[int] = []
 
     for ev in rows:
         category = _category(ev)
@@ -680,7 +737,8 @@ def summarize_asset_coverage(
             continue
         if category == "checklisted":
             if _is_stig_xlsx(ev):
-                checklists_xlsx += 1
+                if ev.id is not None:
+                    xlsx_checklist_ids.append(ev.id)
             else:
                 checklists_regular += 1
         hosts = scope_table_hosts.get(ev.id or 0, frozenset())
@@ -788,6 +846,9 @@ def summarize_asset_coverage(
     # An IP that the declared inventory itself names as a host is treated as a
     # device (the inventory asserts it IS the device's identity) — so only
     # scanned-only / checklisted-only bare IPs land in distinct_ips.
+    # STIG-report xlsx checklists: distinct (benchmark × host), not file count.
+    checklists_xlsx = _xlsx_checklist_count(session, xlsx_checklist_ids)
+
     resolved_devices = 0
     distinct_ips = 0
     for rec in hosts_sorted:

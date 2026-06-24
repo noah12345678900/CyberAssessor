@@ -726,12 +726,64 @@ def test_stig_xlsx_counts_as_checklisted_xlsx(session):
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
 
+    # The xlsx produced NO StigFinding rows (seeded via _make_evidence, which
+    # bypasses the extractor), so it falls back to one-per-file: count 1.
     assert report.checklists_xlsx == 1
     assert report.checklists_regular == 1
     # Both hosts still flow through the checklisted set as before — the
     # breakdown is additive, not a re-categorization.
     assert report.checklisted_set == frozenset(
         {("unspecified", "webhost"), ("unspecified", "dbhost")}
+    )
+
+
+def test_stig_xlsx_counts_distinct_benchmark_host_checklists(session):
+    """One STIG-report .xlsx bundles MANY checklists: count distinct
+    (benchmark × host), not the single file.
+
+    The extractor emits a StigFinding per (rule × host) where rule_version is
+    the benchmark/STIG id and comments carries ``host=<hn>``. A single .xlsx
+    that covers 2 benchmarks across 2 hosts is 3-4 distinct checklists, not 1.
+    This is the fix for the UI showing "Checklists (xlsx/SCAP): 2" when the two
+    spreadsheets actually carried many more benchmark×host results.
+    """
+    from cybersecurity_assessor.models import FindingStatus, StigFinding
+
+    ev = _make_evidence(
+        session,
+        path="file:///multi-stig-report.xlsx",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["webhost", "dbhost"],
+        title="Multi STIG report",
+    )
+    # Distinct (benchmark, host) checklists: 3 unique pairs + one DUPLICATE rule
+    # within an existing (benchmark, host) that must NOT inflate the count.
+    finding_specs = [
+        ("RHEL_8_STIG", "webhost", "SV-001"),
+        ("RHEL_8_STIG", "webhost", "SV-002"),   # same (benchmark,host) → dup
+        ("RHEL_8_STIG", "dbhost", "SV-001"),
+        ("APACHE_STIG", "webhost", "SV-100"),
+    ]
+    for benchmark, host, rule in finding_specs:
+        session.add(
+            StigFinding(
+                evidence_id=ev.id,
+                rule_id=rule,
+                rule_version=benchmark,
+                status=FindingStatus.OPEN,
+                comments=f"host={host}",
+            )
+        )
+    session.commit()
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    # 3 distinct (benchmark, host) pairs: (RHEL,web), (RHEL,db), (APACHE,web).
+    # The duplicate rule under (RHEL, web) collapses — checklists are
+    # benchmark×host, not per-rule.
+    assert report.checklists_xlsx == 3, (
+        "one xlsx with 2 benchmarks across 2 hosts = 3 distinct benchmark×host "
+        "checklists, not 1 file"
     )
 
 
