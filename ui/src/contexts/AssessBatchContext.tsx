@@ -306,7 +306,11 @@ export function AssessBatchProgressStrip() {
   return (
     <div className="sticky top-0 z-30 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 px-4 py-2 shadow-nuon-sm">
       <div className="space-y-1.5">
-        <div className="flex items-center gap-2 text-sm">
+        {/* pr-[150px] keeps the right-aligned (ml-auto) percent/elapsed/ETA clear
+            of the custom WindowControls cluster fixed at the top-right (right-2,
+            ~132px wide). Without it the ETA renders UNDER the min/max/close
+            buttons and is invisible — mirrors the same fix on the ingest strip. */}
+        <div className="flex items-center gap-2 text-sm pr-[150px]">
           <Activity className="h-4 w-4 text-emerald-500 animate-pulse" />
           <span className="font-medium">
             {isStarting

@@ -79,14 +79,22 @@ const AUTO_DERIVED_KINDS = new Set<string>([
   "stig_xccdf",
 ]);
 
-// Declared inventories only come via spreadsheet — any Excel format plus CSV.
-// Used to gate the "Declared inventory" toggle; the backend rejects the flag
-// on artifacts that aren't one of these extensions too.
+// Declared inventories come via spreadsheet — but a spreadsheet is only an
+// inventory if the ingest classifier actually found host/asset columns in it
+// (host_count > 0). A budget or parts-catalog .xlsx has host_count 0 and is NOT
+// eligible — this replaces the old blind file-extension check that let ANY
+// spreadsheet be flagged the authoritative boundary. The backend gate
+// (set_asset_list) enforces the same rule, so the UI just mirrors it.
 const INVENTORY_EXTS = [".xlsx", ".xlsm", ".xls", ".csv"];
-function isInventoryFile(filename: string | null | undefined): boolean {
+function isSpreadsheet(filename: string | null | undefined): boolean {
   if (!filename) return false;
   const lower = filename.toLowerCase();
   return INVENTORY_EXTS.some((ext) => lower.endsWith(ext));
+}
+// A spreadsheet qualifies as a DECLARABLE inventory only when its content
+// parsed as a host inventory (detected hosts). Extension alone is not enough.
+function isDeclarableInventory(ev: EvidenceArtifact): boolean {
+  return isSpreadsheet(ev.filename) && (ev.host_count ?? 0) > 0;
 }
 
 export function Evidence() {
@@ -864,9 +872,11 @@ export function Evidence() {
                     {e.ingested_at ? new Date(e.ingested_at).toLocaleString() : "—"}
                   </TableCell>
                   <TableCell>
-                    {AUTO_DERIVED_KINDS.has(e.kind) || isInventoryFile(e.filename) ? (
+                    {AUTO_DERIVED_KINDS.has(e.kind) || isDeclarableInventory(e) ? (
                       // Eligible to be marked the DECLARED AUTHORITATIVE source:
-                      //   * spreadsheets — a manually-authored HW/SW inventory; OR
+                      //   * spreadsheets that PARSED AS A HOST INVENTORY
+                      //     (host_count > 0) — a budget/parts-catalog .xlsx is no
+                      //     longer eligible (content gate, not blind extension); OR
                       //   * host-enumerating scans/checklists (Nessus/STIG) — their
                       //     hosts auto-derive, but flagging one authoritative lets
                       //     it win the asset-identity trust order (E2). A credentialed
@@ -903,11 +913,18 @@ export function Evidence() {
                         )}
                       </div>
                     ) : (
-                      // Not host-bearing and not a spreadsheet → can't be an
-                      // authoritative asset source (backend rejects the flag too).
+                      // Not eligible to be a declared authoritative source.
+                      // Distinguish a spreadsheet that simply HAS NO host columns
+                      // (the budget/parts-catalog case the content gate now
+                      // rejects) from a non-spreadsheet artifact, so the assessor
+                      // understands WHY it can't be flagged. Backend enforces both.
                       <span
                         className="text-xs text-muted-foreground"
-                        title="Only host inventories (.xlsx/.xlsm/.xls/.csv) or host-enumerating scans/checklists can be a declared authoritative source"
+                        title={
+                          isSpreadsheet(e.filename)
+                            ? "This spreadsheet has no detectable host/asset columns (hostname, IP, MAC, asset tag, …), so it isn't an asset inventory and can't be declared authoritative."
+                            : "Only host inventories (spreadsheets with host columns) or host-enumerating scans/checklists can be a declared authoritative source."
+                        }
                       >
                         —
                       </span>
@@ -1390,8 +1407,13 @@ function CoverageGaps({
               ? "border-amber-500/40 bg-amber-500/5"
               : "border-muted bg-muted/30";
         return (
-          <div key={key} className={`rounded-md border px-3 py-2 ${border}`}>
-            <div className="flex items-baseline justify-between gap-2">
+          // Collapsible per-section: starts collapsed so the high-volume buckets
+          // (Observed-not-declared, Scanned-only — often 60-90+ hosts) don't
+          // flood the panel. The summary keeps title + count + blurb visible so
+          // the assessor sees the signal at a glance and expands only what they
+          // want to inspect. Nothing is removed — just hidden by default.
+          <details key={key} className={`rounded-md border px-3 py-2 ${border}`}>
+            <summary className="flex cursor-pointer items-baseline justify-between gap-2">
               <div className="text-xs font-medium">
                 {title}{" "}
                 <span className="ml-1 tabular-nums text-muted-foreground">
@@ -1399,7 +1421,7 @@ function CoverageGaps({
                 </span>
               </div>
               <div className="text-[10px] text-muted-foreground">{blurb}</div>
-            </div>
+            </summary>
             <ul className="mt-1.5 space-y-0.5 text-xs font-mono">
               {visible.map((h) => {
                 const rec = byName.get(h);
@@ -1426,7 +1448,7 @@ function CoverageGaps({
                 </li>
               )}
             </ul>
-          </div>
+          </details>
         );
       })}
     </div>

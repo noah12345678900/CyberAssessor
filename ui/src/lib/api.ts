@@ -1237,6 +1237,15 @@ export interface Evidence {
    */
   workbook_id: number | null;
   /**
+   * Count of hosts the ingest classifier enumerated from this artifact's
+   * content. Drives "declared authoritative" eligibility for spreadsheets: a
+   * .xlsx/.csv is flaggable only when it actually parsed as a host inventory
+   * (host_count > 0), replacing the old blind file-extension check so a budget
+   * or parts-catalog spreadsheet can no longer claim to be the boundary. Host-
+   * bearing scan/checklist KINDS stay eligible regardless of this count.
+   */
+  host_count: number;
+  /**
    * v0.3-ready connector telemetry. Mirrors URI scheme + connector name:
    * `local_file` / `sharepoint` / `s3` / `azblob` / `scan_import` /
    * `tenable` / `splunk` / `gitlab` / `manual`. Null on pre-migration rows
