@@ -333,6 +333,20 @@ def judge_candidate(
         score, reasoning, usage = client.judge_relevance(
             brief_system_blocks, user_text, model=model
         )
+        # A negative score is the parse-error sentinel from judge_relevance
+        # (envelope unparseable after one retry). Treat it like an API error:
+        # fall back to keyword-only (error set, score neutralized to 0.0) rather
+        # than letting -1.0 poison the keyword/LLM blend negative.
+        if score < 0.0:
+            return JudgeResult(
+                score=0.0,
+                reasoning="",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_input_tokens,
+                cache_write_tokens=usage.cache_creation_input_tokens,
+                error=f"parse_error: {reasoning[:80]}",
+            )
         return JudgeResult(
             score=score,
             reasoning=reasoning,

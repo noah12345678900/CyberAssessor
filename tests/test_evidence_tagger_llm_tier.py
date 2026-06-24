@@ -153,9 +153,12 @@ class _StubJudge:
         ):
             raise RuntimeError(f"judge endpoint down for {cid}")
         if cid in self.parse_error_for:
-            # Mirrors client.judge_relevance's malformed-output fallback: a 0.0
-            # score with a parse-error reason, returned (not raised).
-            return 0.0, "[parse_error] expecting value", None
+            # Mirrors client.judge_relevance's malformed-output fallback AFTER
+            # its one retry is exhausted: a NEGATIVE sentinel (-1.0) with a
+            # parse-error reason, returned (not raised). The tagger counts a
+            # negative score as ``errored`` (a real envelope failure), distinct
+            # from a genuine 0.0 "not relevant" abstention.
+            return -1.0, "[parse_error] expecting value", None
         return self.scores.get(cid, 0.0), f"reason-{cid}", None
 
 
@@ -212,20 +215,23 @@ def test_below_threshold_abstains_no_tag():
     assert tags == []
 
 
-def test_parse_error_abstention_drops_and_is_not_counted_errored():
-    """A (0.0, "[parse_error]") verdict drops as an abstention, not an error.
+def test_parse_error_sentinel_counts_as_errored_not_abstention():
+    """A negative (-1.0, "[parse_error]") verdict counts as ERRORED, not a drop.
 
-    ``client.judge_relevance`` returns 0.0 for malformed model output WITHOUT
-    raising; that is a confident "can't tell" → no tag, and crucially it must
-    NOT increment ``errored`` (which would, if it were the only candidate,
-    falsely trip the caller's outage→TF-IDF fallback).
+    ``client.judge_relevance`` now retries once on malformed output and, if it
+    STILL can't parse, returns a NEGATIVE sentinel (-1.0) WITHOUT raising. The
+    tagger must attribute this as ``errored`` (a real envelope failure), not as
+    a genuine 0.0 "not relevant" abstention — so a full parse-storm correctly
+    trips the caller's outage→TF-IDF fallback (``errored == attempted``) instead
+    of silently dropping every tag. The tag is still NOT emitted (a parse
+    failure never becomes a tag).
     """
     client = _StubJudge(parse_error_for={"ac-2"})
     (hits, attempted, errored), tags = _run(client, [("ac-2", "account management")])
 
-    assert (hits, attempted, errored) == (0, 1, 0)
-    assert errored == 0, "a parse-error abstention is not an API error"
-    assert tags == []
+    assert (hits, attempted, errored) == (0, 1, 1)
+    assert errored == 1, "a parse-error sentinel (-1.0) is counted as errored"
+    assert tags == [], "a parse failure never becomes a tag"
 
 
 def test_mixed_accept_and_abstain():

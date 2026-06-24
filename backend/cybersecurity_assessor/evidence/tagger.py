@@ -188,6 +188,78 @@ _DIAGRAM_BOUNDARY_KEYWORDS: tuple[str, ...] = (
 )
 _DIAGRAM_BOUNDARY_CONTROLS: tuple[str, ...] = ("sc-7", "ca-3", "ac-4", "pl-8")
 
+# Tier 4.5 — tool/daemon name → control mapping (2026, deterministic recall).
+# A huge share of real CTP (Control Test Procedure) evidence is terse terminal
+# output named after the TOOL it tests: ``CTP-010_xrdp_step7.txt``,
+# ``CTP-014_aide_step10.txt``, ``CTP-019_chrony_step7.txt``. The tool name IS a
+# near-definitional control signal (xrdp = remote desktop = AC-17; aide = file
+# integrity = SI-7), but it carries no doc number / CCI / control-ID token, so
+# Tiers 1-3 produce nothing and the file falls to the expensive LLM judge —
+# which often abstains on a lone fragment. Encoding the canonical tool→control
+# lineage as a deterministic tier (a) guarantees the correct family reaches the
+# control page (recall, the load-bearing priority) and (b) clears the Tier-5
+# low-tag gate so the file skips ~15 judge calls (speed). This is NOT a guess:
+# these are DISA-STIG / NIST-canonical tool roles, the same domain knowledge an
+# assessor applies by reading the filename.
+#
+# Matching is WHOLE-WORD on the filename + title + a head slice of the body, so
+# "vault" the HashiCorp daemon matches but "vaulted" prose does not. Tokens that
+# are genuinely single-purpose daemons map at source="auto" (high precision);
+# polysemous tokens (sudo/ssh/vault — common words or multi-role) map at
+# source="auto_review" so a human confirms rather than the tag standing as
+# silent proof. Fan-out to every child CCI mirrors Tier 4.
+#
+# Each value is (control_ids, ambiguous). ``ambiguous=True`` → auto_review.
+_TOOL_NAME_TO_CONTROLS: dict[str, tuple[tuple[str, ...], bool]] = {
+    # --- single-purpose daemons (high precision → auto) ---
+    "aide": (("si-7", "cm-3"), False),
+    "tripwire": (("si-7", "cm-3"), False),
+    "chrony": (("au-8",), False),
+    "chronyd": (("au-8",), False),
+    "ntpd": (("au-8",), False),
+    "clamav": (("si-3",), False),
+    "clamscan": (("si-3",), False),
+    "freshclam": (("si-3",), False),
+    "auditd": (("au-2", "au-12"), False),
+    "rsyslog": (("au-4", "au-9"), False),
+    "selinux": (("ac-3", "ac-6"), False),
+    "firewalld": (("sc-7",), False),
+    "nftables": (("sc-7",), False),
+    "iptables": (("sc-7",), False),
+    "xrdp": (("ac-17",), False),
+    "xvnc": (("ac-17",), False),
+    "faillock": (("ac-7",), False),
+    "pam_faillock": (("ac-7",), False),
+    "pwquality": (("ia-5",), False),
+    "fapolicyd": (("cm-7.5",), False),
+    "usbguard": (("ac-19", "mp-7"), False),
+    "sssd": (("ia-2", "ia-5"), False),
+    # --- polysemous / multi-role (→ auto_review, human confirms) ---
+    # "fips" appears constantly in compliance prose ("FIPS 140-2 validated...")
+    # unrelated to a specific SC-13 crypto-module config, so it must NOT
+    # auto-tag — route to human review.
+    "fips": (("sc-13",), True),
+    "vault": (("ia-5", "sc-12", "sc-28"), True),
+    "sudo": (("ac-6",), True),
+    "sudoers": (("ac-6",), True),
+    "ssh": (("ac-17", "ia-5"), True),
+    "sshd": (("ac-17", "ia-5"), True),
+    "grub": (("ac-3",), True),
+}
+
+# Whole-word matcher built once from the table's keys. Word boundaries on both
+# sides so "ssh" matches "ssh"/"sshd"(separately keyed) but not "flashing"; "."
+# is escaped implicitly (no dots in keys). Sorted longest-first is irrelevant
+# for a set-membership scan but we tokenize the haystack instead of regex-OR for
+# clarity + speed on short bodies.
+_TOOL_NAME_TOKEN_RE = re.compile(r"[a-z_][a-z0-9_]{2,}")
+
+# Only the filename/title + this many leading chars of the body are scanned, so
+# a tool name buried deep in a long unrelated log doesn't mis-tag the whole
+# file. CTP evidence puts the tool in the name and the first command line.
+_TOOL_NAME_BODY_HEAD_CHARS = 2000
+
+
 _CCI_RE = re.compile(r"CCI-\d{6}", re.IGNORECASE)
 # Control IDs in the 800-53 catalog look like "AC-2" or "IA-5(1)" — two
 # uppercase letters, dash, 1-2 digits, optional parenthesised enhancement
@@ -521,6 +593,7 @@ class TaggingResult:
     cci_hits: int
     control_id_hits: int = 0  # Tier 3 — bounded-by-control matches
     evidence_type_hits: int = 0  # Tier 4 — content-classified xlsx auto-mapping
+    tool_name_hits: int = 0  # Tier 4.5 — tool/daemon-name → control deterministic map
     semantic_hits: int = 0  # Tier 5 — TF-IDF semantic recall backstop (low-tag only)
     llm_hits: int = 0  # Tier 5-LLM — judge-accepted backstop (replaces TF-IDF Tier 5)
     family_hits: int = 0  # retained for back-compat; family path removed 2026-06-04
@@ -1322,9 +1395,25 @@ def _tag_via_llm(
                 exc,
             )
             continue
+        if score is not None and score < 0.0:
+            # Negative sentinel = judge_relevance retried once and STILL couldn't
+            # parse the envelope. That's an ERROR (truncated/garbled output), NOT
+            # a genuine "not relevant" abstention — count it as errored so a
+            # parse-storm across all candidates trips the TF-IDF fallback instead
+            # of silently dropping every tag. (A single such candidate still just
+            # drops, same net effect as before, but now it's attributed correctly.)
+            errored += 1
+            log.warning(
+                "LLM tagger judge parse-failed (after retry) for evidence %r "
+                "control %s: %s",
+                artifact_title,
+                cid,
+                reasoning,
+            )
+            continue
         if score is None or score < _LLM_TIER_ACCEPT_SCORE:
-            # Below threshold OR a parse-error abstention (returns 0.0). Drop —
-            # precision over recall: an abstention never becomes a tag.
+            # Below threshold. Drop — precision over recall: an abstention never
+            # becomes a tag.
             continue
         relevance = round(
             _TIER3_RELEVANCE_FLOOR
@@ -1419,6 +1508,7 @@ def tag_evidence(
     cci_hits = 0
     control_id_hits = 0
     evidence_type_hits = 0
+    tool_name_hits = 0
     semantic_hits = 0
     llm_hits = 0
     # Measure-first instrumentation (verdict-neutral). Populated as the tiers
@@ -1735,6 +1825,68 @@ def tag_evidence(
                 )
                 control_id_hits += 1
 
+    # 4.5. Tool/daemon-name → control mapping (deterministic recall, 2026).
+    #      Terse CTP terminal-output evidence is named for the TOOL it tests
+    #      (xrdp/aide/chrony/...), a near-definitional control signal that
+    #      carries no doc/CCI/control-ID token — so without this it falls to the
+    #      LLM judge and is often abstained on. We scan the filename + title + a
+    #      head slice of the body for whole-word tool tokens and fan the mapped
+    #      controls out to every child CCI. Single-purpose daemons tag at
+    #      source="auto" (0.6 conf); polysemous tokens at "auto_review" so a
+    #      human confirms. This both RECOVERS recall (the file reaches its
+    #      control page) and clears the Tier-5 gate so it skips the judge.
+    #      Runs after the content-shape tiers so a file the xlsx classifier
+    #      already mapped isn't double-walked, but before the Tier-5 gate so its
+    #      tags count toward _TIER5_MIN_EXISTING.
+    tool_haystack_parts = [
+        part for part in (evidence.path, evidence.title) if part
+    ]
+    if text and text.strip():
+        tool_haystack_parts.append(text[:_TOOL_NAME_BODY_HEAD_CHARS])
+    tool_haystack = " ".join(tool_haystack_parts).lower()
+    if tool_haystack:
+        seen_tokens = set(_TOOL_NAME_TOKEN_RE.findall(tool_haystack))
+        matched_tools = [t for t in _TOOL_NAME_TO_CONTROLS if t in seen_tokens]
+        if matched_tools:
+            # Collect (control_ids, ambiguous) per matched tool; a control that
+            # any UNambiguous tool maps to is "auto", else "auto_review".
+            control_source: dict[str, str] = {}
+            control_tools: dict[str, set[str]] = {}
+            for tool in matched_tools:
+                cids, ambiguous = _TOOL_NAME_TO_CONTROLS[tool]
+                src = "auto_review" if ambiguous else "auto"
+                for cid in cids:
+                    control_tools.setdefault(cid, set()).add(tool)
+                    # "auto" wins over "auto_review" if any unambiguous tool maps here.
+                    if control_source.get(cid) != "auto":
+                        control_source[cid] = src
+            by_control_tool: dict[str, list[Objective]] = {}
+            for cid, obj in _objectives_for_control_ids(
+                session,
+                list(control_source.keys()),
+                framework_id=framework_id,
+            ):
+                if obj.id is None:
+                    continue
+                by_control_tool.setdefault(cid, []).append(obj)
+            for cid, objs in by_control_tool.items():
+                tools_label = ", ".join(sorted(control_tools.get(cid, ())))
+                src = control_source.get(cid, "auto_review")
+                for obj in objs:
+                    if obj.id is None:
+                        continue
+                    _add(
+                        obj.id,
+                        relevance=0.7,
+                        confidence=0.6,
+                        source=src,
+                        rationale=(
+                            f"Tool '{tools_label}' detected in evidence "
+                            f"name/output — canonical evidence for {cid.upper()}."
+                        ),
+                    )
+                    tool_name_hits += 1
+
     # 5. Semantic recall backstop (Tier 5, added 2026-06-10). Some real
     #    evidence names no doc number, no CCI, no control ID, and matches no
     #    known content shape — yet is plainly relevant to a few controls by its
@@ -1891,6 +2043,7 @@ def tag_evidence(
         cci_hits=cci_hits,
         control_id_hits=control_id_hits,
         evidence_type_hits=evidence_type_hits,
+        tool_name_hits=tool_name_hits,
         semantic_hits=semantic_hits,
         llm_hits=llm_hits,
         tier1_4_tags=tier1_4_tags,
