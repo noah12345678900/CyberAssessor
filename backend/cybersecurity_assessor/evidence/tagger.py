@@ -1222,12 +1222,20 @@ def _generate_candidates(
     cids: list[str],
     control_texts: list[str],
     framework_id: int | None,
+    tool_candidate_cids: set[str] | None = None,
 ) -> list[str]:
     """Run all lanes, fuse with RRF, return the capped candidate cid list.
 
     The single place candidates are chosen before the judge loop. Replaces the
     old TF-IDF-only pre-select. Deterministic: lanes are order-stable and RRF
     ties break by cid.
+
+    ``tool_candidate_cids`` (design E): control IDs nominated by the Tier-4.5
+    tool-name map. These are FORCE-INCLUDED ahead of the RRF cap so the judge
+    always gets to confirm/reject a tool-suggested control (e.g. xrdp→AC-17),
+    instead of the tool tier emitting a blind tag. Only IDs present in this
+    framework's catalog (``valid``) are injected; cap-exempt so a real tool
+    signal is never dropped by the 15-candidate ceiling.
     """
     valid = set(cids)
     lanes = [
@@ -1244,19 +1252,27 @@ def _generate_candidates(
     # Sort by fused score desc, ties by cid for determinism; cap tightly.
     ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
     candidates = [cid for cid, _ in ranked[:_RAG_FUSED_CAP]]
-    if candidates:
-        return candidates
+    if not candidates:
+        # Every lane came up empty (zero lexical overlap, no HyDE prose, no
+        # embeddings provider, no eMASS folder token). Preserve the original
+        # LLM-tier contract: an under-tagged artifact that reached this point
+        # STILL gets judged — the semantic judge is the only backstop left for
+        # text whose tokens don't overlap any control's wording. Fall back to
+        # the top-K controls by raw sparse cosine (deterministic by cid when all
+        # cosines are zero), exactly as the pre-RAG code did.
+        cos = _tier3_relevance_scores(text, control_texts)
+        by_cos = sorted(zip(cids, cos), key=lambda t: (-t[1], t[0]))
+        candidates = [cid for cid, _ in by_cos[:_RAG_FUSED_CAP]]
 
-    # Every lane came up empty (zero lexical overlap, no HyDE prose, no
-    # embeddings provider, no eMASS folder token). Preserve the original
-    # LLM-tier contract: an under-tagged artifact that reached this point
-    # STILL gets judged — the semantic judge is the only backstop left for
-    # text whose tokens don't overlap any control's wording. Fall back to the
-    # top-K controls by raw sparse cosine (deterministic by cid when all
-    # cosines are zero), exactly as the pre-RAG code did.
-    cos = _tier3_relevance_scores(text, control_texts)
-    by_cos = sorted(zip(cids, cos), key=lambda t: (-t[1], t[0]))
-    return [cid for cid, _ in by_cos[:_RAG_FUSED_CAP]]
+    # Design E: force tool-nominated controls in front of the judge (cap-exempt,
+    # deduped, framework-valid only). The judge then confirms or rejects each on
+    # the file's actual content — recall from the tool map, precision from the
+    # judge. Prepended so they're judged first (cache already warm after cand 0).
+    if tool_candidate_cids:
+        existing = set(candidates)
+        inject = [c for c in sorted(tool_candidate_cids) if c in valid and c not in existing]
+        candidates = inject + candidates
+    return candidates
 
 
 def _tag_via_llm(
@@ -1271,6 +1287,7 @@ def _tag_via_llm(
     evidence_path: str | None = None,
     framework_id: int | None = None,
     augment_corpus: bool = True,
+    tool_candidate_cids: set[str] | None = None,
 ) -> tuple[int, int, int]:
     """LLM smart-backstop: hybrid-RAG pre-select, judge accept/abstain, tag.
 
@@ -1320,6 +1337,7 @@ def _tag_via_llm(
         cids=cids,
         control_texts=control_texts,
         framework_id=framework_id,
+        tool_candidate_cids=tool_candidate_cids,
     )
     if not candidate_cids:
         return 0, 0, 0
@@ -1825,19 +1843,29 @@ def tag_evidence(
                 )
                 control_id_hits += 1
 
-    # 4.5. Tool/daemon-name → control mapping (deterministic recall, 2026).
+    # 4.5. Tool/daemon-name → control NOMINATION (2026; revised after A/B).
     #      Terse CTP terminal-output evidence is named for the TOOL it tests
-    #      (xrdp/aide/chrony/...), a near-definitional control signal that
-    #      carries no doc/CCI/control-ID token — so without this it falls to the
-    #      LLM judge and is often abstained on. We scan the filename + title + a
-    #      head slice of the body for whole-word tool tokens and fan the mapped
-    #      controls out to every child CCI. Single-purpose daemons tag at
-    #      source="auto" (0.6 conf); polysemous tokens at "auto_review" so a
-    #      human confirms. This both RECOVERS recall (the file reaches its
-    #      control page) and clears the Tier-5 gate so it skips the judge.
-    #      Runs after the content-shape tiers so a file the xlsx classifier
-    #      already mapped isn't double-walked, but before the Tier-5 gate so its
-    #      tags count toward _TIER5_MIN_EXISTING.
+    #      (xrdp/aide/chrony/...), a near-definitional control SIGNAL that carries
+    #      no doc/CCI/control-ID token. An earlier version EMITTED these as
+    #      deterministic tags AND counted them toward the Tier-5 gate — a measured
+    #      A/B showed that was net-WORSE: it suppressed the LLM judge (so the
+    #      judge's content-correct controls were lost) and polysemous tokens
+    #      (ssh/sudo/vault/...) sprayed a fixed cluster that REPLACED correct
+    #      tags. A tool name is a HYPOTHESIS, not a fact, so it belongs in the
+    #      judge's candidate set, not the output.
+    #
+    #      New behavior (design E+A):
+    #      * Collect the tool-mapped control IDs here but DO NOT emit and DO NOT
+    #        count toward the gate. They are injected as JUDGE CANDIDATES (so the
+    #        judge confirms/rejects each against the file's actual content) and,
+    #        for SINGLE-PURPOSE tools only, used as a post-judge recall FLOOR when
+    #        the judge accepts nothing (or runs offline).
+    #      * ``tool_candidate_cids`` = every matched tool's controls (judge bias).
+    #      * ``tool_floor_cids`` = controls from UNAMBIGUOUS (single-purpose)
+    #        tools only — the safe set eligible for the deterministic floor.
+    tool_candidate_cids: set[str] = set()
+    tool_floor_cids: set[str] = set()
+    tool_floor_tools: dict[str, set[str]] = {}  # cid -> {single-purpose tools}
     tool_haystack_parts = [
         part for part in (evidence.path, evidence.title) if part
     ]
@@ -1846,46 +1874,15 @@ def tag_evidence(
     tool_haystack = " ".join(tool_haystack_parts).lower()
     if tool_haystack:
         seen_tokens = set(_TOOL_NAME_TOKEN_RE.findall(tool_haystack))
-        matched_tools = [t for t in _TOOL_NAME_TO_CONTROLS if t in seen_tokens]
-        if matched_tools:
-            # Collect (control_ids, ambiguous) per matched tool; a control that
-            # any UNambiguous tool maps to is "auto", else "auto_review".
-            control_source: dict[str, str] = {}
-            control_tools: dict[str, set[str]] = {}
-            for tool in matched_tools:
-                cids, ambiguous = _TOOL_NAME_TO_CONTROLS[tool]
-                src = "auto_review" if ambiguous else "auto"
-                for cid in cids:
-                    control_tools.setdefault(cid, set()).add(tool)
-                    # "auto" wins over "auto_review" if any unambiguous tool maps here.
-                    if control_source.get(cid) != "auto":
-                        control_source[cid] = src
-            by_control_tool: dict[str, list[Objective]] = {}
-            for cid, obj in _objectives_for_control_ids(
-                session,
-                list(control_source.keys()),
-                framework_id=framework_id,
-            ):
-                if obj.id is None:
-                    continue
-                by_control_tool.setdefault(cid, []).append(obj)
-            for cid, objs in by_control_tool.items():
-                tools_label = ", ".join(sorted(control_tools.get(cid, ())))
-                src = control_source.get(cid, "auto_review")
-                for obj in objs:
-                    if obj.id is None:
-                        continue
-                    _add(
-                        obj.id,
-                        relevance=0.7,
-                        confidence=0.6,
-                        source=src,
-                        rationale=(
-                            f"Tool '{tools_label}' detected in evidence "
-                            f"name/output — canonical evidence for {cid.upper()}."
-                        ),
-                    )
-                    tool_name_hits += 1
+        for tool in _TOOL_NAME_TO_CONTROLS:
+            if tool not in seen_tokens:
+                continue
+            cids, ambiguous = _TOOL_NAME_TO_CONTROLS[tool]
+            for cid in cids:
+                tool_candidate_cids.add(cid)
+                if not ambiguous:
+                    tool_floor_cids.add(cid)
+                    tool_floor_tools.setdefault(cid, set()).add(tool)
 
     # 5. Semantic recall backstop (Tier 5, added 2026-06-10). Some real
     #    evidence names no doc number, no CCI, no control ID, and matches no
@@ -1947,6 +1944,7 @@ def tag_evidence(
                     evidence_path=evidence.path,
                     framework_id=framework_id,
                     augment_corpus=augment_corpus,
+                    tool_candidate_cids=tool_candidate_cids or None,
                 )
                 # Instrumentation only — does not alter any verdict. judge_invoked
                 # marks that the gate passed AND a client was present (the doc
@@ -2009,6 +2007,59 @@ def tag_evidence(
                             ),
                         )
                         semantic_hits += 1
+
+    # 4.5-floor (design A). Tool names are nominated as judge candidates above
+    # (design E), NOT emitted blind — so the judge confirms/rejects each against
+    # the file's real content. But a SINGLE-PURPOSE daemon (aide/xrdp/chrony/…)
+    # is near-definitional, and we must not regress the recall win: when the
+    # judge NEVER RAN (offline / gate cleared by other deterministic tiers), a
+    # single-purpose tool's control with NO tag from any tier gets a
+    # low-confidence auto_review FLOOR so the file never silently drops its
+    # canonical control. Gated to UNAMBIGUOUS tools only (tool_floor_cids) —
+    # polysemous tokens never emit, they only ever nominate. Checks the live tag
+    # state (existing objective ids).
+    #
+    # CRITICAL refinement (two SME reviews): floor ONLY when the judge did NOT
+    # actually evaluate the control. A single-purpose tool's control is injected
+    # as a judge candidate (design E), so if the judge RAN (`judge_invoked`),
+    # an untagged control means the judge LOOKED and REJECTED it (< 0.6) — likely
+    # because the file content invalidates the tool (e.g. "xrdp was removed").
+    # Overriding an active judge rejection with a blind floor would reintroduce
+    # the very false-positive spray we just engineered away. So the floor is a
+    # strict UPTIME fallback: it fires only when `not judge_invoked` (client
+    # offline, or the gate was cleared by other deterministic tiers so the judge
+    # never ran) — never to second-guess a judge that did its job.
+    if tool_floor_cids and not judge_invoked:
+        # Resolve the single-purpose tools' controls to objectives. A control is
+        # considered ALREADY-COVERED if ANY of its objectives is in ``existing``
+        # (tagged by any tier); only controls with ZERO existing tags get the
+        # floor. Group objectives by control first so the any-objective-tagged
+        # check is per-control, not per-objective.
+        floor_objs: dict[str, list[Objective]] = {}
+        for cid, obj in _objectives_for_control_ids(
+            session, sorted(tool_floor_cids), framework_id=framework_id
+        ):
+            if obj.id is not None:
+                floor_objs.setdefault(cid, []).append(obj)
+        for cid, objs in floor_objs.items():
+            if any(o.id in existing for o in objs):
+                continue  # judge or another tier already covered this control
+            tools_label = ", ".join(sorted(tool_floor_tools.get(cid, ())))
+            for obj in objs:
+                if obj.id is None or obj.id in existing:
+                    continue
+                _add(
+                    obj.id,
+                    relevance=0.6,
+                    confidence=_TIER5_CONFIDENCE,
+                    source="auto_review",
+                    rationale=(
+                        f"Single-purpose tool '{tools_label}' detected and the "
+                        f"judge added no tag for {cid.upper()} — emitted as a "
+                        "recall floor (review)."
+                    ),
+                )
+                tool_name_hits += 1
 
     # Invalidate any stale Assessment rows whose CCI just gained a tag —
     # without this, rule_no_evidence verdicts written before this artifact

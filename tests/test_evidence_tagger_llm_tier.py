@@ -162,7 +162,7 @@ class _StubJudge:
         return self.scores.get(cid, 0.0), f"reason-{cid}", None
 
 
-def _run(client, specs):
+def _run(client, specs, *, tool_candidate_cids=None):
     tags, add = _recorder()
     result = _tag_via_llm(
         _DISJOINT_ARTIFACT,
@@ -171,8 +171,49 @@ def _run(client, specs):
         all_by_control=_controls(specs),
         artifact_title="stub artifact",
         add=add,
+        tool_candidate_cids=tool_candidate_cids,
     )
     return result, tags
+
+
+# ---------------------------------------------------------------------------
+# Design-E: tool-name candidate INJECTION (tool nominates, judge confirms)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_candidate_injected_and_judged_then_tagged_when_accepted():
+    """A tool-nominated control reaches the judge and tags when the judge accepts.
+
+    _DISJOINT_ARTIFACT shares no tokens with any control text, so no RAG lane
+    surfaces a candidate on its own. Passing the control via tool_candidate_cids
+    must FORCE it in front of the judge (design E); a judge accept (>=0.6) then
+    tags it source="llm" — proving the tool map nominates while the judge gates
+    precision (NOT a blind tool emit).
+    """
+    client = _StubJudge(scores={"ac-17": 0.92})
+    (hits, attempted, errored), tags = _run(
+        client,
+        [("ac-17", "remote access control unrelated zzz")],
+        tool_candidate_cids={"ac-17"},
+    )
+    assert "AC-17" in client.calls, "injected tool control was never judged"
+    assert (hits, attempted, errored) == (1, 1, 0)
+    assert len(tags) == 1 and tags[0]["source"] == "llm", (
+        "tool-nominated + judge-accepted control tags as llm, not a blind tool emit"
+    )
+
+
+def test_tool_candidate_injected_but_judge_rejects_emits_nothing():
+    """If the judge rejects the tool-nominated control, NO tag (precision)."""
+    client = _StubJudge(scores={"ac-17": 0.10})  # judge says not relevant
+    (hits, attempted, errored), tags = _run(
+        client,
+        [("ac-17", "remote access control unrelated zzz")],
+        tool_candidate_cids={"ac-17"},
+    )
+    assert "AC-17" in client.calls, "injected control should still be judged"
+    assert (hits, attempted, errored) == (0, 1, 0)
+    assert tags == [], "judge-rejected tool nomination must NOT tag"
 
 
 # ---------------------------------------------------------------------------
