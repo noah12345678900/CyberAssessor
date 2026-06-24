@@ -1,0 +1,155 @@
+# Tool/daemon-name -> NIST 800-53 control map (deterministic recall floor).
+#
+# A terse CTP terminal-output evidence file is named for the TOOL it tests
+# (CTP-013_clam_av_step8.txt). The tool name is a near-definitional control
+# SIGNAL that carries no doc/CCI/control-ID token, so the LLM judge often
+# abstains on it. This map FLOORS a located (non-affirming) tag so the artifact
+# is never silently dropped.
+#
+# Schema:  <tool-token>: {controls: [<cid>, ...], ambiguous: <bool>}
+#   ambiguous=false -> single-purpose daemon; emits the deterministic floor.
+#   ambiguous=true  -> polysemous token (ssh/sudo/vault); JUDGE CANDIDATE ONLY,
+#                      never a blind floor (the judge must confirm).
+#
+# SCALABILITY: this file is the DEFAULT pack (DoD RHEL/PaaS toolchain). A
+# per-program override at  ~/.cybersecurity-assessor/evidence/tool_control_map.yaml
+# is merged over this at load time, so a customer adds Windows/cloud tools as
+# CONFIG, not a code change. control ids are catalog form (lowercase, ac-17,
+# si-3, cm-7.5). Cross-family mappings are intentional (aide -> si-7 file
+# integrity even when filed under CM) and are NOT folder-gated.
+
+aide:
+  controls:
+  - si-7
+  - cm-3
+  ambiguous: false
+tripwire:
+  controls:
+  - si-7
+  - cm-3
+  ambiguous: false
+chrony:
+  controls:
+  - au-8
+  ambiguous: false
+chronyd:
+  controls:
+  - au-8
+  ambiguous: false
+ntpd:
+  controls:
+  - au-8
+  ambiguous: false
+clamav:
+  controls:
+  - si-3
+  ambiguous: false
+clam_av:
+  controls:
+  - si-3
+  ambiguous: false
+clamscan:
+  controls:
+  - si-3
+  ambiguous: false
+freshclam:
+  controls:
+  - si-3
+  ambiguous: false
+auditd:
+  controls:
+  - au-2
+  - au-12
+  ambiguous: false
+rsyslog:
+  controls:
+  - au-4
+  - au-9
+  ambiguous: false
+selinux:
+  controls:
+  - ac-3
+  - ac-6
+  ambiguous: false
+firewalld:
+  controls:
+  - sc-7
+  ambiguous: false
+firewall:
+  controls:
+  - sc-7
+  ambiguous: false
+nftables:
+  controls:
+  - sc-7
+  ambiguous: false
+iptables:
+  controls:
+  - sc-7
+  ambiguous: false
+xrdp:
+  controls:
+  - ac-17
+  ambiguous: false
+xvnc:
+  controls:
+  - ac-17
+  ambiguous: false
+faillock:
+  controls:
+  - ac-7
+  ambiguous: false
+pam_faillock:
+  controls:
+  - ac-7
+  ambiguous: false
+pwquality:
+  controls:
+  - ia-5
+  ambiguous: false
+fapolicyd:
+  controls:
+  - cm-7.5
+  ambiguous: false
+usbguard:
+  controls:
+  - ac-19
+  - mp-7
+  ambiguous: false
+sssd:
+  controls:
+  - ia-2
+  - ia-5
+  ambiguous: false
+fips:
+  controls:
+  - sc-13
+  ambiguous: true
+vault:
+  controls:
+  - ia-5
+  - sc-12
+  - sc-28
+  ambiguous: true
+sudo:
+  controls:
+  - ac-6
+  ambiguous: true
+sudoers:
+  controls:
+  - ac-6
+  ambiguous: true
+ssh:
+  controls:
+  - ac-17
+  - ia-5
+  ambiguous: true
+sshd:
+  controls:
+  - ac-17
+  - ia-5
+  ambiguous: true
+grub:
+  controls:
+  - ac-3
+  ambiguous: true
