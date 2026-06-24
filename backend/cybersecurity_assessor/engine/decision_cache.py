@@ -185,9 +185,16 @@ from .crm_context import CrmContext
 #       OCR. Both change which evidence reaches which control — i.e. the tagged
 #       evidence bundle a cached assessment was computed against — so every
 #       cached decision must re-run against the new tag set.
-# PROMPT_SHA already shifts from the file edits; the KERNEL_VERSION bump makes
-# the cache invalidation explicit so every cached CCI re-runs under both.
-KERNEL_VERSION = "0.13.0"
+# 0.14.0 (2026-06-24): Tier-5 escalation re-judge + modality-routed judge rubric.
+#       A clean Haiku all-abstain on a substantive, non-command-error body now
+#       re-judges once with the Opus escalation model, and the judge rubric gained
+#       a terminal-vs-image routing branch (terminal failure-to-execute scores
+#       0.0; image verification-step failure does not negate a deployed
+#       mechanism). Both change which evidence reaches which control, so every
+#       cached decision must re-run against the new tag set. The rubric lives in
+#       tagger.py (NOT assess_control.md), so PROMPT_SHA does NOT capture it —
+#       the KERNEL_VERSION bump is the ONLY thing forcing re-run here.
+KERNEL_VERSION = "0.14.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to
