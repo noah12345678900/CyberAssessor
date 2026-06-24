@@ -949,6 +949,22 @@ def _too_few_lines_to_escalate(text: str) -> bool:
     return len(nonblank) < _ESCALATION_MIN_LINES
 
 
+# Tag source for a LOCATED-but-NON-AFFIRMING artifact (2026-06-24). Distinct
+# from "auto_review" on purpose (separate review semantics): auto_review means
+# "the tagger made an UNCERTAIN inference — a human should confirm RELEVANCE";
+# located_nonaffirming means "the artifact is CERTAINLY about this control (a
+# single-purpose tool named it) but it does NOT affirm — a command that failed
+# to execute, or a judge+escalation that examined it and declined". Tagging =
+# relevance (aboutness); the verdict layer decides sufficiency. We tag so the
+# artifact is LOCATED and citable under its control (never dropped/vanished),
+# but this source must NEVER be counted as compliant/affirming evidence
+# downstream (SAR renders it as examined-not-affirming; the LLM rubric scores it
+# 0.0). Relevance is kept TRUE-TO-ABOUTNESS (a single-purpose match is strong),
+# NOT artificially lowered — a low float would let the token-budget ranker evict
+# the artifact before the judge sees it, recreating the vanish bug.
+_SOURCE_LOCATED_NONAFFIRMING = "located_nonaffirming"
+
+
 def _tier3_relevance_scores(
     artifact_text: str, control_texts: list[str]
 ) -> list[float]:
@@ -2204,7 +2220,7 @@ def tag_evidence(
     # strict UPTIME fallback: it fires only when `not judge_invoked` (client
     # offline, or the gate was cleared by other deterministic tiers so the judge
     # never ran) — never to second-guess a judge that did its job.
-    if tool_floor_cids and not judge_invoked:
+    if tool_floor_cids:
         # Resolve the single-purpose tools' controls to objectives. A control is
         # considered ALREADY-COVERED if ANY of its objectives is in ``existing``
         # (tagged by any tier); only controls with ZERO existing tags get the
@@ -2216,10 +2232,50 @@ def tag_evidence(
         ):
             if obj.id is not None:
                 floor_objs.setdefault(cid, []).append(obj)
+        # Two DISPOSITIONS for a single-purpose tool's untagged control, decided
+        # by whether the judge actually evaluated it (the LOCATE-don't-drop fix,
+        # 2026-06-24):
+        #
+        #   * judge did NOT run (offline / gate cleared by other deterministic
+        #     tiers) → we never got an opinion, so this is an UNCERTAIN recall
+        #     floor: source="auto_review", a reviewer should confirm relevance.
+        #     (Unchanged historical behavior — keeps the E+A offline-floor tests
+        #     green.)
+        #
+        #   * judge DID run and left the control untagged → the judge (and, on a
+        #     clean abstain, the Opus escalation) LOOKED and DECLINED, OR the
+        #     escalation was suppressed because the body is a command that failed
+        #     to execute. Either way the artifact is CERTAINLY about this control
+        #     (a single-purpose tool named it) but does NOT affirm. We must NOT
+        #     drop it (the vanish bug the user flagged): we LOCATE it as
+        #     source="located_nonaffirming" so it is citable under the control
+        #     and reaches the verdict layer, where the LLM reads the failed
+        #     snippet and lands Non-Compliant/needs_review WITH the artifact
+        #     cited as examined-but-insufficient. This is NOT the old blind
+        #     spray: it never counts as compliant/affirming evidence (distinct
+        #     source, rubric scores it 0.0), and relevance stays true-to-
+        #     aboutness so the ranker keeps it in front of the judge.
+        if not judge_invoked:
+            floor_source = "auto_review"
+        else:
+            floor_source = _SOURCE_LOCATED_NONAFFIRMING
         for cid, objs in floor_objs.items():
             if any(o.id in existing for o in objs):
                 continue  # judge or another tier already covered this control
             tools_label = ", ".join(sorted(tool_floor_tools.get(cid, ())))
+            if floor_source == _SOURCE_LOCATED_NONAFFIRMING:
+                rationale = (
+                    f"Single-purpose tool '{tools_label}' locates this artifact "
+                    f"to {cid.upper()}, but the judge evaluated it and did not "
+                    "affirm (failed/empty command or insufficient output) — "
+                    "LOCATED, NON-AFFIRMING (not compliant evidence; review)."
+                )
+            else:
+                rationale = (
+                    f"Single-purpose tool '{tools_label}' detected and the "
+                    f"judge did not run for {cid.upper()} — emitted as a "
+                    "recall floor (review)."
+                )
             for obj in objs:
                 if obj.id is None or obj.id in existing:
                     continue
@@ -2227,12 +2283,8 @@ def tag_evidence(
                     obj.id,
                     relevance=0.6,
                     confidence=_TIER5_CONFIDENCE,
-                    source="auto_review",
-                    rationale=(
-                        f"Single-purpose tool '{tools_label}' detected and the "
-                        f"judge added no tag for {cid.upper()} — emitted as a "
-                        "recall floor (review)."
-                    ),
+                    source=floor_source,
+                    rationale=rationale,
                 )
                 tool_name_hits += 1
 

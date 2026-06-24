@@ -194,7 +194,17 @@ from .crm_context import CrmContext
 #       cached decision must re-run against the new tag set. The rubric lives in
 #       tagger.py (NOT assess_control.md), so PROMPT_SHA does NOT capture it —
 #       the KERNEL_VERSION bump is the ONLY thing forcing re-run here.
-KERNEL_VERSION = "0.14.0"
+# 0.15.0 (2026-06-24): LOCATE-don't-drop. A failed/empty-but-tool-named artifact
+#       is no longer dropped to zero tags; the single-purpose floor now emits a
+#       distinct source="located_nonaffirming" tag when the judge ran and
+#       declined (or a command-error suppressed escalation), at true-to-aboutness
+#       relevance. The artifact is LOCATED/citable under its control and reaches
+#       the verdict layer (where the rubric scores the failure 0.0 → NC/needs_
+#       review with the artifact cited as examined-but-insufficient) but is NEVER
+#       counted as affirming/compliant evidence. This changes the tag SET for
+#       affected controls, so cached decisions must re-run. Tagger-side, not
+#       PROMPT_SHA-visible — the bump is the re-run trigger.
+KERNEL_VERSION = "0.15.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to
