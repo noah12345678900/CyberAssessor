@@ -11,7 +11,8 @@ Covers:
     cluster objective AND share a CCI with the cluster.
   - Re-run semantics: DRAFT POAMs rewrite when narrative changes; locked or
     non-DRAFT rows are left alone.
-  - 4000-char soft cap with priority-ordered section trimming.
+  - Near-Excel-limit (32000) cap with priority-ordered section trimming as a
+    last-resort safety net (tests shrink the cap via monkeypatch to exercise it).
 """
 
 from __future__ import annotations
