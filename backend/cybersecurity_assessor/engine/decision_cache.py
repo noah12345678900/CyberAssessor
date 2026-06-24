@@ -204,7 +204,15 @@ from .crm_context import CrmContext
 #       counted as affirming/compliant evidence. This changes the tag SET for
 #       affected controls, so cached decisions must re-run. Tagger-side, not
 #       PROMPT_SHA-visible — the bump is the re-run trigger.
-KERNEL_VERSION = "0.15.0"
+# 0.16.0 (2026-06-24): tool-name tier scalability + tokenization fix. The
+#       tool->control map moved from a hardcoded dict to config-driven YAML
+#       (bundled default + per-program override); the filename tokenizer was
+#       fixed (underscore was a word char, so CTP-013_clam_av_step8 never matched
+#       key 'clamav'); and a broken folder x tool family-agreement guard was
+#       removed (it suppressed cross-family floors like aide->SI-7 under CM).
+#       Terse tool-named CTP files now floor their specific control -> tag set
+#       changes -> cached decisions must re-run.
+KERNEL_VERSION = "0.16.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to

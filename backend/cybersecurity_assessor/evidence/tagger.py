@@ -210,49 +210,112 @@ _DIAGRAM_BOUNDARY_CONTROLS: tuple[str, ...] = ("sc-7", "ca-3", "ac-4", "pl-8")
 # silent proof. Fan-out to every child CCI mirrors Tier 4.
 #
 # Each value is (control_ids, ambiguous). ``ambiguous=True`` → auto_review.
-_TOOL_NAME_TO_CONTROLS: dict[str, tuple[tuple[str, ...], bool]] = {
-    # --- single-purpose daemons (high precision → auto) ---
-    "aide": (("si-7", "cm-3"), False),
-    "tripwire": (("si-7", "cm-3"), False),
-    "chrony": (("au-8",), False),
-    "chronyd": (("au-8",), False),
-    "ntpd": (("au-8",), False),
-    "clamav": (("si-3",), False),
-    "clamscan": (("si-3",), False),
-    "freshclam": (("si-3",), False),
-    "auditd": (("au-2", "au-12"), False),
-    "rsyslog": (("au-4", "au-9"), False),
-    "selinux": (("ac-3", "ac-6"), False),
-    "firewalld": (("sc-7",), False),
-    "nftables": (("sc-7",), False),
-    "iptables": (("sc-7",), False),
-    "xrdp": (("ac-17",), False),
-    "xvnc": (("ac-17",), False),
-    "faillock": (("ac-7",), False),
-    "pam_faillock": (("ac-7",), False),
-    "pwquality": (("ia-5",), False),
-    "fapolicyd": (("cm-7.5",), False),
-    "usbguard": (("ac-19", "mp-7"), False),
-    "sssd": (("ia-2", "ia-5"), False),
-    # --- polysemous / multi-role (→ auto_review, human confirms) ---
-    # "fips" appears constantly in compliance prose ("FIPS 140-2 validated...")
-    # unrelated to a specific SC-13 crypto-module config, so it must NOT
-    # auto-tag — route to human review.
-    "fips": (("sc-13",), True),
-    "vault": (("ia-5", "sc-12", "sc-28"), True),
-    "sudo": (("ac-6",), True),
-    "sudoers": (("ac-6",), True),
-    "ssh": (("ac-17", "ia-5"), True),
-    "sshd": (("ac-17", "ia-5"), True),
-    "grub": (("ac-3",), True),
-}
+#
+# SCALABILITY (2026-06-24): the map is no longer a hardcoded Python dict — it is
+# loaded from ``evidence/_bundled/tool_control_map.yaml`` (the DoD RHEL/PaaS
+# default pack) merged with an optional per-program override at
+# ``~/.cybersecurity-assessor/evidence/tool_control_map.yaml``. A customer with a
+# different toolchain (Windows: bitlocker/applocker/defender; cloud: kms/guardduty)
+# adds tools as CONFIG, not a code change + rebuild. Mirrors the bundled-default
+# + user-override pattern in catalogs/fedramp_profile_loader.py.
+_TOOL_MAP_FILENAME = "tool_control_map.yaml"
 
-# Whole-word matcher built once from the table's keys. Word boundaries on both
-# sides so "ssh" matches "ssh"/"sshd"(separately keyed) but not "flashing"; "."
-# is escaped implicitly (no dots in keys). Sorted longest-first is irrelevant
-# for a set-membership scan but we tokenize the haystack instead of regex-OR for
-# clarity + speed on short bodies.
-_TOOL_NAME_TOKEN_RE = re.compile(r"[a-z_][a-z0-9_]{2,}")
+
+def _validate_tool_map_entry(tool: str, spec: Any) -> tuple[tuple[str, ...], bool] | None:
+    """Coerce + validate one YAML map entry to ``(controls_tuple, ambiguous)``.
+
+    Returns None (and logs) on a malformed entry so one bad override row can't
+    wedge the whole tagger — the rest of the map still loads. Guards the
+    load-time risk the reviewers flagged (a customer hand-edits the override with
+    a bad shape or a too-broad tool).
+    """
+    if not isinstance(spec, dict):
+        log.warning("tool_control_map: entry %r is not a mapping; skipped", tool)
+        return None
+    controls = spec.get("controls")
+    if not isinstance(controls, (list, tuple)) or not controls:
+        log.warning("tool_control_map: %r has no 'controls' list; skipped", tool)
+        return None
+    cids: list[str] = []
+    for c in controls:
+        if not isinstance(c, str) or not c.strip():
+            log.warning("tool_control_map: %r has a non-string control; skipped row", tool)
+            continue
+        cids.append(c.strip().lower())
+    if not cids:
+        return None
+    ambiguous = bool(spec.get("ambiguous", False))
+    return (tuple(cids), ambiguous)
+
+
+def _load_tool_name_map() -> dict[str, tuple[tuple[str, ...], bool]]:
+    """Load the tool→control map: bundled default pack + user override merged.
+
+    Bundled pack is the floor (offline-first). The user override
+    (``config_dir()/evidence/tool_control_map.yaml``) is merged ON TOP so a
+    program can add/replace tools without a rebuild. Never raises — a missing or
+    malformed file degrades to whatever loaded (worst case: empty map → the
+    tool-name tier is simply inert, other tiers still run).
+    """
+    import yaml  # local import: keep module import cheap / yaml optional
+
+    merged: dict[str, tuple[tuple[str, ...], bool]] = {}
+    from pathlib import Path
+
+    paths: list[Path] = [Path(__file__).parent / "_bundled" / _TOOL_MAP_FILENAME]
+    try:
+        from ..config import config_dir
+
+        paths.append(config_dir() / "evidence" / _TOOL_MAP_FILENAME)
+    except Exception:  # pragma: no cover - config dir resolution must never abort
+        pass
+
+    for p in paths:
+        try:
+            if not p.exists():
+                continue
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 - a bad file must not wedge the tagger
+            log.warning("tool_control_map: failed to read/parse %s; skipping", p, exc_info=True)
+            continue
+        if not isinstance(raw, dict):
+            log.warning("tool_control_map: %s is not a mapping; skipped", p)
+            continue
+        for tool, spec in raw.items():
+            entry = _validate_tool_map_entry(str(tool).strip().lower(), spec)
+            if entry is not None:
+                merged[str(tool).strip().lower()] = entry  # later file overrides
+    if not merged:
+        log.warning(
+            "tool_control_map: no entries loaded (bundled pack missing?) — "
+            "tool-name tier inert this run"
+        )
+    return merged
+
+
+_TOOL_NAME_TO_CONTROLS: dict[str, tuple[tuple[str, ...], bool]] = _load_tool_name_map()
+
+# Whole-tool matcher built once from the table's keys (2026-06-24 fix). The old
+# approach tokenized the haystack with ``[a-z_][a-z0-9_]{2,}`` and tested
+# set-membership — but ``_`` is a word char in that class, so a CTP filename like
+# ``CTP-013_clam_av_step8`` tokenized to ``_clam_av_step8`` and NEVER matched the
+# bare key ``clamav``/``clam_av``. EVERY underscore-joined CTP filename silently
+# failed, starving the tool-name floor of input. Fix: match each key with an
+# explicit boundary regex where ``_`` and ``-`` (and start/end) count as
+# boundaries, so ``clam_av`` matches inside ``ctp-013_clam_av_step8`` while
+# ``ssh`` still does NOT match inside ``flashing``. Keys are alternated
+# longest-first so ``clam_av`` is tried before any shorter overlap. Built once.
+_TOOL_BOUNDARY = r"(?<![a-z0-9])"  # left edge: not preceded by an alnum
+_TOOL_BOUNDARY_R = r"(?![a-z0-9])"  # right edge: not followed by an alnum
+_TOOL_NAME_MATCH_RE = re.compile(
+    _TOOL_BOUNDARY
+    + r"(?:"
+    + "|".join(
+        re.escape(k) for k in sorted(_TOOL_NAME_TO_CONTROLS, key=len, reverse=True)
+    )
+    + r")"
+    + _TOOL_BOUNDARY_R
+)
 
 # Only the filename/title + this many leading chars of the body are scanned, so
 # a tool name buried deep in a long unrelated log doesn't mis-tag the whole
@@ -1412,15 +1475,25 @@ def _tag_via_llm(
     framework_id: int | None = None,
     augment_corpus: bool = True,
     tool_candidate_cids: set[str] | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, set[str]]:
     """LLM smart-backstop: hybrid-RAG pre-select, judge accept/abstain, tag.
 
-    Returns ``(llm_hits, attempted, errored)`` where ``attempted`` is the
-    number of candidate controls actually sent to the judge and ``errored`` is
-    how many of those raised an API/network error. The caller uses
-    ``attempted > 0 and errored == attempted`` (every call failed — dead key,
-    network down, not genuine abstention) to decide whether to fall back to the
-    deterministic TF-IDF Tier 5. A partial success is trusted as-is.
+    Returns ``(llm_hits, attempted, errored, errored_cids)`` where ``attempted``
+    is the number of candidate controls actually sent to the judge, ``errored``
+    is how many of those STAYED stuck (raised an API/network error or failed to
+    parse) AFTER one in-loop retry, and ``errored_cids`` is the set of those
+    stuck control ids. The caller uses ``attempted > 0 and errored == attempted``
+    (every call failed — dead key, network down, not genuine abstention) to
+    decide whether to fall back to the deterministic TF-IDF Tier 5, and emits a
+    LOCATED-NON-AFFIRMING tag for each ``errored_cids`` member that no other tier
+    (or the escalation pass) covered — so a 429/timeout NEVER silently drops a
+    control (the recall hole that produced real 3PAO-visible misses).
+
+    Error resilience (2026-06-24): a candidate whose judge call errors gets ONE
+    bounded in-loop retry before being declared stuck. The rate-limit cooldown
+    may have elapsed by the time Phase 2 runs (all futures already drained), so a
+    fresh call often succeeds. A candidate that RECOVERS on retry is NOT counted
+    errored.
 
     ``add`` is the ``_add`` closure from :func:`tag_evidence` — the sole
     EvidenceTag construction site — so source/framework stamping and the
@@ -2005,11 +2078,17 @@ def tag_evidence(
     if text and text.strip():
         tool_haystack_parts.append(text[:_TOOL_NAME_BODY_HEAD_CHARS])
     tool_haystack = " ".join(tool_haystack_parts).lower()
+    # NB: an earlier draft added a "folder×tool family-agreement guard" (only
+    # floor a control whose family matches the NN.XX folder). It was REMOVED:
+    # ~½ of single-purpose tools legitimately map CROSS-family (aide in 05.CM →
+    # SI-7 file integrity; usbguard → AC-19+MP-7), so a folder==family check
+    # silently SUPPRESSED correct floors. A daemon's control identity is
+    # intrinsic to the tool, not the folder it was filed under. Precision is
+    # already protected because the floor disposition is non-affirming
+    # (located_nonaffirming / auto_review), never counted compliant.
     if tool_haystack:
-        seen_tokens = set(_TOOL_NAME_TOKEN_RE.findall(tool_haystack))
-        for tool in _TOOL_NAME_TO_CONTROLS:
-            if tool not in seen_tokens:
-                continue
+        matched_tools = set(_TOOL_NAME_MATCH_RE.findall(tool_haystack))
+        for tool in matched_tools:
             cids, ambiguous = _TOOL_NAME_TO_CONTROLS[tool]
             for cid in cids:
                 tool_candidate_cids_derived.add(cid)
