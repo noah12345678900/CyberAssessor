@@ -386,30 +386,48 @@ def _is_stig_xlsx(ev: Evidence) -> bool:
     return suffix in _STIG_XLSX_SUFFIXES
 
 
+# STIG benchmark id looks like ``RHEL-08-010030`` / ``CNTR-R2-000010`` /
+# ``FFOX-00-000001`` / ``DTBC-0001`` — a product/release token followed by a
+# per-rule number. The CHECKLIST unit is the benchmark (the product+release),
+# NOT the individual rule, so we strip the trailing rule number to a stable
+# benchmark key: RHEL-08-010030 -> RHEL-08 ; DTBC-0001 -> DTBC.
+_STIG_BENCHMARK_RE = re.compile(r"^([A-Za-z0-9]+(?:-[A-Za-z0-9]{1,3})?)")
+
+
+def _benchmark_key(rule_version: str | None) -> str | None:
+    """Reduce a STIG rule_version to its BENCHMARK key, or None if it isn't a
+    STIG id (e.g. the OSCAP report puts a ``CCI-######`` in this column — that's
+    a control mapping, NOT a benchmark, and must not be counted as one)."""
+    rv = (rule_version or "").strip()
+    if not rv or rv.upper().startswith("CCI-"):
+        return None
+    # DTBC-0001 / DTBC-0045 are all the Chrome benchmark -> collapse to DTBC.
+    rv = re.sub(r"^(DTBC)-\d+$", r"\1", rv)
+    m = _STIG_BENCHMARK_RE.match(rv)
+    return m.group(1) if m else rv
+
+
 def _xlsx_checklist_count(
     session: Session, xlsx_evidence_ids: list[int]
 ) -> int:
     """Count distinct (benchmark × host) checklists inside STIG-report xlsx files.
 
     A DISA STIG-report ``.xlsx`` is ONE Evidence row but bundles MANY checklists:
-    the extractor parses one sheet PER BENCHMARK and one result column PER HOST,
-    emitting a :class:`StigFinding` per (rule × host) where ``rule_version`` is
-    the benchmark/STIG id and ``comments`` carries ``host=<hn>`` (see
-    ``extractors/xlsx.py``). Counting the *files* (the old ``+= 1`` per row) badly
-    understated coverage — a single SCAP/OSCAP export can carry dozens of
-    benchmark×host checklists. We count the distinct (rule_version, host) pairs
-    its findings actually establish, which is the SCAP-correct "checklist" unit
-    and lines up with how ``.ckl``/XCCDF (inherently one-benchmark-one-host) are
-    already counted one-apiece.
+    one BENCHMARK (RHEL-08, Firefox, Chrome, RKE2…) assessed on each HOST. The
+    extractor emits a :class:`StigFinding` per (rule × host) with the STIG id in
+    ``rule_version`` and ``host=<hn>`` in ``comments``. The CHECKLIST unit is
+    (benchmark × host) — NOT per-rule and NOT per-file:
+      * counting files badly understated (a SCAP export = dozens of checklists);
+      * counting raw (rule_version, host) badly OVERstated — rule_version is the
+        per-rule id (RHEL-08-010030 vs -010040 are the SAME benchmark) and the
+        OSCAP report even puts CCI-###### in that column. So we reduce
+        rule_version to its benchmark key (``_benchmark_key``) and skip CCI rows.
 
-    Falls back to one-per-file for any xlsx that produced NO parseable findings
-    (a spreadsheet we classified as STIG-report by extension but couldn't parse
-    into benchmark×host rows) so the count never drops BELOW the file count.
+    Falls back to one-per-file for any xlsx that produced NO parseable benchmark
+    findings, so the count never drops BELOW the file count.
     """
     if not xlsx_evidence_ids:
         return 0
-    # (benchmark, host) pairs across all the xlsx files, plus which files yielded
-    # at least one parseable finding (so the rest get the 1-per-file fallback).
     pairs: set[tuple[str, str]] = set()
     files_with_findings: set[int] = set()
     for batch in chunked(xlsx_evidence_ids):
@@ -421,16 +439,17 @@ def _xlsx_checklist_count(
             ).where(StigFinding.evidence_id.in_(batch))  # type: ignore[attr-defined]
         ).all()
         for eid, rule_version, comments in rows:
+            benchmark = _benchmark_key(rule_version)
+            if benchmark is None:
+                continue  # CCI row / non-STIG — not a benchmark checklist
             files_with_findings.add(eid)
-            benchmark = (rule_version or "").strip() or "UNKNOWN_BENCHMARK"
             host = ""
             if comments and comments.startswith("host="):
                 host = comments[len("host="):].strip()
             pairs.add((benchmark, host))
     parsed_count = len(pairs)
-    # Files we tagged as STIG-xlsx but that produced zero findings still count
-    # once each (the artifact exists and was processed, just not parseable into
-    # benchmark×host rows).
+    # Files we tagged as STIG-xlsx but that produced no parseable benchmark
+    # finding still count once each (processed, just not parseable).
     unparsed_files = len(set(xlsx_evidence_ids) - files_with_findings)
     return parsed_count + unparsed_files
 
