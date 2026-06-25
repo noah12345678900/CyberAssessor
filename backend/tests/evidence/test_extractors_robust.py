@@ -521,3 +521,67 @@ def test_nessus_info_severity_marked_not_a_finding():
     by_id = {f.rule_id: f for f in findings}
     assert by_id["Nessus-4001"].status == FindingStatus.NOT_A_FINDING
     assert by_id["Nessus-4002"].status == FindingStatus.OPEN
+
+
+# ---------------------------------------------------------------------------
+# DISA STIG-report .xlsx — benchmark recovery (Manual real id vs OSCAP CCI col)
+# ---------------------------------------------------------------------------
+
+
+def _stig_report_xlsx(sheet_name: str, stig_id_value: str) -> bytes:
+    """Build a one-sheet DISA STIG-report workbook in memory.
+
+    Header: Vuln ID | Rule ID | Stig ID | Title | Severity | <host columns...>.
+    One data row per call, status "Open" for the single host so it confirms.
+    ``stig_id_value`` is what lands in the Stig ID column — a real STIG id for
+    the Manual report, a CCI token for the OSCAP report.
+    """
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    ws.append(
+        ["Vuln ID", "Rule ID", "Stig ID", "Title", "Severity", "paas-vdi-01"]
+    )
+    ws.append(
+        ["V-230224", "SV-230224r_rule", stig_id_value, "do a thing", "high", "Open"]
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_stig_report_xlsx_manual_keeps_real_stig_id():
+    """Manual report carries a real STIG id → rule_version is that id, untouched."""
+    from cybersecurity_assessor.evidence.extractors.xlsx import extract_xlsx
+
+    data = _stig_report_xlsx("RHEL8", "RHEL-08-010030")
+    doc = extract_xlsx(io.BytesIO(data), "STIG_Manual_report.xlsx")
+    findings = (doc.metadata or {}).get("_stig_findings") or []
+    assert len(findings) == 1
+    # Real STIG id preserved verbatim — the sheet-name fallback must NOT fire.
+    assert findings[0].rule_version == "RHEL-08-010030"
+    assert findings[0].comments == "host=paas-vdi-01"
+
+
+def test_stig_report_xlsx_oscap_falls_back_to_sheet_benchmark():
+    """OSCAP report puts a CCI in the Stig ID column → recover benchmark from sheet name.
+
+    Without the fallback, rule_version would be ``CCI-000366`` and
+    ``_benchmark_key`` returns None for every row, collapsing the checklist
+    count to a useless 1-per-file. The sheet name (RHEL8) is the benchmark.
+    """
+    from cybersecurity_assessor.evidence.asset_crosscheck import _benchmark_key
+    from cybersecurity_assessor.evidence.extractors.xlsx import extract_xlsx
+
+    data = _stig_report_xlsx("RHEL8", "CCI-000366")
+    doc = extract_xlsx(io.BytesIO(data), "STIG_OSCAP_report.xlsx")
+    findings = (doc.metadata or {}).get("_stig_findings") or []
+    assert len(findings) == 1
+    # Stig ID column was a CCI → rule_version stamped with the sheet benchmark.
+    assert findings[0].rule_version == "RHEL8"
+    # And the benchmark is now recoverable (not None), so the count won't collapse.
+    assert _benchmark_key(findings[0].rule_version) == "RHEL8"
+    # The CCI itself is not lost — it remains the rule_id.
+    assert findings[0].rule_id == "SV-230224r_rule"
