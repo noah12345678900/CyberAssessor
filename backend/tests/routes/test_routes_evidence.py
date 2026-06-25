@@ -24,7 +24,7 @@ from typing import Iterator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
@@ -660,3 +660,84 @@ def test_retag_all_does_not_collide_with_id_path(env) -> None:
     # If the int-path route had captured "retag", FastAPI would 422 on int
     # coercion. A 200 proves the literal route wins.
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Manual evidence→CCI tagging (source="manual")
+# ---------------------------------------------------------------------------
+
+
+def test_add_manual_tag_creates_manual_source_tag(env) -> None:
+    """POST manual-tag attaches the untagged artifact to a CCI as source=manual."""
+    tc = env["tc"]
+    r = tc.post(
+        f"/api/evidence/{env['ev_untagged']}/manual-tag",
+        json={"objective_id": env["obj_b"], "rationale": "reviewer says relevant"},
+    )
+    assert r.status_code == 200, r.text
+    with _new_session(env) as s:
+        tags = s.exec(
+            select(EvidenceTag)
+            .where(EvidenceTag.evidence_id == env["ev_untagged"])
+            .where(EvidenceTag.objective_id == env["obj_b"])
+        ).all()
+        assert len(tags) == 1
+        assert tags[0].source == "manual"
+        assert tags[0].relevance == 1.0  # human assertion = maximal trust
+        assert "reviewer says relevant" in (tags[0].rationale or "")
+
+
+def test_add_manual_tag_is_idempotent(env) -> None:
+    """Re-posting the same (evidence, CCI) updates rationale, no duplicate row."""
+    tc = env["tc"]
+    base = f"/api/evidence/{env['ev_untagged']}/manual-tag"
+    assert tc.post(base, json={"objective_id": env["obj_b"], "rationale": "v1"}).status_code == 200
+    assert tc.post(base, json={"objective_id": env["obj_b"], "rationale": "v2"}).status_code == 200
+    with _new_session(env) as s:
+        tags = s.exec(
+            select(EvidenceTag)
+            .where(EvidenceTag.evidence_id == env["ev_untagged"])
+            .where(EvidenceTag.objective_id == env["obj_b"])
+            .where(EvidenceTag.source == "manual")
+        ).all()
+        assert len(tags) == 1  # idempotent — one row
+        assert "v2" in (tags[0].rationale or "")
+
+
+def test_remove_manual_tag_deletes_only_manual(env) -> None:
+    """DELETE removes the manual tag but leaves any auto tag on the same pair."""
+    tc = env["tc"]
+    # Seed an AUTO tag on (ev_untagged, obj_b) alongside a manual one.
+    with _new_session(env) as s:
+        s.add(EvidenceTag(evidence_id=env["ev_untagged"], objective_id=env["obj_b"], source="auto"))
+        s.commit()
+    tc.post(
+        f"/api/evidence/{env['ev_untagged']}/manual-tag",
+        json={"objective_id": env["obj_b"]},
+    )
+    r = tc.delete(f"/api/evidence/{env['ev_untagged']}/manual-tag/{env['obj_b']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 1
+    with _new_session(env) as s:
+        remaining = s.exec(
+            select(EvidenceTag)
+            .where(EvidenceTag.evidence_id == env["ev_untagged"])
+            .where(EvidenceTag.objective_id == env["obj_b"])
+        ).all()
+        # The auto tag survives; only the manual one was removed.
+        assert [t.source for t in remaining] == ["auto"]
+
+
+def test_add_manual_tag_404_on_unknown_evidence(env) -> None:
+    tc = env["tc"]
+    r = tc.post("/api/evidence/999999/manual-tag", json={"objective_id": env["obj_b"]})
+    assert r.status_code == 404
+
+
+def test_add_manual_tag_404_on_unknown_objective(env) -> None:
+    tc = env["tc"]
+    r = tc.post(
+        f"/api/evidence/{env['ev_untagged']}/manual-tag",
+        json={"objective_id": 999999},
+    )
+    assert r.status_code == 404

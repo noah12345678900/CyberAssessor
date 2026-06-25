@@ -33,15 +33,18 @@ import { toast } from "@/components/ui/toaster";
 import { humanize } from "@/lib/errors";
 import {
   useApplyToWorkbook,
+  useAddManualTag,
   useAssessmentAudit,
   useAssessObjective,
   useAssessments,
   useBaseline,
   useBaselineControls,
   useControl,
+  useEvidence,
   useEvidenceForObjective,
   useOdpHistory,
   useProgramControlsForControl,
+  useRemoveManualTag,
   useSettings,
   useUpsertAssessment,
   useWorkbooks,
@@ -56,6 +59,7 @@ import {
   type AssessmentDecision,
   type AssessmentImplementation,
   type ComplianceStatus,
+  type EvidenceForObjective,
   type NarrativeClass,
   type Objective,
   type OdpHistoryGroup,
@@ -382,7 +386,11 @@ export function ControlDetail() {
 
         {/* Right column: evidence */}
         <div className="lg:col-span-3">
-          <EvidencePanel objectiveId={objectiveId} workbookId={workbookId} />
+          <EvidencePanel
+            objectiveId={objectiveId}
+            workbookId={workbookId}
+            controlId={id}
+          />
         </div>
       </div>
     </div>
@@ -2230,61 +2238,236 @@ function DecisionTrace({ decision }: { decision: AssessmentDecision }) {
   );
 }
 
+// A single tag carries "manual" provenance if any of its sources is "manual"
+// (the by-objective endpoint collapses multiple tags per artifact and returns
+// the provenance list in `sources`; fall back to the comma-joined `source`).
+function _isManual(e: EvidenceForObjective): boolean {
+  const srcs = e.sources ?? (e.source ? e.source.split(",").map((s) => s.trim()) : []);
+  return srcs.includes("manual");
+}
+
 function EvidencePanel({
   objectiveId,
   workbookId,
+  controlId,
 }: {
   objectiveId?: number;
   workbookId?: number;
+  controlId?: number;
 }) {
   const ev = useEvidenceForObjective(objectiveId, workbookId);
+  const [picking, setPicking] = useState(false);
+  const addTag = useAddManualTag();
+  const removeTag = useRemoveManualTag();
+
   const sorted = useMemo(
     () => [...(ev.data ?? [])].sort((a, b) => b.relevance - a.relevance),
     [ev.data],
   );
+  // Split manual (human-assigned) from auto/llm so the assessor can see at a
+  // glance which evidence a person explicitly attached vs. what the tagger found.
+  const manual = useMemo(() => sorted.filter(_isManual), [sorted]);
+  const auto = useMemo(() => sorted.filter((e) => !_isManual(e)), [sorted]);
+
+  const renderRow = (e: EvidenceForObjective, isManual: boolean) => (
+    <li key={e.evidence_id} className="rounded-md border p-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium truncate">{e.title ?? e.filename}</span>
+        <div className="flex items-center gap-1 shrink-0">
+          <Badge variant="secondary" className="text-[10px]">
+            rel {e.relevance.toFixed(2)}
+          </Badge>
+          {isManual && objectiveId && (
+            <button
+              type="button"
+              title="Remove this manual assignment"
+              className="text-[10px] text-muted-foreground hover:text-destructive"
+              disabled={removeTag.isPending}
+              onClick={() =>
+                removeTag.mutate(
+                  {
+                    evidenceId: e.evidence_id,
+                    objectiveId,
+                    controlId,
+                    workbookId,
+                  },
+                  {
+                    onSuccess: () => toast.success("Manual assignment removed"),
+                    onError: (err) =>
+                      toast.error("Remove failed", String(err)),
+                  },
+                )
+              }
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 mt-1">
+        <Badge variant="outline" className="text-[10px]">
+          {e.kind}
+        </Badge>
+        <span className="text-[10px] text-muted-foreground truncate">
+          {e.source}
+        </span>
+      </div>
+      {e.rationale && (
+        <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3">
+          {e.rationale}
+        </p>
+      )}
+    </li>
+  );
+
   return (
     <Card className="h-full">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <FileSearch className="h-4 w-4" />
-          Evidence
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FileSearch className="h-4 w-4" />
+            Evidence
+          </CardTitle>
+          {objectiveId && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPicking((p) => !p)}
+            >
+              {picking ? "Close" : "Assign evidence"}
+            </Button>
+          )}
+        </div>
         <CardDescription>{sorted.length} tagged artifacts</CardDescription>
       </CardHeader>
-      <CardContent className="max-h-[60vh] overflow-auto">
+      <CardContent className="max-h-[60vh] overflow-auto space-y-3">
         {!objectiveId && (
           <p className="text-sm text-muted-foreground">Select an objective.</p>
         )}
-        {objectiveId && sorted.length === 0 && (
+
+        {picking && objectiveId && (
+          <ManualAssignPicker
+            objectiveId={objectiveId}
+            workbookId={workbookId}
+            controlId={controlId}
+            alreadyTagged={new Set(sorted.map((e) => e.evidence_id))}
+            adder={addTag}
+            onDone={() => setPicking(false)}
+          />
+        )}
+
+        {objectiveId && sorted.length === 0 && !picking && (
           <p className="text-sm text-muted-foreground">No evidence tagged.</p>
         )}
-        <ul className="space-y-2">
-          {sorted.map((e) => (
-            <li key={e.evidence_id} className="rounded-md border p-2 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium truncate">{e.title ?? e.filename}</span>
-                <Badge variant="secondary" className="text-[10px] shrink-0">
-                  rel {e.relevance.toFixed(2)}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-1 mt-1">
-                <Badge variant="outline" className="text-[10px]">
-                  {e.kind}
-                </Badge>
-                <span className="text-[10px] text-muted-foreground truncate">
-                  {e.source}
-                </span>
-              </div>
-              {e.rationale && (
-                <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3">
-                  {e.rationale}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
+
+        {manual.length > 0 && (
+          <div>
+            <p className="text-[11px] font-medium text-muted-foreground mb-1">
+              Manually assigned ({manual.length})
+            </p>
+            <ul className="space-y-2">{manual.map((e) => renderRow(e, true))}</ul>
+          </div>
+        )}
+
+        {auto.length > 0 && (
+          <div>
+            {manual.length > 0 && (
+              <p className="text-[11px] font-medium text-muted-foreground mb-1">
+                Auto-tagged ({auto.length})
+              </p>
+            )}
+            <ul className="space-y-2">{auto.map((e) => renderRow(e, false))}</ul>
+          </div>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+// Picker: list the workbook's evidence NOT yet tagged to this CCI; clicking one
+// manually assigns it (source="manual"). Searchable by filename/title.
+function ManualAssignPicker({
+  objectiveId,
+  workbookId,
+  controlId,
+  alreadyTagged,
+  adder,
+  onDone,
+}: {
+  objectiveId: number;
+  workbookId?: number;
+  controlId?: number;
+  alreadyTagged: Set<number>;
+  adder: ReturnType<typeof useAddManualTag>;
+  onDone: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const all = useEvidence({ workbookId });
+  const candidates = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return (all.data ?? [])
+      .filter((e) => e.id != null && !alreadyTagged.has(e.id))
+      .filter((e) =>
+        needle
+          ? (e.title ?? "").toLowerCase().includes(needle) ||
+            e.path.toLowerCase().includes(needle)
+          : true,
+      )
+      .slice(0, 50);
+  }, [all.data, alreadyTagged, q]);
+
+  return (
+    <div className="rounded-md border border-primary/30 bg-primary/5 p-2 space-y-2">
+      <p className="text-[11px] text-muted-foreground">
+        Attach an evidence file to this CCI. Manual assignments are affirming and
+        sort above auto-tagged evidence.
+      </p>
+      <input
+        autoFocus
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search evidence by name…"
+        className="w-full rounded border px-2 py-1 text-xs"
+      />
+      {all.isLoading && (
+        <p className="text-[11px] text-muted-foreground">Loading evidence…</p>
+      )}
+      {!all.isLoading && candidates.length === 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          No unassigned evidence{q ? " matches" : ""}.
+        </p>
+      )}
+      <ul className="max-h-48 overflow-auto space-y-1">
+        {candidates.map((e) => (
+          <li key={e.id}>
+            <button
+              type="button"
+              disabled={adder.isPending}
+              className="w-full text-left rounded px-2 py-1 text-[11px] hover:bg-primary/10 truncate"
+              onClick={() =>
+                adder.mutate(
+                  {
+                    evidenceId: e.id!,
+                    objectiveId,
+                    controlId,
+                    workbookId,
+                  },
+                  {
+                    onSuccess: () => {
+                      toast.success("Evidence manually assigned");
+                      onDone();
+                    },
+                    onError: (err) => toast.error("Assign failed", String(err)),
+                  },
+                )
+              }
+            >
+              {e.title ?? e.path.split("/").pop()}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

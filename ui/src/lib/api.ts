@@ -1437,6 +1437,10 @@ export interface EvidenceForObjective {
   confidence: number;
   source: string;
   rationale: string;
+  // Per-tag provenance list (auto / llm / manual / located_nonaffirming...).
+  // The backend returns this so the UI can group "Manually assigned" evidence
+  // distinctly; `source` above is the comma-joined form kept for back-compat.
+  sources?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -4272,6 +4276,24 @@ export const api = {
     request<EvidenceForObjective[]>(
       `/api/evidence/by-objective/${objectiveId}` +
         (workbookId !== undefined ? `?workbook_id=${workbookId}` : ""),
+    ),
+  // Manually attach one evidence artifact to one CCI (source="manual"). The
+  // human's own assertion — affirming, maximal-trust, sorts above auto/llm.
+  // Invalidates the CCI's cached assessment server-side.
+  addManualTag: (
+    evidenceId: number,
+    body: { objective_id: number; rationale?: string | null },
+  ) =>
+    request<{ ok: boolean; evidence_id: number; objective_id: number }>(
+      `/api/evidence/${evidenceId}/manual-tag`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  // Remove the MANUAL tag linking this evidence to this CCI (auto/llm tags
+  // are left intact — the human is undoing their own assertion).
+  removeManualTag: (evidenceId: number, objectiveId: number) =>
+    request<{ ok: boolean; removed: number }>(
+      `/api/evidence/${evidenceId}/manual-tag/${objectiveId}`,
+      { method: "DELETE" },
     ),
   // Flip the manual asset-list flag (and optional label) on one artifact.
   // Server clears the label when is_asset_list is unset, so a re-flag
