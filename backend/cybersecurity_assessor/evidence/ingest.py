@@ -994,6 +994,7 @@ def ingest_source(
                 judge_model=tagger_judge_model,
                 escalation_model=tagger_escalation_model,
                 augment_corpus=augment_corpus_on,
+                evidence_metadata=doc.metadata,
             )
             summary.tags_created += tag_result.tags_created
             # Verdict-neutral gate metrics (see IngestSummary docstring).

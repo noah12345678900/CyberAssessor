@@ -447,6 +447,14 @@ _LLM_TIER_MIN_EXISTING = _TIER5_MIN_EXISTING  # same low-tag gate as TF-IDF Tier
 _LLM_TIER_CANDIDATE_TOPK = 20  # how many controls TF-IDF hands the judge
 _LLM_TIER_CANDIDATE_MIN_COSINE = 0.02  # don't judge zero-overlap controls
 _LLM_TIER_ACCEPT_SCORE = 0.6  # judge score >= this → tag; below → abstain/drop
+# Dynamic floor (2026-06-24). When the STRICT 0.6 pass tags a non-empty file to
+# NOTHING, a second loosened pass accepts its declined candidates at >= this
+# floor as real ``llm`` tags. Self-targeting: only otherwise-zero files see it,
+# so files with strict tags keep full 0.6 precision. Mirrors the Tier-3 "real
+# signal" line (0.35) — a candidate the judge scored >=0.35 is genuinely related,
+# just under the strict bar; below it, the never-zero rule still takes the single
+# nearest candidate so a non-empty file is never dropped (zero human review).
+_LLM_TIER_DYNAMIC_FLOOR = 0.35
 
 # ---------------------------------------------------------------------------
 # Hybrid RAG candidate generation (2026-06-22). The single TF-IDF cosine
@@ -1028,27 +1036,15 @@ def _too_few_lines_to_escalate(text: str) -> bool:
 _SOURCE_LOCATED_NONAFFIRMING = "located_nonaffirming"
 
 # Never-zero backstop (2026-06-24). Owner rule: a NON-EMPTY evidence file must
-# NEVER end with zero tags — it must land under SOME control as
+# NEVER end with zero tags — it must land under the NEAREST control as
 # located_nonaffirming (located/citable for review, never counted compliant);
 # only a genuinely EMPTY (0-byte / no-content) file may be zero. When every tier
-# AND the judge AND escalation leave a non-empty file untagged, this backstop
-# floors one tag:
-#   * if the judge's best DECLINED candidate scored >= _BACKSTOP_MIN_SCORE, floor
-#     that control (the model's own top guess — content-driven, specific);
-#   * else (judge saw nothing real, or never ran — e.g. a vision-failed image
-#     with no candidates), floor the QUARANTINE control so the artifact is still
-#     visible under a control an assessor reviews.
-# _BACKSTOP_MIN_SCORE mirrors the 0.35 Tier-3 "real signal" line but a touch
-# lower (a located, non-affirming tag tolerates weaker signal than an affirming
-# one); below it the judge's guess is near-random and the quarantine is honest.
-_BACKSTOP_MIN_SCORE = 0.3
-# Quarantine control for "non-empty but unmappable / unreadable" evidence. CA-2
-# (Security Assessments) is the semantically-correct home: an artifact the
-# pipeline could not place is itself an assessment-process gap a 3PAO triages.
-# Rejected alternatives: a family "-1" policy control (noise — buries the real
-# policy doc) and a per-file flag (can't be represented; EvidenceTag.objective_id
-# is a hard FK to one objective).
-_BACKSTOP_QUARANTINE_CONTROL = "ca-2"
+# AND the judge AND escalation leave a non-empty file untagged, the backstop
+# locates it to the judge's own top-ranked (but sub-0.6, declined) candidate —
+# the NEAREST control by the model's content judgment. No hardcoded quarantine
+# control (an earlier ca-2 idea was framework-specific and would silently fail on
+# CSF/800-171/ISO/CIS/PCI/SOC2); the nearest-candidate is always a real
+# in-framework control, so this is framework-safe by construction.
 
 
 def _tier3_relevance_scores(
@@ -1485,6 +1481,56 @@ def _generate_candidates(
     return candidates
 
 
+def _emit_llm_tag(
+    add,
+    all_by_control: dict[str, list[Objective]],
+    cid: str,
+    score: float,
+    reasoning: str | None,
+    *,
+    dynamic: bool = False,
+) -> int:
+    """Emit a Tier-5 ``llm`` tag for an accepted control, fanned to all its CCIs.
+
+    Returns the number of child objectives tagged (the per-CCI hit count the
+    caller accumulates into ``llm_hits`` — each child needs its own tag so its
+    per-CCI evidence bundle is non-empty).
+
+    Relevance is the judge's actual score scaled into the Tier-3 band, so a
+    stronger judgment ranks higher in the evidence bundle than a weaker one —
+    including dynamic-floor accepts (a 0.52 nearest beats a 0.36 nearest).
+    ``dynamic`` only flavors the rationale (audit trail: this cleared the
+    loosened floor, not the strict 0.6 gate); the tag is a full affirming
+    ``source="llm"`` either way (zero human review — these count).
+    """
+    relevance = round(
+        _TIER3_RELEVANCE_FLOOR
+        + (_TIER3_RELEVANCE_CEIL - _TIER3_RELEVANCE_FLOOR) * score,
+        3,
+    )
+    why = (reasoning or "").strip()
+    note = (
+        f"LLM nearest-control match for {cid.upper()} (score {score:.2f}, "
+        "dynamic floor — strict 0.6 pass tagged nothing on this file)."
+        if dynamic
+        else f"LLM semantic backstop for {cid.upper()} (score {score:.2f}; "
+        "no control ID or CCI in body)."
+    )
+    emitted = 0
+    for obj in all_by_control[cid]:
+        if obj.id is None:
+            continue
+        add(
+            obj.id,
+            relevance=relevance,
+            confidence=_LLM_TIER_CONFIDENCE,
+            source="llm",
+            rationale=note + (f" Evidence: {why}" if why else ""),
+        )
+        emitted += 1
+    return emitted
+
+
 def _tag_via_llm(
     text: str,
     *,
@@ -1498,21 +1544,20 @@ def _tag_via_llm(
     framework_id: int | None = None,
     augment_corpus: bool = True,
     tool_candidate_cids: set[str] | None = None,
-) -> tuple[int, int, int, tuple[str, float] | None]:
+) -> tuple[int, int, int, tuple[str, float] | None, list[tuple[str, float, str]]]:
     """LLM smart-backstop: hybrid-RAG pre-select, judge accept/abstain, tag.
 
-    Returns ``(llm_hits, attempted, errored, best_rejected)`` where ``attempted``
-    is the number of candidate controls sent to the judge, ``errored`` is how
-    many raised an API/network error or failed to parse, and ``best_rejected``
-    is ``(cid, score)`` of the highest-scoring candidate the judge DECLINED
-    (score < the 0.6 accept gate) — or ``None`` when the judge ran no candidates
-    or accepted everything it scored. The caller uses ``attempted > 0 and
-    errored == attempted`` (every call failed — dead key/network down, not
-    genuine abstention) to decide whether to fall back to the deterministic
-    TF-IDF Tier 5, and uses ``best_rejected`` for the NEVER-ZERO backstop: a
-    non-empty file that would otherwise end with ZERO tags is floored to the
-    judge's own best guess (located_nonaffirming, above a relevance floor) so a
-    real artifact is never silently dropped from every control.
+    Returns ``(llm_hits, attempted, errored, best_rejected, declined)`` where
+    ``attempted`` is the number of candidate controls sent to the judge,
+    ``errored`` is how many raised an API/network error or failed to parse,
+    ``best_rejected`` is ``(cid, score)`` of the highest-scoring DECLINED
+    candidate (score < the 0.6 accept gate) or ``None``, and ``declined`` is the
+    full score-sorted list of ``(cid, score, reasoning)`` the judge declined
+    (errors/sentinels excluded). The caller uses ``attempted > 0 and errored ==
+    attempted`` to decide the TF-IDF outage fallback, and uses ``declined`` to
+    apply the DYNAMIC FLOOR — but only AFTER the Opus escalation pass, so the
+    strict-pass floor never pre-empts escalation (which gates on llm_hits==0).
+    The floor is owned by :func:`tag_evidence`, not here.
 
     ``add`` is the ``_add`` closure from :func:`tag_evidence` — the sole
     EvidenceTag construction site — so source/framework stamping and the
@@ -1520,7 +1565,7 @@ def _tag_via_llm(
     """
     cids = sorted(all_by_control.keys())
     if not cids:
-        return 0, 0, 0, None
+        return 0, 0, 0, None, []
     # Corpus augmentation: append each control family's technical-synonym gloss
     # so the lexical lanes get an overlap signal between machine-state evidence
     # and policy-speak control text. Gated (default on); the gloss only feeds
@@ -1556,7 +1601,7 @@ def _tag_via_llm(
         tool_candidate_cids=tool_candidate_cids,
     )
     if not candidate_cids:
-        return 0, 0, 0, None
+        return 0, 0, 0, None, []
     candidates = [(cid, text_by_cid[cid]) for cid in candidate_cids]
 
     brief = _build_llm_brief(artifact_title, _llm_artifact_body(text))
@@ -1612,14 +1657,14 @@ def _tag_via_llm(
     llm_hits = 0
     attempted = 0
     errored = 0
-    # Never-zero backstop support (2026-06-24): remember the judge's best
-    # SUB-threshold candidate (scored real, just < 0.6 accept gate). When a
-    # non-empty file would otherwise end with ZERO tags, the caller floors a
-    # located_nonaffirming tag to this best guess so the artifact is never
-    # silently dropped. Only genuine scores in [0, 0.6) qualify (errors/sentinels
-    # excluded) — the caller applies its own >= floor (e.g. 0.3) before using it.
-    best_rejected_cid: str | None = None
-    best_rejected_score: float = -1.0
+    # Dynamic-floor support (2026-06-24): collect every DECLINED candidate
+    # (real score in [0, 0.6)) so that, IF the strict pass tags nothing, a
+    # SECOND loosened pass can accept the best of them as a real ``llm`` tag.
+    # Zero human intervention is the goal: a non-empty file that the strict 0.6
+    # gate would zero out instead gets its nearest control accepted at a looser
+    # bar — but the looseness applies ONLY to otherwise-zero files, so a file
+    # with solid >=0.6 tags never sees it (no precision loss anywhere else).
+    declined: list[tuple[str, float, str]] = []  # (cid, score, reasoning)
     for entry in judged:
         if entry is None:  # pragma: no cover — every slot is filled above
             continue
@@ -1654,41 +1699,27 @@ def _tag_via_llm(
             )
             continue
         if score is None or score < _LLM_TIER_ACCEPT_SCORE:
-            # Below threshold. Drop from AFFIRMING tags — precision over recall.
-            # But remember the best real sub-threshold score so the caller's
-            # never-zero backstop can locate (non-affirming) to the judge's own
-            # top guess rather than letting a non-empty file vanish.
-            if score is not None and score > best_rejected_score:
-                best_rejected_score = score
-                best_rejected_cid = cid
+            # Below the STRICT gate. Don't tag now — but record it so the dynamic
+            # second pass can accept the best of these IF the strict pass tagged
+            # nothing (a non-empty file must never end zero — zero human review).
+            if score is not None:
+                declined.append((cid, score, reasoning or ""))
             continue
-        relevance = round(
-            _TIER3_RELEVANCE_FLOOR
-            + (_TIER3_RELEVANCE_CEIL - _TIER3_RELEVANCE_FLOOR) * score,
-            3,
-        )
-        why = (reasoning or "").strip()
-        for obj in all_by_control[cid]:
-            if obj.id is None:
-                continue
-            add(
-                obj.id,
-                relevance=relevance,
-                confidence=_LLM_TIER_CONFIDENCE,
-                source="llm",
-                rationale=(
-                    f"LLM semantic backstop for {cid.upper()} "
-                    f"(score {score:.2f}; no control ID or CCI in body)."
-                    + (f" Evidence: {why}" if why else "")
-                ),
-            )
-            llm_hits += 1
+        llm_hits += _emit_llm_tag(add, all_by_control, cid, score, reasoning)
+
+    # The DYNAMIC FLOOR does NOT run here. It is applied by the caller
+    # (tag_evidence) AFTER the Opus escalation pass — otherwise flooring inside
+    # this (strict Haiku) pass would set llm_hits>0 and the escalation gate
+    # (llm_hits==0) would never fire, cannibalizing the stronger second opinion.
+    # We just return the sorted DECLINED candidate list so the caller can apply
+    # the floor once, post-escalation, on whichever pass scored them.
+    declined.sort(key=lambda d: (-d[1], d[0]))  # best score first, cid tiebreak
     best_rejected = (
-        (best_rejected_cid, best_rejected_score)
-        if best_rejected_cid is not None
+        (declined[0][0], declined[0][1])
+        if declined
         else None
     )
-    return llm_hits, attempted, errored, best_rejected
+    return llm_hits, attempted, errored, best_rejected, declined
 
 
 def tag_evidence(
@@ -1706,6 +1737,7 @@ def tag_evidence(
     escalation_model: str | None = None,
     augment_corpus: bool = True,
     tool_candidate_cids: set[str] | None = None,
+    evidence_metadata: dict | None = None,
 ) -> TaggingResult:
     """Apply doc-number, CCI-direct, control-ID, evidence-type, and (as a
     low-tag backstop) semantic-recall tags.
@@ -2193,7 +2225,7 @@ def tag_evidence(
                         hyde_prose = expand(text, model=judge_model) or ""
                     except Exception:  # noqa: BLE001 — never abort tagging
                         log.debug("HyDE expansion raised; continuing", exc_info=True)
-                llm_hits, attempted, errored, best_rejected = _tag_via_llm(
+                llm_hits, attempted, errored, best_rejected, declined_strict = _tag_via_llm(
                     text,
                     client=client,
                     judge_model=judge_model,
@@ -2243,7 +2275,7 @@ def tag_evidence(
                     and not _too_few_lines_to_escalate(text)
                     and not _is_command_error_only(text)
                 ):
-                    esc_hits, esc_attempted, esc_errored, esc_best_rejected = _tag_via_llm(
+                    esc_hits, esc_attempted, esc_errored, esc_best_rejected, declined_esc = _tag_via_llm(
                         text,
                         client=client,
                         judge_model=escalation_model,
@@ -2263,11 +2295,46 @@ def tag_evidence(
                     judge_attempted += esc_attempted
                     judge_accepted += esc_hits
                     judge_errored += esc_errored
-                    # Prefer the stronger (Opus) escalation's best guess for the
-                    # never-zero backstop when it scored one — it read the same
-                    # body with a better model.
+                    # Prefer the stronger (Opus) escalation's declined list for the
+                    # dynamic floor — it read the same candidates with a better
+                    # model, so its scores are the better relevance anchor.
                     if esc_best_rejected is not None:
                         best_rejected = esc_best_rejected
+                    declined_for_floor = declined_esc
+                else:
+                    declined_for_floor = declined_strict
+
+                # DYNAMIC FLOOR (2026-06-24) — owned HERE, after escalation, so it
+                # sees the POST-escalation llm_hits (flooring inside the strict
+                # pass would make llm_hits>0 and cannibalize escalation). Fires
+                # ONLY when BOTH the strict pass AND (if it ran) escalation left
+                # the file at ZERO llm tags. Owner rule: a non-empty file must
+                # never end zero-tag with zero human review, so re-accept its
+                # nearest DECLINED candidate(s) as real source="llm" tags:
+                #   * every declined candidate >= _LLM_TIER_DYNAMIC_FLOOR, OR
+                #   * if none clear it, the single NEAREST (top-scored) candidate.
+                # Self-targeting: only otherwise-zero files reach here, so files
+                # with strict >=0.6 tags keep full precision. Command-error bodies
+                # are EXCLUDED (a failed/never-ran command is not evidence — same
+                # guard escalation uses) so they correctly stay zero / fall to the
+                # single-purpose tool-floor's located_nonaffirming disposition.
+                if (
+                    llm_hits == 0
+                    and declined_for_floor
+                    and not _is_command_error_only(text)
+                ):
+                    loosened = [
+                        d for d in declined_for_floor
+                        if d[1] >= _LLM_TIER_DYNAMIC_FLOOR
+                    ]
+                    chosen = loosened or declined_for_floor[:1]
+                    for fcid, fscore, freason in chosen:
+                        if fcid in all_by_control:
+                            llm_hits += _emit_llm_tag(
+                                _add, all_by_control, fcid, fscore, freason,
+                                dynamic=True,
+                            )
+                    judge_accepted = llm_hits  # keep instrumentation honest
 
                 # Trust partial LLM success. Only fall back to the deterministic
                 # TF-IDF backstop when EVERY judge call errored (network/API
@@ -2414,51 +2481,53 @@ def tag_evidence(
                 )
                 tool_name_hits += 1
 
-    # NEVER-ZERO BACKSTOP (2026-06-24). After EVERY tier + judge + escalation +
-    # tool-floor, if a NON-EMPTY file still has zero tags, locate it (never drop
-    # it). "Non-empty" = the source artifact has bytes (size_bytes > 0), NOT
-    # text-non-empty — a 215KB screenshot whose vision read failed has 0 text but
-    # IS content and must be located; only a genuine 0-byte file is exempt.
-    # Target: the judge's best declined candidate if it cleared the floor, else
-    # the CA-2 quarantine control. Always source=located_nonaffirming (never
-    # affirming/compliant). `_add` first-write-wins + the empty `existing` guard
-    # mean this only fires when nothing else tagged the file.
-    # Gate on `client is not None` (an ONLINE run was available), NOT on
-    # judge_invoked: a vision-failed image has empty text so the judge is skipped
-    # (judge_invoked stays False) yet MUST still quarantine. Offline (client is
-    # None) is a degraded mode — we must NOT dump every non-empty file into CA-2
-    # there; offline tagging relies on the deterministic tiers + floor only.
-    if client is not None and not existing and (evidence.size_bytes or 0) > 0:
-        backstop_cid: str | None = None
-        reason: str
-        if best_rejected is not None and best_rejected[1] >= _BACKSTOP_MIN_SCORE:
-            backstop_cid = best_rejected[0]
-            reason = (
-                f"Never-zero backstop: judge's best (declined) candidate "
-                f"{backstop_cid.upper()} at score {best_rejected[1]:.2f} "
-                "(< 0.6 accept gate). LOCATED for review, NON-AFFIRMING."
-            )
-        else:
-            backstop_cid = _BACKSTOP_QUARANTINE_CONTROL
-            reason = (
-                "Never-zero backstop: artifact is non-empty but could not be "
-                "mapped to a specific control (judge saw no real candidate or "
-                "could not read it). Quarantined under CA-2 for assessor triage, "
-                "NON-AFFIRMING."
-            )
-        for cid, obj in _objectives_for_control_ids(
-            session, [backstop_cid], framework_id=framework_id
-        ):
-            if obj.id is None or obj.id in existing:
-                continue
-            _add(
-                obj.id,
-                relevance=0.4,
-                confidence=_TIER5_CONFIDENCE,
-                source=_SOURCE_LOCATED_NONAFFIRMING,
-                rationale=reason,
-            )
-            semantic_hits += 1
+    # NEVER-ZERO, part 1 (the common path) is handled INSIDE the judge (the
+    # dynamic floor in _tag_via_llm): when the strict 0.6 pass tags a non-empty
+    # file to nothing, the loosened pass accepts its nearest candidate(s) as real
+    # ``llm`` tags that COUNT (zero human review). That covers every file the
+    # judge runs on.
+    #
+    # NEVER-ZERO, part 2 (the residual): a content-bearing IMAGE whose vision read
+    # FAILED has empty text, so the Tier-5 gate (`text and text.strip()`) skips
+    # the judge entirely — no candidates, nothing for the dynamic floor to accept.
+    # To make this PERFECT (every non-empty file lands somewhere, zero human
+    # review), locate such an image to its nearest control by TITLE/PATH
+    # similarity (the only signal an unreadable image has). Gated to: ONLINE
+    # (client present), still-zero, has bytes, empty text, AND the extractor
+    # flagged vision_failed — so it can't fire on offline runs, the 0-byte file,
+    # or a normal text file.
+    if (
+        client is not None
+        and not existing
+        and (evidence.size_bytes or 0) > 0
+        and not (text and text.strip())
+        and bool((evidence_metadata or {}).get("vision_failed"))
+    ):
+        residual_by_control = _all_objectives_by_control(
+            session, framework_id=framework_id
+        )
+        probe = " ".join(p for p in (evidence.title, evidence.path) if p)
+        if residual_by_control and probe.strip():
+            r_cids = sorted(residual_by_control.keys())
+            r_texts = [_control_reference_text(residual_by_control[c]) for c in r_cids]
+            r_cos = _tier3_relevance_scores(probe, r_texts)
+            if r_cos and max(r_cos) > 0.0:
+                top_cid = r_cids[max(range(len(r_cos)), key=lambda i: r_cos[i])]
+                for obj in residual_by_control[top_cid]:
+                    if obj.id is None or obj.id in existing:
+                        continue
+                    _add(
+                        obj.id,
+                        relevance=0.4,
+                        confidence=_TIER5_CONFIDENCE,
+                        source="llm",
+                        rationale=(
+                            f"Never-zero: vision unavailable for this image; "
+                            f"located to nearest control {top_cid.upper()} by "
+                            "title/path similarity. Re-ingest to retry vision."
+                        ),
+                    )
+                    semantic_hits += 1
 
     # Invalidate any stale Assessment rows whose CCI just gained a tag —
     # without this, rule_no_evidence verdicts written before this artifact

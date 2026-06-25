@@ -195,8 +195,7 @@ def catalog(session) -> dict[str, list[int]]:
     for ctl_id, family in [
         ("ac-17", "AC"),
         ("au-8", "AU"),
-        ("ac-3", "AC"),   # backstop: a sub-0.6 "best rejected" candidate
-        ("ca-2", "CA"),   # backstop: the quarantine control
+        ("ac-3", "AC"),   # backstop: the nearest (best-ranked, sub-0.6) candidate
     ]:
         ctrl = Control(
             framework_id=fw.id,
@@ -459,19 +458,18 @@ def test_is_command_error_only_classifies_brief_phrases():
 # 4. Escalation does NOT fire when the escalation model is None
 # ===========================================================================
 def test_no_escalation_when_escalation_model_is_none(session, catalog):
-    """escalation_model=None (offline/eval default) -> pure E+A, no Opus pass.
-
-    The brief makes None the safe default so the offline/eval path is unchanged.
-    A clean Haiku abstain with no escalation model must stay a clean abstain.
+    """escalation_model=None disables the Opus pass — but the DYNAMIC FLOOR still
+    fires (zero human review: a non-empty file is never zero regardless of
+    whether escalation is configured). Haiku declines ac-17 at 0.0; with no Opus
+    pass, the floor takes the strict declined list's nearest -> a real llm tag.
     """
     e = _evidence(session, "C:/fake/CTP-010_xrdp_step7.txt")
     judge = _TwoModelJudge(
         {
             _HAIKU: {"ac-17": 0.0},
-            _OPUS: {"ac-17": 0.9},  # present but must never be asked
+            _OPUS: {"ac-17": 0.9},  # present but must never be asked (escalation off)
         }
     )
-    # REQUIRES: Change 1 -- escalation_model default None disables escalation.
     result = tag_evidence(
         session,
         e,
@@ -482,9 +480,13 @@ def test_no_escalation_when_escalation_model_is_none(session, catalog):
         tool_candidate_cids={"ac-17"},
     )
 
-    assert _OPUS not in judge.models_called
+    assert _OPUS not in judge.models_called, "escalation_model=None -> no Opus pass"
     assert result.judge_escalated is False
-    assert _llm_tags(session, e.id) == [], "no escalation -> Haiku abstain stands"
+    # Floor still guarantees never-zero from the strict declined list.
+    llm = _llm_tags(session, e.id)
+    tagged = {t.objective_id for t in llm}
+    for oid in catalog["ac-17"]:
+        assert oid in tagged, "dynamic floor fires even without escalation (never-zero)"
 
 
 # ===========================================================================
@@ -631,9 +633,11 @@ def test_vault_polysemous_still_emits_nothing_offline(
 # ---------------------------------------------------------------------------
 # NEVER-ZERO BACKSTOP (2026-06-24)
 # A NON-EMPTY file that ends with zero tags after all tiers + judge + escalation
-# must be LOCATED (non-affirming), never silently dropped. Target: the judge's
-# best DECLINED candidate if it scored >= 0.3, else the CA-2 quarantine control.
-# Only a genuinely EMPTY (size_bytes == 0) file may stay zero.
+# must be LOCATED (non-affirming) to the NEAREST control — the judge's own
+# top-ranked (but sub-0.6, declined) candidate — never silently dropped. No
+# hardcoded quarantine control (framework-specific); the nearest candidate is
+# always a real in-framework control. Only a genuinely EMPTY (size_bytes == 0)
+# file may stay zero.
 # ---------------------------------------------------------------------------
 
 _NEUTRAL_BODY = (
@@ -654,18 +658,19 @@ def _located_tags(session, evidence_id):
     ).all()
 
 
-def test_backstop_locates_to_judges_best_declined_candidate(session, catalog):
-    """Non-empty file, judge declines all, best reject >= 0.3 -> located to it.
+def test_dynamic_floor_tags_best_declined_candidate_above_floor(session, catalog):
+    """Dynamic floor: judge declines all, best reject >= 0.35 -> REAL llm tag.
 
-    The judge (both passes) scores AC-3 at 0.45 -- below the 0.6 accept gate, so
-    no affirming tag -- but it's the best real candidate. The never-zero backstop
-    must floor AC-3 as located_nonaffirming so the file is never zero-tag.
+    The judge (both passes) scores AC-3 at 0.45 — below the strict 0.6 gate, so
+    no strict tag — but >= the 0.35 dynamic floor. Owner rule (zero human
+    review): a non-empty otherwise-zero file gets its nearest declined candidate
+    as a real source="llm" tag that COUNTS, at score-derived relevance.
     """
     e = _evidence(session, "C:/fake/CTP-050_generic_procedure.txt")
     judge = _TwoModelJudge(
         {
-            _HAIKU: {"ac-3": 0.45},   # declined (<0.6) but the best real signal
-            _OPUS: {"ac-3": 0.45},    # escalation also declines -> stays best_rejected
+            _HAIKU: {"ac-3": 0.45},   # declined (<0.6) but >= 0.35 dynamic floor
+            _OPUS: {"ac-3": 0.45},    # escalation also declines -> floor uses Opus list
         }
     )
     tag_evidence(
@@ -677,22 +682,21 @@ def test_backstop_locates_to_judges_best_declined_candidate(session, catalog):
         escalation_model=_OPUS,
         tool_candidate_cids={"ac-3"},  # force AC-3 in front of the judge
     )
-    located = _located_tags(session, e.id)
-    tagged = {t.objective_id for t in located}
+    llm = _llm_tags(session, e.id)
+    tagged = {t.objective_id for t in llm}
     for oid in catalog["ac-3"]:
-        assert oid in tagged, "backstop must locate the file to AC-3 (best declined candidate)"
-    assert not _llm_tags(session, e.id), "a declined candidate must NOT be affirming"
-    # Did NOT fall to quarantine when a real candidate existed.
-    for oid in catalog["ca-2"]:
-        assert oid not in tagged, "should locate to AC-3, not the CA-2 quarantine"
+        assert oid in tagged, "dynamic floor must tag AC-3 as a real llm tag (counts)"
+    # relevance is score-derived: 0.35 + (0.75-0.35)*0.45 = 0.53
+    assert all(abs(t.relevance - 0.53) < 0.02 for t in llm if t.objective_id in catalog["ac-3"])
 
 
-def test_backstop_quarantines_to_ca2_when_no_real_candidate(session, catalog):
-    """Non-empty file, judge's best reject < 0.3 -> CA-2 quarantine (located)."""
-    e = _evidence(session, "C:/fake/CTP-051_unmappable.txt")
+def test_dynamic_floor_tags_nearest_even_below_floor(session, catalog):
+    """Never-zero: even a top candidate below the 0.35 floor is the NEAREST and
+    gets a real llm tag — a non-empty file is never zero (zero human review)."""
+    e = _evidence(session, "C:/fake/CTP-051_weak_signal.txt")
     judge = _TwoModelJudge(
         {
-            _HAIKU: {"ac-3": 0.10},   # below the 0.3 backstop floor = no real signal
+            _HAIKU: {"ac-3": 0.10},   # weak + below floor, but the nearest control
             _OPUS: {"ac-3": 0.10},
         }
     )
@@ -705,12 +709,12 @@ def test_backstop_quarantines_to_ca2_when_no_real_candidate(session, catalog):
         escalation_model=_OPUS,
         tool_candidate_cids={"ac-3"},
     )
-    located = _located_tags(session, e.id)
-    tagged = {t.objective_id for t in located}
-    for oid in catalog["ca-2"]:
-        assert oid in tagged, "sub-0.3 best reject must quarantine to CA-2"
+    llm = _llm_tags(session, e.id)
+    tagged = {t.objective_id for t in llm}
     for oid in catalog["ac-3"]:
-        assert oid not in tagged, "must NOT locate to a 0.10 near-random candidate"
+        assert oid in tagged, "non-empty file must get the nearest control as llm, never zero"
+    # relevance 0.35 + 0.40*0.10 = 0.39
+    assert all(abs(t.relevance - 0.39) < 0.02 for t in llm if t.objective_id in catalog["ac-3"])
 
 
 def test_backstop_does_not_fire_when_already_tagged(session, catalog):
@@ -728,6 +732,6 @@ def test_backstop_does_not_fire_when_already_tagged(session, catalog):
     )
     located = _located_tags(session, e.id)
     tagged = {t.objective_id for t in located}
-    for oid in catalog["ca-2"]:
-        assert oid not in tagged, "affirmed file must not also be quarantined"
+    # No backstop tag at all — the file was affirmed, so it's not zero-tag.
+    assert not tagged, "affirmed file must not also get a nearest-control backstop tag"
     assert _llm_tags(session, e.id), "the affirming AC-17 tag stands"
