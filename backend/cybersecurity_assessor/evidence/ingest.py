@@ -528,6 +528,13 @@ _VISION_MEDIA_TYPES = {
     ".webp": "image/webp",
 }
 
+# Bounded OUTER vision retry (2026-06-24). describe_image retries ~5x internally
+# on 429; these add a couple more patient attempts with a longer pause so a heavy
+# rate-limit burst doesn't permanently zero a valid image. Small numbers — the
+# never-zero backstop is the guarantee; this just reduces fall-through.
+_VISION_OUTER_ATTEMPTS = 3
+_VISION_OUTER_RETRY_SLEEP = 8.0  # seconds between outer attempts
+
 
 def _apply_vision(
     doc: ExtractedDoc,
@@ -562,19 +569,43 @@ def _apply_vision(
     except Exception:  # noqa: BLE001
         return doc
     description = ""
-    try:
-        # Deliberately uses the client's MAIN model (Opus), not the judge
-        # model: describing a pure-graphics screenshot accurately is a
-        # reasoning-heavy vision task where model strength matters, and the
-        # step is gated to images only (bounded volume) — accuracy over cost,
-        # consistent with the owner's "best final product" directive. (The
-        # text-only HyDE/judge hops use the cheaper judge model.)
-        description = client.describe_image(raw, media_type=media_type) or ""
-    except Exception:  # noqa: BLE001 — degrade to OCR-only
-        log.debug("vision describe failed for %s; OCR-only", name, exc_info=True)
-        return doc
+    # Bounded OUTER retry (2026-06-24). describe_image already does ~5 rate-limit
+    # retries internally, but during a heavy 429 storm a valid image can exhaust
+    # all of them and return "" — which silently became a 0-text image (the
+    # step6_FAIL.png cause: a normal PNG, identical to one that read fine, lost
+    # only to timing). Vision is rare (images only) + high-value, so we can
+    # afford a couple more patient attempts with a longer pause to let the burst
+    # subside. The never-zero backstop catches whatever still fails, so this only
+    # REDUCES how often an image falls to quarantine; it doesn't have to be
+    # perfect. Deliberately uses the MAIN model (Opus) — accuracy over cost.
+    for _attempt in range(_VISION_OUTER_ATTEMPTS):
+        try:
+            description = client.describe_image(raw, media_type=media_type) or ""
+        except Exception:  # noqa: BLE001 — degrade to OCR-only
+            log.debug("vision describe raised for %s; OCR-only", name, exc_info=True)
+            description = ""
+        if description.strip():
+            break
+        if _attempt + 1 < _VISION_OUTER_ATTEMPTS:
+            time.sleep(_VISION_OUTER_RETRY_SLEEP)
     if not description.strip():
-        return doc
+        # Vision could not be obtained after all attempts. Do NOT silently return
+        # a 0-text doc for a content-bearing image — flag it so the never-zero
+        # backstop quarantines it (CA-2) instead of an invisible drop, and a
+        # re-ingest can retry once the gateway calms down.
+        log.info("vision unavailable for %s after %d attempts; flagged for backstop",
+                 name, _VISION_OUTER_ATTEMPTS)
+        new_meta = dict(doc.metadata or {})
+        new_meta["vision_failed"] = True
+        if (doc.text or "").strip():
+            return doc  # OCR text present → keep the legit OCR path untouched
+        return ExtractedDoc(
+            text=doc.text or "",
+            title=doc.title,
+            doc_number=doc.doc_number,
+            kind=doc.kind,
+            metadata=new_meta,
+        )
     ocr_text = doc.text or ""
     new_meta = dict(doc.metadata or {})
     new_meta["vision"] = True

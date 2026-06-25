@@ -212,7 +212,14 @@ from .crm_context import CrmContext
 #       removed (it suppressed cross-family floors like aide->SI-7 under CM).
 #       Terse tool-named CTP files now floor their specific control -> tag set
 #       changes -> cached decisions must re-run.
-KERNEL_VERSION = "0.16.0"
+# 0.17.0 (2026-06-24): never-zero backstop + vision retry. A NON-EMPTY evidence
+#       file can no longer end with zero tags: after all tiers + judge +
+#       escalation + tool-floor, an untagged non-empty file is floored
+#       located_nonaffirming to the judge's best declined candidate (>=0.3) or
+#       the CA-2 quarantine control. describe_image also gets a bounded outer
+#       retry so a 429-storm doesn't silently zero a valid image. Tag set grows
+#       for previously-zero non-empty files -> cached decisions must re-run.
+KERNEL_VERSION = "0.17.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to
