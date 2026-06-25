@@ -182,6 +182,32 @@ class SourceSummary:
 
 
 @dataclass(frozen=True)
+class HostIdentityConflict:
+    """A high-confidence contradiction in host identity, surfaced for review.
+
+    The trust hierarchy (credentialed-scan ``(ip,fqdn)`` pair > declared
+    inventory > checklist hostname) is normally used to COLLAPSE multiple IPs
+    under one device silently. But when two sources bind the SAME IP in the SAME
+    boundary to DIFFERENT device names, there is no safe collapse — one of them
+    is wrong (a mislabeled checklist, a stale inventory row, an IP reassigned
+    between scans). Per the assessor's "abstain, never guess" posture we do NOT
+    pick a winner; we emit this record so a human reconciles it.
+
+    Only the IP↔hostname disagreement is a conflict here. The other "orphan"
+    case the design called out — a checklisted host no scan/inventory ever saw —
+    is already visible as the ``checklisted_only`` gap bucket, so it is not
+    duplicated into this channel (keeps the review list high-signal, no alert
+    spam).
+    """
+
+    kind: str  # currently only "ip_hostname_disagreement"
+    boundary: str
+    ip: str
+    hostnames: list[str]  # the >1 distinct device names claimed for this IP
+    sources: list[SourceRef]  # artifacts that made the conflicting claims
+
+
+@dataclass(frozen=True)
 class AssetCoverageReport:
     """Full cross-check rollup for one workbook (or the whole DB pre-scoping)."""
 
@@ -222,6 +248,13 @@ class AssetCoverageReport:
     resolved_devices: int = 0
     checklists_regular: int = 0
     checklists_xlsx: int = 0
+    # ---- Host-identity conflicts (additive, render-time) -----------------
+    # High-confidence contradictions where one IP is bound to >1 device name in
+    # one boundary. Surfaced for human reconciliation, never auto-merged. Empty
+    # for the overwhelming common case (clean credentialed scan / no inventory
+    # disagreement), so older callers/tests that build the report directly keep
+    # working.
+    conflicts: list[HostIdentityConflict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +536,93 @@ def _device_ip_map(
     return {k: set(v) for k, v in out.items()}
 
 
+def _ip_hostname_conflicts(
+    session: Session,
+    evidence_ids: Iterable[int],
+    boundary_by_ev: dict[int, str],
+) -> list[HostIdentityConflict]:
+    """Detect IPs that two sources bind to DIFFERENT device names, per boundary.
+
+    Reads every in-scope Evidence row's ``host_pairs`` JSON (the ``{ip,fqdn}``
+    list ingest captures for credentialed scans + any inventory that supplies
+    it) and indexes ``(boundary, ip) -> {device -> [SourceRef]}``. An IP that
+    resolves to a SINGLE device name across all its claims is a normal collapse
+    (handled silently by :func:`_device_ip_map`). An IP claimed for TWO OR MORE
+    distinct device names in the SAME boundary is a genuine identity
+    contradiction — we cannot trust either binding, so we emit a
+    :class:`HostIdentityConflict` for human review instead of silently picking
+    one (the "abstain, never guess" posture the assessor uses everywhere).
+
+    Boundary-keyed so the same IP legitimately reused for different devices in
+    two enclaves is NOT a conflict — only a disagreement WITHIN one boundary is.
+    One query over ``host_pairs`` for the whole workbook (no N+1). Device names
+    run through :func:`_normalize` so ``dc01`` and ``dc01.dom.mil`` claiming the
+    same IP do not read as a false conflict.
+    """
+    ids = [e for e in evidence_ids if e]
+    if not ids:
+        return []
+    # (boundary, ip) -> {device -> {evidence_id: SourceRef}}
+    claims: dict[tuple[str, str], dict[str, dict[int, SourceRef]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+    for batch in chunked(ids):
+        rows = session.exec(
+            select(Evidence.id, Evidence.host_pairs, Evidence.kind, Evidence.title, Evidence.path, Evidence.asset_list_label).where(
+                Evidence.id.in_(batch)  # type: ignore[attr-defined]
+            )
+        ).all()
+        for ev_id, raw, kind, title, path, asset_label in rows:
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, list):
+                continue
+            bnd = boundary_by_ev.get(ev_id, UNSPECIFIED_BOUNDARY)
+            label = asset_label or title or (Path(path).name if path else "")
+            ref = SourceRef(
+                evidence_id=ev_id or 0,
+                label=label,
+                kind=kind.value if hasattr(kind, "value") else str(kind),
+            )
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                ip = entry.get("ip")
+                fqdn = entry.get("fqdn")
+                if not (isinstance(ip, str) and ip.strip()):
+                    continue
+                device = _normalize(fqdn) if isinstance(fqdn, str) else ""
+                if not device:
+                    continue
+                claims[(bnd, ip.strip())][device][ev_id or 0] = ref
+
+    conflicts: list[HostIdentityConflict] = []
+    for (bnd, ip), by_device in claims.items():
+        if len(by_device) < 2:
+            continue  # single device name for this IP — normal collapse
+        # Gather the artifacts that made the conflicting claims, deduped by
+        # evidence id, deterministically ordered for stable output.
+        refs: dict[int, SourceRef] = {}
+        for dev_refs in by_device.values():
+            refs.update(dev_refs)
+        conflicts.append(
+            HostIdentityConflict(
+                kind="ip_hostname_disagreement",
+                boundary=bnd,
+                ip=ip,
+                hostnames=sorted(by_device.keys()),
+                sources=[refs[k] for k in sorted(refs.keys())],
+            )
+        )
+    # Stable order: boundary, then IP.
+    conflicts.sort(key=lambda c: (c.boundary, c.ip))
+    return conflicts
+
+
 def _mapped_ips_by_boundary(
     session: Session,
     evidence_ids: Iterable[int],
@@ -729,6 +849,12 @@ def summarize_asset_coverage(
         session, in_scope_ids, boundary_by_ev
     )
 
+    # High-confidence host-identity contradictions (one IP → >1 device name in
+    # one boundary). Surfaced for human review, NEVER auto-merged. Independent of
+    # the silent (ip,fqdn) collapse above — that resolves the agreeing case; this
+    # flags the disagreeing one. Empty for the clean common case.
+    conflicts = _ip_hostname_conflicts(session, in_scope_ids, boundary_by_ev)
+
     # (boundary, host) → HostRecord under construction
     host_index: dict[tuple[str, str], HostRecord] = {}
     # (boundary, host) → set of STIG titles applied (deduped across multi-STIG CKLs)
@@ -900,6 +1026,7 @@ def summarize_asset_coverage(
         resolved_devices=resolved_devices,
         checklists_regular=checklists_regular,
         checklists_xlsx=checklists_xlsx,
+        conflicts=conflicts,
     )
 
 
@@ -969,4 +1096,24 @@ def render_coverage_block(report: AssetCoverageReport) -> str | None:
         lines.append(
             "MATCH: every observed host appears in scans, checklists, and inventory."
         )
+
+    # Host-identity conflicts: one IP bound to >1 device name in a boundary.
+    # These are contradictions to call out (CM-8 inventory accuracy), not gaps —
+    # render them distinctly so the assessor reconciles rather than trusting a
+    # silent merge.
+    if report.conflicts:
+        lines.append("")
+        lines.append(
+            "CONFLICT: host-identity disagreements (one IP claimed for multiple "
+            "device names — reconcile, do not assume a single host):"
+        )
+        for c in report.conflicts[:MAX_HOSTS_IN_BLOCK]:
+            where = "" if c.boundary == UNSPECIFIED_BOUNDARY else f" [{c.boundary}]"
+            labels = sorted({s.label for s in c.sources})
+            lines.append(
+                f"  {c.ip}{where} -> {c.hostnames} (per: {labels})"
+            )
+        extra = len(report.conflicts) - MAX_HOSTS_IN_BLOCK
+        if extra > 0:
+            lines.append(f"  ...(+{extra} more conflict(s))")
     return "\n".join(lines)

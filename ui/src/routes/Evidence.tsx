@@ -61,6 +61,7 @@ import {
   type CoverageSource,
   type Evidence as EvidenceArtifact,
   type HostCoverage,
+  type HostIdentityConflict,
 } from "@/lib/api";
 
 // UI-only cap on hostnames rendered per gap section. The full host list is
@@ -799,6 +800,9 @@ export function Evidence() {
               {crosscheck.data.source_types && (
                 <CoverageSourceTypes sourceTypes={crosscheck.data.source_types} />
               )}
+              {crosscheck.data.conflicts && crosscheck.data.conflicts.length > 0 && (
+                <CoverageConflicts conflicts={crosscheck.data.conflicts} />
+              )}
               <CoverageSources sources={crosscheck.data.sources} />
               <CoverageReconciliation hosts={crosscheck.data.hosts} />
               <CoverageGaps
@@ -1163,6 +1167,62 @@ function CoverageSourceTypes({
         <Stat label="Checklists (.ckl/XCCDF)" value={sourceTypes.checklists_regular} />
         <Stat label="Checklists (xlsx/SCAP)" value={sourceTypes.checklists_xlsx} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Host-identity conflicts — one IP that two sources bind to DIFFERENT device
+ * names within a single boundary. The backend deliberately does NOT merge these
+ * (no safe winner: a mislabeled checklist, a stale inventory row, or an IP
+ * reassigned between scans). It surfaces each for the assessor to reconcile by
+ * hand — the same "abstain, never guess" posture the assessor uses on verdicts.
+ * Warning-styled because it is an action item (an inaccurate CM-8 inventory),
+ * not a passive stat. Renders nothing when there are no conflicts, so the clean
+ * common case shows zero noise.
+ */
+function CoverageConflicts({ conflicts }: { conflicts: HostIdentityConflict[] }) {
+  return (
+    <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-warning">
+        <AlertTriangle className="h-4 w-4" />
+        Host-identity conflicts — {conflicts.length} to reconcile
+      </div>
+      <p className="text-xs text-muted-foreground">
+        One IP is claimed for more than one device name. These are not
+        auto-merged — confirm which binding is correct (a mislabeled checklist, a
+        stale inventory entry, or an IP reassigned between scans) so the CM-8
+        inventory stays accurate.
+      </p>
+      <ul className="space-y-1.5">
+        {conflicts.map((c, i) => (
+          <li
+            key={`${c.boundary}-${c.ip}-${i}`}
+            className="rounded border border-border bg-card px-2 py-1.5 text-xs"
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-mono font-medium text-foreground">{c.ip}</span>
+              {c.boundary && c.boundary !== "unspecified" && (
+                <Badge variant="outline" className="text-[10px]">
+                  {c.boundary}
+                </Badge>
+              )}
+              <span className="text-muted-foreground">claims:</span>
+              {c.hostnames.map((h) => (
+                <span
+                  key={h}
+                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground"
+                >
+                  {h}
+                </span>
+              ))}
+            </div>
+            <div className="mt-1 text-muted-foreground">
+              per: {c.sources.map((s) => s.label).join(", ")}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

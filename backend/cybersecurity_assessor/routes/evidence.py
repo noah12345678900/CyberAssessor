@@ -830,6 +830,22 @@ def get_crosscheck(workbook_id: int, s: Session = Depends(get_session)) -> dict:
             "checklists_regular": report.checklists_regular,
             "checklists_xlsx": report.checklists_xlsx,
         },
+        # High-confidence host-identity contradictions (one IP → >1 device name
+        # in a boundary). Surfaced for human reconciliation; never auto-merged.
+        # Empty list for the clean common case.
+        "conflicts": [
+            {
+                "kind": c.kind,
+                "boundary": c.boundary,
+                "ip": c.ip,
+                "hostnames": c.hostnames,
+                "sources": [
+                    {"evidence_id": r.evidence_id, "label": r.label, "kind": r.kind}
+                    for r in c.sources
+                ],
+            }
+            for c in report.conflicts
+        ],
     }
 
 
