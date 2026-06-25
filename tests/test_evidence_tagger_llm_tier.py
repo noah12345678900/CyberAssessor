@@ -371,7 +371,7 @@ def test_empty_all_by_control_returns_zeroes_and_no_judge_calls():
         artifact_title="stub artifact",
         add=add,
     )
-    assert result == (0, 0, 0, None)
+    assert result == (0, 0, 0, None, [])
     assert client.calls == []
     assert tags == []
 
@@ -389,7 +389,7 @@ def test_accept_fans_out_to_every_child_objective():
         ]
     }
     tags, add = _recorder()
-    (hits, attempted, errored, _best_rejected) = _tag_via_llm(
+    (hits, attempted, errored, _best_rejected, _declined) = _tag_via_llm(
         _DISJOINT_ARTIFACT,
         client=_StubJudge(scores={"ac-2": 0.80}),
         judge_model="stub-judge",

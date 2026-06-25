@@ -42,6 +42,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from cybersecurity_assessor import models  # noqa: F401,E402  -- registers tables
+from cybersecurity_assessor.evidence import ingest as _ingest_mod  # noqa: E402
 from cybersecurity_assessor.evidence.ingest import ingest_folder  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
     Control,
@@ -51,6 +52,21 @@ from cybersecurity_assessor.models import (  # noqa: E402
     StigFinding,
 )
 from cybersecurity_assessor.models import Workbook as WorkbookModel  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _force_offline_tagger(monkeypatch):
+    """Force the tagger OFFLINE for this module's DETERMINISTIC-classifier tests.
+
+    These tests pin the Tier-1..4 content-shape classifier (e.g. "a generic
+    project plan must NOT be tagged CA-5"). They are NOT about the LLM judge or
+    the never-zero dynamic floor. On a dev box with a live judge/key, the floor
+    would add a backstop tag and break the "must-not-tag" assertions — so pin
+    no-client, mirroring test_tool_name_autotag.py.
+    """
+    monkeypatch.setattr(
+        _ingest_mod, "_build_tagger_llm", lambda: (None, None, "disabled")
+    )
 
 
 @pytest.fixture
