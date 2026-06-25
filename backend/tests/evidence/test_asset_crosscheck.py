@@ -756,13 +756,16 @@ def test_stig_xlsx_counts_distinct_benchmark_host_checklists(session):
         hosts=["webhost", "dbhost"],
         title="Multi STIG report",
     )
-    # Distinct (benchmark, host) checklists: 3 unique pairs + one DUPLICATE rule
-    # within an existing (benchmark, host) that must NOT inflate the count.
+    # rule_version holds the per-RULE STIG id (RHEL-08-010030), NOT the benchmark
+    # — so DIFFERENT rules of the SAME benchmark must collapse to one checklist
+    # per host. The OSCAP report also puts a CCI-###### in this column for some
+    # rows; those are control mappings, NOT benchmarks, and must be EXCLUDED.
     finding_specs = [
-        ("RHEL_8_STIG", "webhost", "SV-001"),
-        ("RHEL_8_STIG", "webhost", "SV-002"),   # same (benchmark,host) → dup
-        ("RHEL_8_STIG", "dbhost", "SV-001"),
-        ("APACHE_STIG", "webhost", "SV-100"),
+        ("RHEL-08-010030", "webhost", "SV-1"),   # RHEL-08 × webhost
+        ("RHEL-08-010040", "webhost", "SV-2"),   # same benchmark+host → collapse
+        ("RHEL-08-010030", "dbhost", "SV-3"),    # RHEL-08 × dbhost
+        ("FFOX-00-000001", "webhost", "SV-4"),   # Firefox × webhost
+        ("CCI-000366", "webhost", "SV-5"),       # CCI row → NOT a benchmark, skip
     ]
     for benchmark, host, rule in finding_specs:
         session.add(
@@ -778,12 +781,12 @@ def test_stig_xlsx_counts_distinct_benchmark_host_checklists(session):
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
 
-    # 3 distinct (benchmark, host) pairs: (RHEL,web), (RHEL,db), (APACHE,web).
-    # The duplicate rule under (RHEL, web) collapses — checklists are
-    # benchmark×host, not per-rule.
+    # 3 distinct (benchmark, host): (RHEL-08, web), (RHEL-08, db), (FFOX-00, web).
+    # The second RHEL rule collapses (per-benchmark, not per-rule); the CCI row is
+    # excluded entirely.
     assert report.checklists_xlsx == 3, (
-        "one xlsx with 2 benchmarks across 2 hosts = 3 distinct benchmark×host "
-        "checklists, not 1 file"
+        "must count distinct (benchmark × host): RHEL-08 rules collapse, CCI row "
+        f"excluded — expected 3, got {report.checklists_xlsx}"
     )
 
 
