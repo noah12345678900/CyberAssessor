@@ -192,7 +192,12 @@ def catalog(session) -> dict[str, list[int]]:
     session.refresh(fw)
 
     by_control: dict[str, list[int]] = {}
-    for ctl_id, family in [("ac-17", "AC"), ("au-8", "AU")]:
+    for ctl_id, family in [
+        ("ac-17", "AC"),
+        ("au-8", "AU"),
+        ("ac-3", "AC"),   # backstop: a sub-0.6 "best rejected" candidate
+        ("ca-2", "CA"),   # backstop: the quarantine control
+    ]:
         ctrl = Control(
             framework_id=fw.id,
             control_id=ctl_id,
@@ -621,3 +626,108 @@ def test_vault_polysemous_still_emits_nothing_offline(
     tagged = {t.objective_id for t in tags}
     seeded = {oid for ids in catalog.values() for oid in ids}
     assert not (tagged & seeded), "polysemous 'vault' must not tag offline"
+
+
+# ---------------------------------------------------------------------------
+# NEVER-ZERO BACKSTOP (2026-06-24)
+# A NON-EMPTY file that ends with zero tags after all tiers + judge + escalation
+# must be LOCATED (non-affirming), never silently dropped. Target: the judge's
+# best DECLINED candidate if it scored >= 0.3, else the CA-2 quarantine control.
+# Only a genuinely EMPTY (size_bytes == 0) file may stay zero.
+# ---------------------------------------------------------------------------
+
+_NEUTRAL_BODY = (
+    "This terminal capture records an operational procedure executed across "
+    "several managed hosts in the enterprise environment during the assessment "
+    "window. It documents the steps the tester performed and the resulting "
+    "system output collected for review by the assessment team."
+)
+
+
+def _located_tags(session, evidence_id):
+    from cybersecurity_assessor.evidence.tagger import _SOURCE_LOCATED_NONAFFIRMING
+
+    return session.exec(
+        select(EvidenceTag)
+        .where(EvidenceTag.evidence_id == evidence_id)
+        .where(EvidenceTag.source == _SOURCE_LOCATED_NONAFFIRMING)
+    ).all()
+
+
+def test_backstop_locates_to_judges_best_declined_candidate(session, catalog):
+    """Non-empty file, judge declines all, best reject >= 0.3 -> located to it.
+
+    The judge (both passes) scores AC-3 at 0.45 -- below the 0.6 accept gate, so
+    no affirming tag -- but it's the best real candidate. The never-zero backstop
+    must floor AC-3 as located_nonaffirming so the file is never zero-tag.
+    """
+    e = _evidence(session, "C:/fake/CTP-050_generic_procedure.txt")
+    judge = _TwoModelJudge(
+        {
+            _HAIKU: {"ac-3": 0.45},   # declined (<0.6) but the best real signal
+            _OPUS: {"ac-3": 0.45},    # escalation also declines -> stays best_rejected
+        }
+    )
+    tag_evidence(
+        session,
+        e,
+        text=_NEUTRAL_BODY,
+        client=judge,
+        judge_model=_HAIKU,
+        escalation_model=_OPUS,
+        tool_candidate_cids={"ac-3"},  # force AC-3 in front of the judge
+    )
+    located = _located_tags(session, e.id)
+    tagged = {t.objective_id for t in located}
+    for oid in catalog["ac-3"]:
+        assert oid in tagged, "backstop must locate the file to AC-3 (best declined candidate)"
+    assert not _llm_tags(session, e.id), "a declined candidate must NOT be affirming"
+    # Did NOT fall to quarantine when a real candidate existed.
+    for oid in catalog["ca-2"]:
+        assert oid not in tagged, "should locate to AC-3, not the CA-2 quarantine"
+
+
+def test_backstop_quarantines_to_ca2_when_no_real_candidate(session, catalog):
+    """Non-empty file, judge's best reject < 0.3 -> CA-2 quarantine (located)."""
+    e = _evidence(session, "C:/fake/CTP-051_unmappable.txt")
+    judge = _TwoModelJudge(
+        {
+            _HAIKU: {"ac-3": 0.10},   # below the 0.3 backstop floor = no real signal
+            _OPUS: {"ac-3": 0.10},
+        }
+    )
+    tag_evidence(
+        session,
+        e,
+        text=_NEUTRAL_BODY,
+        client=judge,
+        judge_model=_HAIKU,
+        escalation_model=_OPUS,
+        tool_candidate_cids={"ac-3"},
+    )
+    located = _located_tags(session, e.id)
+    tagged = {t.objective_id for t in located}
+    for oid in catalog["ca-2"]:
+        assert oid in tagged, "sub-0.3 best reject must quarantine to CA-2"
+    for oid in catalog["ac-3"]:
+        assert oid not in tagged, "must NOT locate to a 0.10 near-random candidate"
+
+
+def test_backstop_does_not_fire_when_already_tagged(session, catalog):
+    """A file the judge AFFIRMED gets no backstop tag (it's not zero-tag)."""
+    e = _evidence(session, "C:/fake/CTP-052_affirmed.txt")
+    judge = _TwoModelJudge({_HAIKU: {"ac-17": 0.9}})  # accepted
+    tag_evidence(
+        session,
+        e,
+        text=_NEUTRAL_BODY,
+        client=judge,
+        judge_model=_HAIKU,
+        escalation_model=_OPUS,
+        tool_candidate_cids={"ac-17"},
+    )
+    located = _located_tags(session, e.id)
+    tagged = {t.objective_id for t in located}
+    for oid in catalog["ca-2"]:
+        assert oid not in tagged, "affirmed file must not also be quarantined"
+    assert _llm_tags(session, e.id), "the affirming AC-17 tag stands"

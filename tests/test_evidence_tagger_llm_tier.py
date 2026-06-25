@@ -173,7 +173,10 @@ def _run(client, specs, *, tool_candidate_cids=None):
         add=add,
         tool_candidate_cids=tool_candidate_cids,
     )
-    return result, tags
+    # _tag_via_llm now returns a 4-tuple (…, best_rejected); these tests assert on
+    # the (hits, attempted, errored) triple, so drop the 4th element here. The
+    # backstop's best_rejected is covered by the dedicated backstop tests.
+    return result[:3], tags
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +371,7 @@ def test_empty_all_by_control_returns_zeroes_and_no_judge_calls():
         artifact_title="stub artifact",
         add=add,
     )
-    assert result == (0, 0, 0)
+    assert result == (0, 0, 0, None)
     assert client.calls == []
     assert tags == []
 
@@ -386,7 +389,7 @@ def test_accept_fans_out_to_every_child_objective():
         ]
     }
     tags, add = _recorder()
-    (hits, attempted, errored) = _tag_via_llm(
+    (hits, attempted, errored, _best_rejected) = _tag_via_llm(
         _DISJOINT_ARTIFACT,
         client=_StubJudge(scores={"ac-2": 0.80}),
         judge_model="stub-judge",

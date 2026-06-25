@@ -1027,6 +1027,29 @@ def _too_few_lines_to_escalate(text: str) -> bool:
 # the artifact before the judge sees it, recreating the vanish bug.
 _SOURCE_LOCATED_NONAFFIRMING = "located_nonaffirming"
 
+# Never-zero backstop (2026-06-24). Owner rule: a NON-EMPTY evidence file must
+# NEVER end with zero tags — it must land under SOME control as
+# located_nonaffirming (located/citable for review, never counted compliant);
+# only a genuinely EMPTY (0-byte / no-content) file may be zero. When every tier
+# AND the judge AND escalation leave a non-empty file untagged, this backstop
+# floors one tag:
+#   * if the judge's best DECLINED candidate scored >= _BACKSTOP_MIN_SCORE, floor
+#     that control (the model's own top guess — content-driven, specific);
+#   * else (judge saw nothing real, or never ran — e.g. a vision-failed image
+#     with no candidates), floor the QUARANTINE control so the artifact is still
+#     visible under a control an assessor reviews.
+# _BACKSTOP_MIN_SCORE mirrors the 0.35 Tier-3 "real signal" line but a touch
+# lower (a located, non-affirming tag tolerates weaker signal than an affirming
+# one); below it the judge's guess is near-random and the quarantine is honest.
+_BACKSTOP_MIN_SCORE = 0.3
+# Quarantine control for "non-empty but unmappable / unreadable" evidence. CA-2
+# (Security Assessments) is the semantically-correct home: an artifact the
+# pipeline could not place is itself an assessment-process gap a 3PAO triages.
+# Rejected alternatives: a family "-1" policy control (noise — buries the real
+# policy doc) and a per-file flag (can't be represented; EvidenceTag.objective_id
+# is a hard FK to one objective).
+_BACKSTOP_QUARANTINE_CONTROL = "ca-2"
+
 
 def _tier3_relevance_scores(
     artifact_text: str, control_texts: list[str]
@@ -1475,25 +1498,21 @@ def _tag_via_llm(
     framework_id: int | None = None,
     augment_corpus: bool = True,
     tool_candidate_cids: set[str] | None = None,
-) -> tuple[int, int, int, set[str]]:
+) -> tuple[int, int, int, tuple[str, float] | None]:
     """LLM smart-backstop: hybrid-RAG pre-select, judge accept/abstain, tag.
 
-    Returns ``(llm_hits, attempted, errored, errored_cids)`` where ``attempted``
-    is the number of candidate controls actually sent to the judge, ``errored``
-    is how many of those STAYED stuck (raised an API/network error or failed to
-    parse) AFTER one in-loop retry, and ``errored_cids`` is the set of those
-    stuck control ids. The caller uses ``attempted > 0 and errored == attempted``
-    (every call failed — dead key, network down, not genuine abstention) to
-    decide whether to fall back to the deterministic TF-IDF Tier 5, and emits a
-    LOCATED-NON-AFFIRMING tag for each ``errored_cids`` member that no other tier
-    (or the escalation pass) covered — so a 429/timeout NEVER silently drops a
-    control (the recall hole that produced real 3PAO-visible misses).
-
-    Error resilience (2026-06-24): a candidate whose judge call errors gets ONE
-    bounded in-loop retry before being declared stuck. The rate-limit cooldown
-    may have elapsed by the time Phase 2 runs (all futures already drained), so a
-    fresh call often succeeds. A candidate that RECOVERS on retry is NOT counted
-    errored.
+    Returns ``(llm_hits, attempted, errored, best_rejected)`` where ``attempted``
+    is the number of candidate controls sent to the judge, ``errored`` is how
+    many raised an API/network error or failed to parse, and ``best_rejected``
+    is ``(cid, score)`` of the highest-scoring candidate the judge DECLINED
+    (score < the 0.6 accept gate) — or ``None`` when the judge ran no candidates
+    or accepted everything it scored. The caller uses ``attempted > 0 and
+    errored == attempted`` (every call failed — dead key/network down, not
+    genuine abstention) to decide whether to fall back to the deterministic
+    TF-IDF Tier 5, and uses ``best_rejected`` for the NEVER-ZERO backstop: a
+    non-empty file that would otherwise end with ZERO tags is floored to the
+    judge's own best guess (located_nonaffirming, above a relevance floor) so a
+    real artifact is never silently dropped from every control.
 
     ``add`` is the ``_add`` closure from :func:`tag_evidence` — the sole
     EvidenceTag construction site — so source/framework stamping and the
@@ -1501,7 +1520,7 @@ def _tag_via_llm(
     """
     cids = sorted(all_by_control.keys())
     if not cids:
-        return 0, 0, 0
+        return 0, 0, 0, None
     # Corpus augmentation: append each control family's technical-synonym gloss
     # so the lexical lanes get an overlap signal between machine-state evidence
     # and policy-speak control text. Gated (default on); the gloss only feeds
@@ -1537,7 +1556,7 @@ def _tag_via_llm(
         tool_candidate_cids=tool_candidate_cids,
     )
     if not candidate_cids:
-        return 0, 0, 0
+        return 0, 0, 0, None
     candidates = [(cid, text_by_cid[cid]) for cid in candidate_cids]
 
     brief = _build_llm_brief(artifact_title, _llm_artifact_body(text))
@@ -1593,6 +1612,14 @@ def _tag_via_llm(
     llm_hits = 0
     attempted = 0
     errored = 0
+    # Never-zero backstop support (2026-06-24): remember the judge's best
+    # SUB-threshold candidate (scored real, just < 0.6 accept gate). When a
+    # non-empty file would otherwise end with ZERO tags, the caller floors a
+    # located_nonaffirming tag to this best guess so the artifact is never
+    # silently dropped. Only genuine scores in [0, 0.6) qualify (errors/sentinels
+    # excluded) — the caller applies its own >= floor (e.g. 0.3) before using it.
+    best_rejected_cid: str | None = None
+    best_rejected_score: float = -1.0
     for entry in judged:
         if entry is None:  # pragma: no cover — every slot is filled above
             continue
@@ -1627,8 +1654,13 @@ def _tag_via_llm(
             )
             continue
         if score is None or score < _LLM_TIER_ACCEPT_SCORE:
-            # Below threshold. Drop — precision over recall: an abstention never
-            # becomes a tag.
+            # Below threshold. Drop from AFFIRMING tags — precision over recall.
+            # But remember the best real sub-threshold score so the caller's
+            # never-zero backstop can locate (non-affirming) to the judge's own
+            # top guess rather than letting a non-empty file vanish.
+            if score is not None and score > best_rejected_score:
+                best_rejected_score = score
+                best_rejected_cid = cid
             continue
         relevance = round(
             _TIER3_RELEVANCE_FLOOR
@@ -1651,7 +1683,12 @@ def _tag_via_llm(
                 ),
             )
             llm_hits += 1
-    return llm_hits, attempted, errored
+    best_rejected = (
+        (best_rejected_cid, best_rejected_score)
+        if best_rejected_cid is not None
+        else None
+    )
+    return llm_hits, attempted, errored, best_rejected
 
 
 def tag_evidence(
@@ -1740,6 +1777,11 @@ def tag_evidence(
     judge_errored = 0
     judge_escalated = False
     judge_escalated_accepted = 0
+    # Never-zero backstop: the judge's best DECLINED candidate (cid, score),
+    # surfaced from _tag_via_llm so a non-empty file that ends with zero tags can
+    # be located (non-affirming) to the model's own top guess. None until/unless
+    # the judge runs and declines at least one scored candidate.
+    best_rejected: tuple[str, float] | None = None
     # Track objectives that received a new tag this call so we can invalidate
     # their stale Assessment rows in one UPDATE at the end (e.g. a CCI that
     # short-circuited via rule_no_evidence before this artifact landed must
@@ -2151,7 +2193,7 @@ def tag_evidence(
                         hyde_prose = expand(text, model=judge_model) or ""
                     except Exception:  # noqa: BLE001 — never abort tagging
                         log.debug("HyDE expansion raised; continuing", exc_info=True)
-                llm_hits, attempted, errored = _tag_via_llm(
+                llm_hits, attempted, errored, best_rejected = _tag_via_llm(
                     text,
                     client=client,
                     judge_model=judge_model,
@@ -2201,7 +2243,7 @@ def tag_evidence(
                     and not _too_few_lines_to_escalate(text)
                     and not _is_command_error_only(text)
                 ):
-                    esc_hits, esc_attempted, esc_errored = _tag_via_llm(
+                    esc_hits, esc_attempted, esc_errored, esc_best_rejected = _tag_via_llm(
                         text,
                         client=client,
                         judge_model=escalation_model,
@@ -2221,6 +2263,11 @@ def tag_evidence(
                     judge_attempted += esc_attempted
                     judge_accepted += esc_hits
                     judge_errored += esc_errored
+                    # Prefer the stronger (Opus) escalation's best guess for the
+                    # never-zero backstop when it scored one — it read the same
+                    # body with a better model.
+                    if esc_best_rejected is not None:
+                        best_rejected = esc_best_rejected
 
                 # Trust partial LLM success. Only fall back to the deterministic
                 # TF-IDF backstop when EVERY judge call errored (network/API
@@ -2366,6 +2413,52 @@ def tag_evidence(
                     rationale=rationale,
                 )
                 tool_name_hits += 1
+
+    # NEVER-ZERO BACKSTOP (2026-06-24). After EVERY tier + judge + escalation +
+    # tool-floor, if a NON-EMPTY file still has zero tags, locate it (never drop
+    # it). "Non-empty" = the source artifact has bytes (size_bytes > 0), NOT
+    # text-non-empty — a 215KB screenshot whose vision read failed has 0 text but
+    # IS content and must be located; only a genuine 0-byte file is exempt.
+    # Target: the judge's best declined candidate if it cleared the floor, else
+    # the CA-2 quarantine control. Always source=located_nonaffirming (never
+    # affirming/compliant). `_add` first-write-wins + the empty `existing` guard
+    # mean this only fires when nothing else tagged the file.
+    # Gate on `client is not None` (an ONLINE run was available), NOT on
+    # judge_invoked: a vision-failed image has empty text so the judge is skipped
+    # (judge_invoked stays False) yet MUST still quarantine. Offline (client is
+    # None) is a degraded mode — we must NOT dump every non-empty file into CA-2
+    # there; offline tagging relies on the deterministic tiers + floor only.
+    if client is not None and not existing and (evidence.size_bytes or 0) > 0:
+        backstop_cid: str | None = None
+        reason: str
+        if best_rejected is not None and best_rejected[1] >= _BACKSTOP_MIN_SCORE:
+            backstop_cid = best_rejected[0]
+            reason = (
+                f"Never-zero backstop: judge's best (declined) candidate "
+                f"{backstop_cid.upper()} at score {best_rejected[1]:.2f} "
+                "(< 0.6 accept gate). LOCATED for review, NON-AFFIRMING."
+            )
+        else:
+            backstop_cid = _BACKSTOP_QUARANTINE_CONTROL
+            reason = (
+                "Never-zero backstop: artifact is non-empty but could not be "
+                "mapped to a specific control (judge saw no real candidate or "
+                "could not read it). Quarantined under CA-2 for assessor triage, "
+                "NON-AFFIRMING."
+            )
+        for cid, obj in _objectives_for_control_ids(
+            session, [backstop_cid], framework_id=framework_id
+        ):
+            if obj.id is None or obj.id in existing:
+                continue
+            _add(
+                obj.id,
+                relevance=0.4,
+                confidence=_TIER5_CONFIDENCE,
+                source=_SOURCE_LOCATED_NONAFFIRMING,
+                rationale=reason,
+            )
+            semantic_hits += 1
 
     # Invalidate any stale Assessment rows whose CCI just gained a tag —
     # without this, rule_no_evidence verdicts written before this artifact
