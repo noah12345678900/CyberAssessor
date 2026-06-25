@@ -260,12 +260,12 @@ export function IngestProgressStrip() {
 
   return (
     <div className="sticky top-0 z-30 border-b border-border bg-card/95 px-4 py-2 shadow-nuon-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
-      {/* pr-[150px] on the header row keeps the percent/ETA (right-aligned via
+      {/* pr-[160px] on the header row keeps the percent/ETA (right-aligned via
           ml-auto) clear of the custom WindowControls cluster, which is fixed at
-          the top-right (right-2, ~132px wide). Without it the ETA renders UNDER
-          the min/max/close buttons and is invisible. Only the top strip overlaps
-          them, so the padding lives here, not on the whole component. */}
-      <div className="flex items-center gap-2 pr-[150px]">
+          the top-right (~124px: 3×w-9 + 2×gap-1 + right-2). Without it the ETA
+          renders UNDER the min/max/close buttons and is invisible. Only the top
+          strip overlaps them, so the padding lives here, not the whole component. */}
+      <div className="flex items-center gap-2 pr-[160px]">
         <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
         <span className="text-sm font-medium">
           {isStarting
