@@ -870,6 +870,75 @@ export const useEvidenceForObjective = (
     enabled: !!objectiveId,
   });
 
+// Manually attach an evidence artifact to a CCI (source="manual"). Invalidates
+// the CCI's evidence panel AND its assessment + the control list, because a
+// manual tag changes the evidence set the verdict is computed against (the
+// server flags the cached assessment stale; the UI must refetch to show it).
+export const useAddManualTag = (
+  opts?: UseMutationOptions<
+    { ok: boolean; evidence_id: number; objective_id: number },
+    Error,
+    {
+      evidenceId: number;
+      objectiveId: number;
+      rationale?: string | null;
+      // For invalidation only — not sent to the server.
+      controlId?: number;
+      workbookId?: number;
+    }
+  >,
+) => {
+  const qc = useQueryClient();
+  const { onSuccess: callerOnSuccess, ...restOpts } = opts ?? {};
+  return useMutation({
+    mutationFn: ({ evidenceId, objectiveId, rationale }) =>
+      api.addManualTag(evidenceId, { objective_id: objectiveId, rationale }),
+    ...restOpts,
+    onSuccess: (data, vars, onMutateResult, context) => {
+      qc.invalidateQueries({
+        queryKey: qk.evidenceForObjective(vars.objectiveId, vars.workbookId),
+      });
+      if (vars.controlId) {
+        qc.invalidateQueries({ queryKey: qk.assessments(vars.controlId, vars.workbookId) });
+      }
+      qc.invalidateQueries({ queryKey: ["controls"] });
+      callerOnSuccess?.(data, vars, onMutateResult, context);
+    },
+  });
+};
+
+// Remove a MANUAL tag (auto/llm tags untouched). Same invalidations as add.
+export const useRemoveManualTag = (
+  opts?: UseMutationOptions<
+    { ok: boolean; removed: number },
+    Error,
+    {
+      evidenceId: number;
+      objectiveId: number;
+      controlId?: number;
+      workbookId?: number;
+    }
+  >,
+) => {
+  const qc = useQueryClient();
+  const { onSuccess: callerOnSuccess, ...restOpts } = opts ?? {};
+  return useMutation({
+    mutationFn: ({ evidenceId, objectiveId }) =>
+      api.removeManualTag(evidenceId, objectiveId),
+    ...restOpts,
+    onSuccess: (data, vars, onMutateResult, context) => {
+      qc.invalidateQueries({
+        queryKey: qk.evidenceForObjective(vars.objectiveId, vars.workbookId),
+      });
+      if (vars.controlId) {
+        qc.invalidateQueries({ queryKey: qk.assessments(vars.controlId, vars.workbookId) });
+      }
+      qc.invalidateQueries({ queryKey: ["controls"] });
+      callerOnSuccess?.(data, vars, onMutateResult, context);
+    },
+  });
+};
+
 // Asset-list cross-check for the inventory-family controls. Returns
 // empty arrays when fewer than two artifacts are flagged; the UI uses
 // that as the cue to collapse the panel.

@@ -1549,6 +1549,114 @@ def list_evidence_for_objective(
 
 
 # ---------------------------------------------------------------------------
+# Manual evidence→CCI tagging (human-in-the-loop, source="manual")
+#
+# The auto/llm tiers locate evidence; a human assessor may also EXPLICITLY
+# attach an artifact to a CCI the automation missed (or detach a wrong one).
+# A manual tag is the assessor's own assertion — it is AFFIRMING (counts toward
+# the verdict like any tag) and is the strongest provenance, so it sorts above
+# auto/llm and is rendered in its own "Manually assigned" group in the UI.
+# Creating/removing one invalidates the affected CCI's cached assessment so the
+# next assess reflects the change.
+# ---------------------------------------------------------------------------
+
+
+class ManualTagRequest(BaseModel):
+    objective_id: int = Field(description="The CCI/objective to attach this evidence to.")
+    rationale: str | None = Field(
+        default=None, description="Optional reviewer note for the audit trail."
+    )
+
+
+def _framework_id_for_objective(s: Session, obj: Objective) -> int | None:
+    """Resolve the framework lens for an objective via its parent Control.
+
+    A manual tag stamps the same framework_id the auto tiers would, so the tag is
+    scoped consistently. Returns None if the control can't be resolved (the tag
+    then behaves framework-agnostically, the historical default)."""
+    ctrl = s.get(Control, obj.control_id_fk)
+    return ctrl.framework_id if ctrl is not None else None
+
+
+@router.post("/{evidence_id}/manual-tag")
+def add_manual_tag(
+    evidence_id: int,
+    body: ManualTagRequest,
+    s: Session = Depends(get_session),
+) -> dict:
+    """Manually attach one evidence artifact to one CCI (source="manual").
+
+    Idempotent on (evidence_id, objective_id, source="manual"): re-posting the
+    same pair updates the rationale rather than inserting a duplicate. relevance/
+    confidence are pinned to 1.0 — a human assertion is maximal-trust, so the
+    artifact sorts to the top of the CCI's evidence and outranks auto/llm tags.
+    """
+    ev = s.get(Evidence, evidence_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    obj = s.get(Objective, body.objective_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Objective (CCI) not found")
+    existing = s.exec(
+        select(EvidenceTag)
+        .where(EvidenceTag.evidence_id == evidence_id)
+        .where(EvidenceTag.objective_id == body.objective_id)
+        .where(EvidenceTag.source == "manual")
+    ).first()
+    note = (body.rationale or "").strip() or "Manually assigned by reviewer."
+    if existing is not None:
+        existing.rationale = note
+        s.add(existing)
+    else:
+        s.add(
+            EvidenceTag(
+                evidence_id=evidence_id,
+                objective_id=body.objective_id,
+                relevance=1.0,
+                confidence=1.0,
+                source="manual",
+                rationale=note,
+                # Stamp the framework lens of the objective's control so the tag
+                # is scoped consistently with the auto tiers.
+                framework_id=_framework_id_for_objective(s, obj),
+            )
+        )
+    # The CCI's verdict was computed before this artifact landed — flag it stale
+    # so the next assess sees the new evidence (mirrors tag_evidence's behavior).
+    invalidate_assessments_for_objectives(s, {body.objective_id})
+    s.commit()
+    return {"ok": True, "evidence_id": evidence_id, "objective_id": body.objective_id}
+
+
+@router.delete("/{evidence_id}/manual-tag/{objective_id}")
+def remove_manual_tag(
+    evidence_id: int,
+    objective_id: int,
+    s: Session = Depends(get_session),
+) -> dict:
+    """Remove the MANUAL tag linking this evidence to this CCI.
+
+    Only deletes ``source="manual"`` rows — auto/llm tags are left intact (the
+    human is undoing their OWN assertion, not the automation's). Invalidates the
+    CCI's assessment so the verdict re-derives without the manual evidence.
+    """
+    rows = s.exec(
+        select(EvidenceTag)
+        .where(EvidenceTag.evidence_id == evidence_id)
+        .where(EvidenceTag.objective_id == objective_id)
+        .where(EvidenceTag.source == "manual")
+    ).all()
+    removed = 0
+    for r in rows:
+        s.delete(r)
+        removed += 1
+    if removed:
+        invalidate_assessments_for_objectives(s, {objective_id})
+        s.commit()
+    return {"ok": True, "removed": removed}
+
+
+# ---------------------------------------------------------------------------
 # v0.3 scope-link endpoints
 #
 # Three near-identical M2M attach/detach families (Component, Asset,
