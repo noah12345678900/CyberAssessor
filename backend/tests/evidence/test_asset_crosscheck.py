@@ -42,6 +42,7 @@ from cybersecurity_assessor import models  # noqa: F401,E402  -- registers table
 from cybersecurity_assessor.evidence.asset_crosscheck import (  # noqa: E402
     MAX_HOSTS_IN_BLOCK,
     AssetCoverageReport,
+    HostIdentityConflict,
     HostRecord,
     SourceSummary,
     render_coverage_block,
@@ -403,6 +404,118 @@ def test_multi_stig_titles_dedup_and_sort(session):
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
     assert report.hosts[0].stigs_applied == ["Apache STIG", "Windows STIG"]
+
+
+# ---------------------------------------------------------------------------
+# Host-identity conflicts (feature C — never silently merge a disagreement)
+# ---------------------------------------------------------------------------
+
+
+def test_no_conflict_when_one_ip_maps_to_one_device(session):
+    """Two scans agreeing that 10.0.0.5 == dc01 is a normal collapse, no conflict."""
+    _make_evidence(
+        session,
+        path="file:///scan-a.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dc01.dom.mil"}],
+    )
+    _make_evidence(
+        session,
+        path="file:///scan-b.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dc01"}],  # short form, same device
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert report.conflicts == []
+
+
+def test_one_ip_two_device_names_is_a_conflict(session):
+    """10.0.0.5 bound to dc01 by one scan and web01 by another → surfaced, not merged."""
+    _make_evidence(
+        session,
+        path="file:///scan-a.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        title="ACAS June",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dc01.dom.mil"}],
+    )
+    _make_evidence(
+        session,
+        path="file:///inventory.xlsx",
+        kind=EvidenceKind.NESSUS,
+        hosts=["web01"],
+        title="HW Inventory",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "web01.dom.mil"}],
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert len(report.conflicts) == 1
+    c = report.conflicts[0]
+    assert c.kind == "ip_hostname_disagreement"
+    assert c.ip == "10.0.0.5"
+    assert c.hostnames == ["dc01", "web01"]  # sorted, normalized to short form
+    # Both contributing artifacts are listed so the assessor can open them.
+    assert {s.label for s in c.sources} == {"ACAS June", "HW Inventory"}
+
+
+def test_same_ip_different_devices_in_different_boundaries_is_not_a_conflict(session):
+    """RFC1918 reuse across enclaves is legitimate — only WITHIN-boundary disagreement counts."""
+    _make_evidence(
+        session,
+        path="file:///CRN-A/01.AC/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        host_pairs=[{"ip": "192.168.1.1", "fqdn": "dc01.a.mil"}],
+    )
+    _make_evidence(
+        session,
+        path="file:///CRN-B/01.AC/scan.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["gw01"],
+        host_pairs=[{"ip": "192.168.1.1", "fqdn": "gw01.b.mil"}],
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    assert report.conflicts == []
+
+
+def test_conflict_renders_in_prompt_block(session):
+    """A conflict is surfaced in the LLM prompt block as a CONFLICT line."""
+    _make_evidence(
+        session,
+        path="file:///scan-a.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["dc01"],
+        title="ACAS",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "dc01"}],
+    )
+    _make_evidence(
+        session,
+        path="file:///scan-b.nessus",
+        kind=EvidenceKind.NESSUS,
+        hosts=["web01"],
+        title="Inventory",
+        host_pairs=[{"ip": "10.0.0.5", "fqdn": "web01"}],
+    )
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    block = render_coverage_block(report)
+    assert block is not None
+    assert "CONFLICT" in block
+    assert "10.0.0.5" in block
+    assert "dc01" in block and "web01" in block
+
+
+def test_report_defaults_conflicts_to_empty_list():
+    """A directly-built report (older callers/tests) defaults conflicts to []."""
+    rep = AssetCoverageReport(
+        sources=[],
+        hosts=[],
+        gaps={},
+        scanned_set=frozenset(),
+        checklisted_set=frozenset(),
+        declared_set=frozenset(),
+    )
+    assert rep.conflicts == []
 
 
 # ---------------------------------------------------------------------------

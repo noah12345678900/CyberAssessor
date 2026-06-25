@@ -1417,6 +1417,27 @@ export interface CrossCheckResult {
     /** DISA STIG-report .xlsx/.xlsm files (kind STIG_CKL, spreadsheet provenance). */
     checklists_xlsx: number;
   };
+  /**
+   * High-confidence host-identity contradictions — one IP bound to >1 device
+   * name within a single boundary. Surfaced for human reconciliation; the
+   * backend NEVER auto-merges a disagreement. Empty (or absent) for the clean
+   * common case.
+   */
+  conflicts?: HostIdentityConflict[];
+}
+
+/** One IP↔hostname disagreement the assessor must reconcile by hand. */
+export interface HostIdentityConflict {
+  /** Discriminator — currently only "ip_hostname_disagreement". */
+  kind: string;
+  /** Boundary the disagreement occurred in ("unspecified" for single-boundary). */
+  boundary: string;
+  /** The IP that two sources bound to different device names. */
+  ip: string;
+  /** The >1 distinct device names claimed for this IP (sorted, short form). */
+  hostnames: string[];
+  /** The artifacts that made the conflicting claims. */
+  sources: CoverageSourceRef[];
 }
 
 export interface EvidenceTag {
