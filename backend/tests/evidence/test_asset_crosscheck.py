@@ -869,23 +869,25 @@ def test_stig_xlsx_counts_distinct_benchmark_host_checklists(session):
         hosts=["webhost", "dbhost"],
         title="Multi STIG report",
     )
-    # rule_version holds the per-RULE STIG id (RHEL-08-010030), NOT the benchmark
-    # — so DIFFERENT rules of the SAME benchmark must collapse to one checklist
-    # per host. The OSCAP report also puts a CCI-###### in this column for some
-    # rows; those are control mappings, NOT benchmarks, and must be EXCLUDED.
+    # benchmark holds the canonical SHEET NAME (the checklist key); rule_version
+    # holds the per-RULE STIG id. DIFFERENT rules of the SAME benchmark on the
+    # SAME host collapse to one checklist. A CCI-only legacy row (no benchmark,
+    # rule_version is a CCI token) is excluded — it's a control mapping, not a
+    # benchmark.
     finding_specs = [
-        ("RHEL-08-010030", "webhost", "SV-1"),   # RHEL-08 × webhost
-        ("RHEL-08-010040", "webhost", "SV-2"),   # same benchmark+host → collapse
-        ("RHEL-08-010030", "dbhost", "SV-3"),    # RHEL-08 × dbhost
-        ("FFOX-00-000001", "webhost", "SV-4"),   # Firefox × webhost
-        ("CCI-000366", "webhost", "SV-5"),       # CCI row → NOT a benchmark, skip
+        ("RHEL8", "RHEL-08-010030", "webhost", "SV-1"),   # RHEL8 × webhost
+        ("RHEL8", "RHEL-08-010040", "webhost", "SV-2"),   # same → collapse
+        ("RHEL8", "RHEL-08-010030", "dbhost", "SV-3"),    # RHEL8 × dbhost
+        ("FIREFOX", "FFOX-00-000001", "webhost", "SV-4"),  # Firefox × webhost
+        (None, "CCI-000366", "webhost", "SV-5"),          # CCI legacy row → skip
     ]
-    for benchmark, host, rule in finding_specs:
+    for benchmark, rule_version, host, rule in finding_specs:
         session.add(
             StigFinding(
                 evidence_id=ev.id,
                 rule_id=rule,
-                rule_version=benchmark,
+                rule_version=rule_version,
+                benchmark=benchmark,
                 status=FindingStatus.OPEN,
                 comments=f"host={host}",
             )
@@ -894,12 +896,95 @@ def test_stig_xlsx_counts_distinct_benchmark_host_checklists(session):
 
     report = summarize_asset_coverage(workbook_id=1, session=session)
 
-    # 3 distinct (benchmark, host): (RHEL-08, web), (RHEL-08, db), (FFOX-00, web).
-    # The second RHEL rule collapses (per-benchmark, not per-rule); the CCI row is
-    # excluded entirely.
+    # 3 distinct (benchmark, host): (RHEL8, web), (RHEL8, db), (FIREFOX, web).
+    # The second RHEL8 rule collapses (per-benchmark, not per-rule); the CCI-only
+    # legacy row (no benchmark, CCI rule_version) is excluded.
     assert report.checklists_xlsx == 3, (
-        "must count distinct (benchmark × host): RHEL-08 rules collapse, CCI row "
+        "must count distinct (benchmark × host): RHEL8 rules collapse, CCI row "
         f"excluded — expected 3, got {report.checklists_xlsx}"
+    )
+
+
+def test_stig_xlsx_manual_and_oscap_union_not_sum(session):
+    """Manual + automated (OSCAP) checks of the same (benchmark, host) = ONE checklist.
+
+    A DISA STIG assessment ships as two report files: a MANUAL STIG-Viewer review
+    and an AUTOMATED OpenSCAP scan. When both assess the SAME benchmark on the
+    SAME host, that is one checklist of that host done two ways — NOT two
+    checklists. The counter must UNION (benchmark, host) across the two files, not
+    sum them. Regression guard for the 78-vs-142 double-count: the benchmark key
+    is the SHEET NAME (byte-identical across both files), so they dedupe even
+    though the per-rule columns differ (Manual=STIG id, OSCAP=CCI token).
+    """
+    from cybersecurity_assessor.models import FindingStatus, StigFinding
+
+    manual = _make_evidence(
+        session,
+        path="file:///STIG_Manual_report.xlsx",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["vdi-01", "vdi-02"],
+        title="STIG Manual report",
+    )
+    oscap = _make_evidence(
+        session,
+        path="file:///STIG_OSCAP_report.xlsx",
+        kind=EvidenceKind.STIG_CKL,
+        hosts=["vdi-01", "vdi-02"],
+        title="STIG OSCAP report",
+    )
+    # Manual review: RHEL8 + FIREFOX on both hosts (real STIG id in rule_version).
+    for host in ("vdi-01", "vdi-02"):
+        for bm, rv in (("RHEL8", "RHEL-08-010030"), ("FIREFOX", "FFOX-00-000001")):
+            session.add(StigFinding(
+                evidence_id=manual.id, rule_id=f"{bm}-{host}",
+                rule_version=rv, benchmark=bm,
+                status=FindingStatus.OPEN, comments=f"host={host}"))
+    # OSCAP scan: RHEL8 on both hosts — SAME (benchmark, host) the manual covered,
+    # but rule_version is a CCI token (the OSCAP report's column shape).
+    for host in ("vdi-01", "vdi-02"):
+        session.add(StigFinding(
+            evidence_id=oscap.id, rule_id=f"oscap-RHEL8-{host}",
+            rule_version="CCI-000366", benchmark="RHEL8",
+            status=FindingStatus.OPEN, comments=f"host={host}"))
+    session.commit()
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+
+    # Distinct (benchmark, host): (RHEL8,vdi-01),(RHEL8,vdi-02),(FIREFOX,vdi-01),
+    # (FIREFOX,vdi-02) = 4. The two OSCAP RHEL8 rows are the SAME checklists the
+    # manual review already established → unioned away, NOT added. Sum would be 6.
+    assert report.checklists_xlsx == 4, (
+        "manual + OSCAP of the same (benchmark,host) must UNION to 4, not sum to "
+        f"6 — got {report.checklists_xlsx}"
+    )
+
+
+def test_stig_xlsx_oscap_only_host_still_counts_once(session):
+    """A host assessed ONLY by the automated OSCAP scan (no manual review) is
+    still counted exactly once — the union includes OSCAP-only pairs."""
+    from cybersecurity_assessor.models import FindingStatus, StigFinding
+
+    manual = _make_evidence(
+        session, path="file:///STIG_Manual_report.xlsx",
+        kind=EvidenceKind.STIG_CKL, hosts=["vdi-01"], title="Manual")
+    oscap = _make_evidence(
+        session, path="file:///STIG_OSCAP_report.xlsx",
+        kind=EvidenceKind.STIG_CKL, hosts=["vdi-01", "vdi-99"], title="OSCAP")
+    session.add(StigFinding(
+        evidence_id=manual.id, rule_id="m1", rule_version="RHEL-08-010030",
+        benchmark="RHEL8", status=FindingStatus.OPEN, comments="host=vdi-01"))
+    # OSCAP covers vdi-01 (overlap) AND vdi-99 (automated-only).
+    for host in ("vdi-01", "vdi-99"):
+        session.add(StigFinding(
+            evidence_id=oscap.id, rule_id=f"o-{host}", rule_version="CCI-000366",
+            benchmark="RHEL8", status=FindingStatus.OPEN, comments=f"host={host}"))
+    session.commit()
+
+    report = summarize_asset_coverage(workbook_id=1, session=session)
+    # (RHEL8,vdi-01) shared + (RHEL8,vdi-99) OSCAP-only = 2 distinct checklists.
+    assert report.checklists_xlsx == 2, (
+        f"OSCAP-only host must count once via union — expected 2, got "
+        f"{report.checklists_xlsx}"
     )
 
 

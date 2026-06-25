@@ -720,6 +720,15 @@ class StigFinding(SQLModel, table=True):
     evidence_id: int = Field(foreign_key="evidence.id", index=True)
     rule_id: str = Field(index=True)  # SV-... / Plugin ID
     rule_version: str | None = None
+    # Canonical benchmark key for the checklist-coverage unit. For DISA
+    # STIG-report .xlsx this is the SHEET NAME (e.g. "RHEL8", "FIREFOX"),
+    # byte-identical across the Manual and OSCAP exports of one assessment, so
+    # the asset-coverage counter unions (benchmark, host) across both files —
+    # a manual review + an automated SCAP scan of the same benchmark on the same
+    # host is ONE checklist, not two. None for non-xlsx findings (benchmark is
+    # derived from rule_version). Distinct from rule_version (the per-rule STIG
+    # id, e.g. RHEL-08-010030) so the stig API output is unchanged.
+    benchmark: str | None = None
     # Human-facing vulnerability id (STIG "Group ID" / Vuln_Num, e.g.
     # "V-220706"). Carried alongside rule_id so narratives, POAMs, and the
     # SAR can show the V-number a reviewer recognizes from STIG Viewer.

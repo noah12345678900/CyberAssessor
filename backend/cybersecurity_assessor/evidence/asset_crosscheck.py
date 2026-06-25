@@ -441,48 +441,68 @@ def _benchmark_key(rule_version: str | None) -> str | None:
 
 
 def _xlsx_checklist_count(
-    session: Session, xlsx_evidence_ids: list[int]
+    session: Session,
+    xlsx_evidence_ids: list[int],
+    boundary_by_ev: dict[int, str] | None = None,
 ) -> int:
-    """Count distinct (benchmark × host) checklists inside STIG-report xlsx files.
+    """Count distinct (boundary × benchmark × host) checklists in STIG-report xlsx.
 
     A DISA STIG-report ``.xlsx`` is ONE Evidence row but bundles MANY checklists:
-    one BENCHMARK (RHEL-08, Firefox, Chrome, RKE2…) assessed on each HOST. The
-    extractor emits a :class:`StigFinding` per (rule × host) with the STIG id in
-    ``rule_version`` and ``host=<hn>`` in ``comments``. The CHECKLIST unit is
-    (benchmark × host) — NOT per-rule and NOT per-file:
-      * counting files badly understated (a SCAP export = dozens of checklists);
-      * counting raw (rule_version, host) badly OVERstated — rule_version is the
-        per-rule id (RHEL-08-010030 vs -010040 are the SAME benchmark) and the
-        OSCAP report even puts CCI-###### in that column. So we reduce
-        rule_version to its benchmark key (``_benchmark_key``) and skip CCI rows.
+    one BENCHMARK (RHEL8, Firefox, Chrome, RKE2…) assessed on each HOST. The
+    CHECKLIST UNIT is one benchmark assessed on one host — NOT per-rule, NOT
+    per-file, and crucially NOT per-assessment-method:
 
-    Falls back to one-per-file for any xlsx that produced NO parseable benchmark
-    findings, so the count never drops BELOW the file count.
+    A system's STIG assessment ships as TWO report files — a MANUAL STIG-Viewer
+    review (``STIG_Manual_report.xlsx``) and an AUTOMATED OpenSCAP scan
+    (``STIG_OSCAP_report.xlsx``). A manual review PLUS an automated scan of the
+    SAME benchmark on the SAME host is ONE checklist of that host assessed two
+    ways — not two checklists. So we UNION (benchmark, host) across both files;
+    summing them double-counts coverage (would tell a 3PAO "142 checklists" when
+    only 78 distinct host-benchmark targets exist — an asset-tracking finding).
+
+    The union works because the benchmark key is the SHEET NAME (stamped on every
+    finding as ``StigFinding.benchmark`` by the extractor), which is byte-
+    identical across the Manual and OSCAP exports. The old approach derived the
+    benchmark from ``rule_version`` instead — but Manual carries ``RHEL-08`` there
+    and OSCAP carries a ``CCI-######`` token, so the two never unioned and the
+    count doubled.
+
+    Boundary-keyed (``(boundary, benchmark, host)``) so two same-named hosts in
+    different enclaves don't collapse — consistent with the rest of this module's
+    ``(boundary, host)`` identity. Legacy rows with no ``benchmark`` value
+    (pre-0019 ingests) fall back to ``_benchmark_key(rule_version)``. Files that
+    produced NO benchmark finding still count once each, so the count never drops
+    below the file count.
     """
     if not xlsx_evidence_ids:
         return 0
-    pairs: set[tuple[str, str]] = set()
+    boundary_by_ev = boundary_by_ev or {}
+    triples: set[tuple[str, str, str]] = set()
     files_with_findings: set[int] = set()
     for batch in chunked(xlsx_evidence_ids):
         rows = session.exec(
             select(
                 StigFinding.evidence_id,
+                StigFinding.benchmark,
                 StigFinding.rule_version,
                 StigFinding.comments,
             ).where(StigFinding.evidence_id.in_(batch))  # type: ignore[attr-defined]
         ).all()
-        for eid, rule_version, comments in rows:
-            benchmark = _benchmark_key(rule_version)
-            if benchmark is None:
-                continue  # CCI row / non-STIG — not a benchmark checklist
+        for eid, benchmark, rule_version, comments in rows:
+            # Prefer the stamped sheet-name benchmark; fall back to the
+            # rule_version-derived key for pre-0019 rows that predate the column.
+            key = (benchmark or "").strip() or _benchmark_key(rule_version)
+            if not key:
+                continue  # CCI-only legacy row / non-STIG — not a benchmark
             files_with_findings.add(eid)
             host = ""
             if comments and comments.startswith("host="):
                 host = comments[len("host="):].strip()
-            pairs.add((benchmark, host))
-    parsed_count = len(pairs)
-    # Files we tagged as STIG-xlsx but that produced no parseable benchmark
-    # finding still count once each (processed, just not parseable).
+            boundary = boundary_by_ev.get(eid, UNSPECIFIED_BOUNDARY)
+            triples.add((boundary, key, _normalize(host)))
+    parsed_count = len(triples)
+    # Files we tagged as STIG-xlsx but that produced no benchmark finding still
+    # count once each (processed, just not parseable).
     unparsed_files = len(set(xlsx_evidence_ids) - files_with_findings)
     return parsed_count + unparsed_files
 
@@ -992,7 +1012,9 @@ def summarize_asset_coverage(
     # device (the inventory asserts it IS the device's identity) — so only
     # scanned-only / checklisted-only bare IPs land in distinct_ips.
     # STIG-report xlsx checklists: distinct (benchmark × host), not file count.
-    checklists_xlsx = _xlsx_checklist_count(session, xlsx_checklist_ids)
+    checklists_xlsx = _xlsx_checklist_count(
+        session, xlsx_checklist_ids, boundary_by_ev
+    )
 
     resolved_devices = 0
     distinct_ips = 0
