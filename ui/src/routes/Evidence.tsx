@@ -1381,6 +1381,31 @@ function CoverageGaps({
 
   return (
     <div className="space-y-2">
+      {(renderedAny || completeCount > 0) && (
+        <div className="rounded-md border border-muted bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          <span className="font-medium text-foreground">
+            How to read these buckets.
+          </span>{" "}
+          Each box is a coverage <em>gap</em> by source mix — every host is
+          sorted by which of three sources saw it: <strong>Scan</strong> (ACAS /
+          Nessus), <strong>Checklist</strong> (a STIG .ckl / xlsx), and{" "}
+          <strong>Declared</strong> (your asset inventory). “Scanned only” = a
+          scan found it but no checklist and no inventory entry (weakest
+          coverage). “Observed but not declared” = scanned and checklisted, but
+          missing from inventory (the CM-8 gap). The fix path is{" "}
+          <em>Scanned only → add a checklist → Observed but not declared → add
+          to inventory → Complete</em>.
+          <br />
+          <span className="font-medium text-foreground">
+            Why the counts don’t sum to the host total:
+          </span>{" "}
+          these tally individual scan/checklist rows, so an IP that is really a
+          second interface of a named device counts here even though the
+          headline “hosts” number collapses it under that device. A host can
+          also appear in more than one bucket. Treat each box as a worklist, not
+          a slice of a pie.
+        </div>
+      )}
       {completeCount > 0 && (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs">
           <span className="font-medium">Complete:</span>{" "}
