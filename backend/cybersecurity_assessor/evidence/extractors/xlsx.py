@@ -491,15 +491,17 @@ def _parse_stig_report_sheet(sheet) -> tuple[list, list[str]]:
     t_col = fixed_cols.get("title")
     sev_col = fixed_cols.get("severity")
 
-    # Benchmark fallback from the sheet name. The DISA *Manual* report carries a
-    # real STIG id (RHEL-08-010030) in the Stig ID column, but the *OSCAP* report
-    # puts a CCI token (CCI-000366) there for every row — so rule_version would
-    # be a CCI, _benchmark_key returns None, and the (benchmark × host) checklist
-    # count collapses to a useless 1-per-file. The sheet name IS the benchmark in
-    # these exports (RHEL8_GUI / RHEL8 / FIREFOX), so when the Stig ID column is
-    # missing or a CCI we stamp the sheet title as rule_version instead. The CCI
-    # itself is still preserved in rule_id, so nothing is lost. Manual-report rows
-    # (real STIG id) are untouched.
+    # Benchmark key = the SHEET NAME. The CHECKLIST-coverage unit is one
+    # benchmark assessed on one host, and the sheet name is byte-identical across
+    # the DISA Manual (STIG-Viewer) and OSCAP (SCAP) exports of the SAME
+    # assessment — both files have a sheet literally named "RHEL8" / "FIREFOX".
+    # Stamping it on every row lets the asset counter UNION (benchmark, host)
+    # across the two files, so a manual review + an automated scan of the same
+    # benchmark on the same host counts as ONE checklist, not two. We stamp the
+    # sheet name regardless of report flavor (it does NOT touch rule_version, so
+    # the per-rule STIG id RHEL-08-010030 stays intact in the stig API). The
+    # per-rule "Stig ID" column differs by flavor (Manual=STIG id, OSCAP=CCI
+    # token) and is preserved verbatim in rule_version for provenance.
     sheet_benchmark = (getattr(sheet, "title", "") or "").strip() or None
 
     def _cell(row, idx):
@@ -508,20 +510,12 @@ def _parse_stig_report_sheet(sheet) -> tuple[list, list[str]]:
         v = str(row[idx]).strip()
         return v or None
 
-    def _is_cci(token: str | None) -> bool:
-        return bool(token) and token.strip().upper().startswith("CCI-")
-
     for row in data_rows:
         rule_id = _cell(row, r_col)
         if not rule_id:
             continue
         group_id = _cell(row, g_col)
         stig_id = _cell(row, s_col)
-        # When the Stig ID column doesn't carry a real STIG benchmark id (OSCAP
-        # summary uses CCIs), fall back to the sheet name so the benchmark is
-        # still recoverable for the checklist count.
-        if (stig_id is None or _is_cci(stig_id)) and sheet_benchmark:
-            stig_id = sheet_benchmark
         title = _cell(row, t_col)
         severity = _cell(row, sev_col)
         for c_idx, hn in confirmed_hosts.items():
@@ -536,6 +530,7 @@ def _parse_stig_report_sheet(sheet) -> tuple[list, list[str]]:
                     rule_id=rule_id,
                     status=status,
                     rule_version=stig_id,
+                    benchmark=sheet_benchmark,
                     severity=severity,
                     group_id=group_id,
                     rule_title=title,

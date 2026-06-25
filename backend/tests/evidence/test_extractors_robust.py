@@ -553,35 +553,42 @@ def _stig_report_xlsx(sheet_name: str, stig_id_value: str) -> bytes:
 
 
 def test_stig_report_xlsx_manual_keeps_real_stig_id():
-    """Manual report carries a real STIG id → rule_version is that id, untouched."""
+    """Manual report: rule_version = the real STIG id (verbatim), benchmark = sheet.
+
+    rule_version is exposed by the stig API and must NOT be overwritten — the
+    real per-rule STIG id stays put. The benchmark key (for checklist counting)
+    comes from the sheet name, in its own field.
+    """
     from cybersecurity_assessor.evidence.extractors.xlsx import extract_xlsx
 
     data = _stig_report_xlsx("RHEL8", "RHEL-08-010030")
     doc = extract_xlsx(io.BytesIO(data), "STIG_Manual_report.xlsx")
     findings = (doc.metadata or {}).get("_stig_findings") or []
     assert len(findings) == 1
-    # Real STIG id preserved verbatim — the sheet-name fallback must NOT fire.
+    # Real STIG id preserved verbatim in rule_version (API-facing).
     assert findings[0].rule_version == "RHEL-08-010030"
+    # Benchmark key = sheet name, in the dedicated field.
+    assert findings[0].benchmark == "RHEL8"
     assert findings[0].comments == "host=paas-vdi-01"
 
 
-def test_stig_report_xlsx_oscap_falls_back_to_sheet_benchmark():
-    """OSCAP report puts a CCI in the Stig ID column → recover benchmark from sheet name.
+def test_stig_report_xlsx_oscap_benchmark_from_sheet_rule_version_preserved():
+    """OSCAP report puts a CCI in the Stig ID column → benchmark = sheet name.
 
-    Without the fallback, rule_version would be ``CCI-000366`` and
-    ``_benchmark_key`` returns None for every row, collapsing the checklist
-    count to a useless 1-per-file. The sheet name (RHEL8) is the benchmark.
+    The benchmark key must come from the SHEET NAME (so it unions with the Manual
+    report's findings for the same host), while rule_version preserves the CCI
+    token VERBATIM (no overwrite) — the stig API output is unchanged. The sheet
+    name is byte-identical across the Manual and OSCAP files, so (benchmark, host)
+    dedupes across the two.
     """
-    from cybersecurity_assessor.evidence.asset_crosscheck import _benchmark_key
     from cybersecurity_assessor.evidence.extractors.xlsx import extract_xlsx
 
     data = _stig_report_xlsx("RHEL8", "CCI-000366")
     doc = extract_xlsx(io.BytesIO(data), "STIG_OSCAP_report.xlsx")
     findings = (doc.metadata or {}).get("_stig_findings") or []
     assert len(findings) == 1
-    # Stig ID column was a CCI → rule_version stamped with the sheet benchmark.
-    assert findings[0].rule_version == "RHEL8"
-    # And the benchmark is now recoverable (not None), so the count won't collapse.
-    assert _benchmark_key(findings[0].rule_version) == "RHEL8"
-    # The CCI itself is not lost — it remains the rule_id.
+    # Benchmark = sheet name (the union key, matches the Manual report's RHEL8).
+    assert findings[0].benchmark == "RHEL8"
+    # rule_version preserves the CCI token verbatim — NOT overwritten.
+    assert findings[0].rule_version == "CCI-000366"
     assert findings[0].rule_id == "SV-230224r_rule"

@@ -951,6 +951,10 @@ def ingest_source(
                     evidence_id=evidence.id,
                     rule_id=fr.rule_id,
                     rule_version=fr.rule_version,
+                    # Canonical benchmark key (STIG-report sheet name) for the
+                    # checklist-coverage union. getattr-guarded like the detail
+                    # fields below — None for non-xlsx findings.
+                    benchmark=getattr(fr, "benchmark", None),
                     # Pass through the four new STIG detail fields. Use
                     # getattr defensively in case a future extractor rename
                     # slightly differs — the column defaults to None so a

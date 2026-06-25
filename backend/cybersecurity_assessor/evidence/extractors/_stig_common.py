@@ -107,6 +107,15 @@ class StigFindingRow:
     severity: str | None = None
     finding_details: str | None = None
     comments: str | None = None
+    # Canonical benchmark key for the CHECKLIST-coverage unit (one benchmark
+    # assessed on one host = one checklist). For DISA STIG-report .xlsx this is
+    # the SHEET NAME (e.g. "RHEL8", "FIREFOX") — byte-identical across the Manual
+    # and OSCAP exports of the same assessment, so the coverage counter can union
+    # the two (a manual review + an automated SCAP scan of the same benchmark on
+    # the same host is ONE checklist, not two). None for non-xlsx findings, whose
+    # benchmark is derived from rule_version instead. Distinct from rule_version,
+    # which stays the per-rule STIG id (RHEL-08-010030) exposed by the stig API.
+    benchmark: str | None = None
     # Human-readable STIG identifiers and verbatim remediation text.
     # Populated by the per-format extractors; None when the source file
     # does not carry the field (absence is a gap, never an error).
