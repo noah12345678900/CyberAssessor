@@ -73,6 +73,11 @@ def get_settings() -> dict:
         # the two underlying kill-switches (tagger_llm_enabled + sweep_judge_
         # enabled) as one — True only when BOTH are on; setting it flips both.
         "llm_judge_model": c.llm_judge_model,
+        # Stronger re-judge model for the tagger's all-abstain escalation pass.
+        # None ⇒ escalation disabled. MUST belong to the active provider — a
+        # cross-provider string (e.g. a Claude id while llm_provider=openai)
+        # is sent to the wrong client; the UI clears it on provider switch.
+        "llm_judge_escalation_model": c.llm_judge_escalation_model,
         "judge_llm_enabled": bool(c.tagger_llm_enabled and c.sweep_judge_enabled),
         "anthropic_key_set": cfg.get_anthropic_key() is not None,
         "anthropic_base_url": c.anthropic_base_url,  # None ⇒ real Anthropic
@@ -308,6 +313,12 @@ class SettingsUpdate(BaseModel):
     # the tagger Tier-5 judge and the SharePoint sweep judge). None ⇒ leave
     # alone. Separate from anthropic_model (the main assess model).
     llm_judge_model: str | None = None
+    # Tagger all-abstain escalation model. None ⇒ leave alone; pass "" to CLEAR
+    # (disables the escalation re-judge). Must belong to the active provider —
+    # the DefaultsCard clears it on a provider switch so a stale cross-provider
+    # id (e.g. a Claude model while provider=openai) can't leak to the wrong
+    # client.
+    llm_judge_escalation_model: str | None = None
     # SHARED enable toggle for the judge LLM. None ⇒ leave alone. When set, it
     # flips BOTH underlying kill-switches together (tagger_llm_enabled +
     # sweep_judge_enabled) so one switch governs "use the judge LLM at all"
@@ -451,6 +462,19 @@ def update_settings(body: SettingsUpdate) -> dict:
     if body.llm_judge_model is not None:
         # Shared by the ingest tagger judge AND the sweep judge.
         c.llm_judge_model = body.llm_judge_model.strip() or c.llm_judge_model
+    if body.llm_judge_escalation_model is not None:
+        # Empty string CLEARS (disables escalation), unlike llm_judge_model above
+        # which keeps its prior value on blank — escalation is an optional second
+        # pass the user must be able to turn off from the UI.
+        #
+        # We persist the cleared state as "" (empty string), NOT None. save_config
+        # dumps with exclude_none=True, so a None would be OMITTED from config.toml
+        # and the Field default ("claude-4-8-opus") would silently re-populate on
+        # the next load — i.e. an OpenAI user's cleared escalation would revert to
+        # a Claude model on restart (a cross-provider leak). "" is falsy (the
+        # tagger's `if escalation_model` gate treats it as disabled, identical to
+        # None) but it IS serialized, so the disabled state survives a restart.
+        c.llm_judge_escalation_model = body.llm_judge_escalation_model.strip()
     if body.judge_llm_enabled is not None:
         # One switch → flip BOTH underlying kill-switches together.
         c.tagger_llm_enabled = body.judge_llm_enabled

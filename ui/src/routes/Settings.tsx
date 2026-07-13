@@ -308,6 +308,7 @@ export function Settings() {
             openaiModel={settings.data?.openai_model ?? ""}
             openaiKeySet={settings.data?.openai_key_set ?? false}
             judgeModel={settings.data?.llm_judge_model ?? ""}
+            escalationModel={settings.data?.llm_judge_escalation_model ?? ""}
             judgeEnabled={settings.data?.judge_llm_enabled ?? true}
             loading={settings.isLoading}
           />
@@ -701,6 +702,18 @@ function CorporateGatewayCard({
   );
 }
 
+// Per-provider default judge model. When the user flips the provider toggle we
+// seed the judge field with the new provider's default rather than blank: the
+// backend treats a blank judge model as "keep the existing value", so clearing
+// to "" would leave the OLD provider's judge model in place — the exact
+// cross-provider leak this card exists to prevent. A concrete same-provider
+// default guarantees the save writes a valid, provider-matched id. Kept in sync
+// with the backend Field defaults (config.py: llm_judge_model / openai_model).
+const PROVIDER_JUDGE_DEFAULTS: Record<LlmProvider, string> = {
+  anthropic: "claude-haiku-4-5-20251001",
+  openai: "gpt-5.1",
+};
+
 function DefaultsCard({
   defaultTester,
   provider,
@@ -709,6 +722,7 @@ function DefaultsCard({
   openaiModel,
   openaiKeySet,
   judgeModel,
+  escalationModel,
   judgeEnabled,
   loading,
 }: {
@@ -719,6 +733,7 @@ function DefaultsCard({
   openaiModel: string;
   openaiKeySet: boolean;
   judgeModel: string;
+  escalationModel: string;
   judgeEnabled: boolean;
   loading: boolean;
 }) {
@@ -733,6 +748,7 @@ function DefaultsCard({
   const [aModel, setAModel] = useState(anthropicModel);
   const [oModel, setOModel] = useState(openaiModel);
   const [jModel, setJModel] = useState(judgeModel);
+  const [eModel, setEModel] = useState(escalationModel);
   const [jEnabled, setJEnabled] = useState(judgeEnabled);
 
   useEffect(() => setTester(defaultTester), [defaultTester]);
@@ -740,7 +756,27 @@ function DefaultsCard({
   useEffect(() => setAModel(anthropicModel), [anthropicModel]);
   useEffect(() => setOModel(openaiModel), [openaiModel]);
   useEffect(() => setJModel(judgeModel), [judgeModel]);
+  useEffect(() => setEModel(escalationModel), [escalationModel]);
   useEffect(() => setJEnabled(judgeEnabled), [judgeEnabled]);
+
+  // Flipping the provider resets the judge + escalation model fields so no
+  // stale, provider-specific model id survives a switch (a Claude id sent to
+  // the OpenAI client, or vice-versa, is the cross-provider leak this prevents).
+  //   - Judge model → the NEW provider's default (not blank). The backend reads
+  //     a blank judge model as "keep the existing value", so blanking would
+  //     leave the old provider's model in place; a concrete default forces a
+  //     valid same-provider write on save.
+  //   - Escalation model → "" (disabled). Blank is a valid escalation state
+  //     (optional second pass off); the user opts back in with a same-provider
+  //     id if they want it.
+  // The main assess model isn't touched: it has per-provider fields
+  // (aModel/oModel) that the dispatch resolves by provider, so it can't leak.
+  function switchProvider(next: LlmProvider) {
+    if (next === activeProvider) return;
+    setActiveProvider(next);
+    setJModel(PROVIDER_JUDGE_DEFAULTS[next]);
+    setEModel("");
+  }
 
   const dirty =
     tester !== defaultTester ||
@@ -748,6 +784,7 @@ function DefaultsCard({
     aModel !== anthropicModel ||
     oModel !== openaiModel ||
     jModel !== judgeModel ||
+    eModel !== escalationModel ||
     jEnabled !== judgeEnabled;
 
   async function save() {
@@ -757,6 +794,9 @@ function DefaultsCard({
       anthropic_model: aModel,
       openai_model: oModel,
       llm_judge_model: jModel,
+      // "" clears the override server-side (disables escalation). Trim so a
+      // whitespace-only entry also disables rather than becoming a bad id.
+      llm_judge_escalation_model: eModel.trim(),
       judge_llm_enabled: jEnabled,
     });
   }
@@ -790,7 +830,7 @@ function DefaultsCard({
         <Field label="Active LLM provider">
           <Select
             value={activeProvider}
-            onValueChange={(v) => setActiveProvider(v as LlmProvider)}
+            onValueChange={(v) => switchProvider(v as LlmProvider)}
             disabled={loading}
           >
             <SelectTrigger>
@@ -955,9 +995,26 @@ function DefaultsCard({
             <Input
               value={jModel}
               onChange={(e) => setJModel(e.target.value)}
-              placeholder="claude-haiku-4-5-20251001"
+              placeholder={PROVIDER_JUDGE_DEFAULTS[activeProvider]}
               disabled={loading || !jEnabled}
             />
+          </Field>
+          <Field label="Escalation model (optional)">
+            <Input
+              value={eModel}
+              onChange={(e) => setEModel(e.target.value)}
+              placeholder={
+                activeProvider === "openai"
+                  ? "gpt-5.5 — leave blank to disable"
+                  : "claude-4-8-opus — leave blank to disable"
+              }
+              disabled={loading || !jEnabled}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Stronger re-judge run once on docs the judge fully abstains on.
+              Must be a model from the <strong>{activeProvider}</strong>{" "}
+              provider selected above. Leave blank to disable escalation.
+            </p>
           </Field>
           {!jEnabled && (
             <p className="text-[11px] text-muted-foreground">

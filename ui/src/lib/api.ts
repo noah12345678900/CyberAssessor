@@ -2159,6 +2159,9 @@ export interface AppSettings {
   anthropic_model: string;
   /** Ingest tagger + sweep judge model (shared). Separate from anthropic_model. */
   llm_judge_model: string;
+  /** Tagger all-abstain escalation re-judge model. null ⇒ escalation disabled.
+   *  Must belong to the active provider (cleared on provider switch). */
+  llm_judge_escalation_model: string | null;
   /** Shared enable toggle for the judge LLM (tagger + sweep). */
   judge_llm_enabled: boolean;
   anthropic_key_set: boolean;
@@ -2356,6 +2359,10 @@ export interface SettingsUpdate {
   anthropic_model?: string;
   /** Ingest tagger + sweep judge model (shared). */
   llm_judge_model?: string;
+  /** Tagger escalation re-judge model. Pass "" (empty string) to CLEAR
+   *  (disables escalation); omit to leave unchanged. Must match the active
+   *  provider. */
+  llm_judge_escalation_model?: string;
   /** Shared toggle: flips both tagger_llm_enabled and sweep_judge_enabled. */
   judge_llm_enabled?: boolean;
   /** Pass "" (empty string) to clear the override and revert to the real Anthropic API. */
