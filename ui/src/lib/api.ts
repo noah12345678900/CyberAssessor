@@ -10,6 +10,13 @@ declare global {
   interface Window {
     ccis?: {
       sidecarUrl: string;
+      /**
+       * Per-launch bearer token the sidecar requires on every request except
+       * /healthz. Empty string in browser mode (no preload) — apiFetch then
+       * sends no Authorization header, which is correct because a browser-mode
+       * dev sidecar runs without CCIS_AUTH_TOKEN set (auth inert).
+       */
+      authToken?: string;
       openFolder: () => Promise<string | null>;
       openFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
       /**
@@ -44,6 +51,17 @@ export function baseUrl(): string {
 }
 
 /**
+ * Authorization header for the loopback sidecar. Returns `{Authorization:
+ * 'Bearer <token>'}` in packaged Electron (preload supplies the token), or an
+ * empty object in browser/dev mode where the sidecar runs without a token
+ * (auth middleware inert). Spread into every fetch's headers.
+ */
+export function authHeaders(): Record<string, string> {
+  const t = window.ccis?.authToken;
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/**
  * True only when running inside Electron with the preload bridge wired up.
  * Native file/folder dialogs are unavailable outside Electron (plain
  * browser at http://localhost:5173) — UI must fall back gracefully.
@@ -67,7 +85,11 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl()}${path}`, {
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "content-type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers ?? {}),
+    },
     ...init,
   });
   if (!res.ok) {
@@ -4279,7 +4301,7 @@ export const api = {
     q.set("limit", String(opts.limit ?? 100));
     q.set("offset", String(opts.offset ?? 0));
     const res = await fetch(`${baseUrl()}/api/evidence?${q.toString()}`, {
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders() },
     });
     if (!res.ok) {
       throw new ApiError(res.status, res.statusText, null, `${res.status} ${res.statusText}`);
@@ -4508,7 +4530,9 @@ export const api = {
 
   // Reports
   downloadWorkbookSar: async (workbookId: number): Promise<{ blob: Blob; filename: string }> => {
-    const res = await fetch(`${baseUrl()}/api/reports/workbook/${workbookId}/sar.pdf`);
+    const res = await fetch(`${baseUrl()}/api/reports/workbook/${workbookId}/sar.pdf`, {
+      headers: authHeaders(),
+    });
     if (!res.ok) {
       let detail = res.statusText;
       try {
@@ -4552,19 +4576,24 @@ export const api = {
     }),
   clearAnthropicGatewayToken: () =>
     request<{ ok: boolean }>("/api/settings/anthropic-gateway-token", { method: "DELETE" }),
-  testAnthropicKey: () =>
+  // Probes the CONFIGURED assess model by default; pass `model` to probe a
+  // candidate id (e.g. one typed into the free-text box before Save).
+  testAnthropicKey: (model?: string) =>
     request<{
       ok: boolean;
       model: string;
       reply: string;
       input_tokens: number;
       output_tokens: number;
-    }>("/api/settings/anthropic-key/test", { method: "POST" }),
+    }>("/api/settings/anthropic-key/test", {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
   // Probes the gateway path EXPLICITLY — no resolver fallback to the personal
   // key. 400 means the gateway URL or token slot is empty; 404 with a
   // model-not-found hint is common against gateways that only proxy one
   // pinned model id (e.g. the GD gateway → claude-4-7-opus).
-  testAnthropicGateway: () =>
+  testAnthropicGateway: (model?: string) =>
     request<{
       ok: boolean;
       model: string;
@@ -4572,7 +4601,10 @@ export const api = {
       reply: string;
       input_tokens: number;
       output_tokens: number;
-    }>("/api/settings/anthropic-gateway/test", { method: "POST" }),
+    }>("/api/settings/anthropic-gateway/test", {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
   listAnthropicModels: () =>
     request<{
       base_url: string;
@@ -4597,7 +4629,9 @@ export const api = {
     }),
   clearOpenAIGatewayToken: () =>
     request<{ ok: boolean }>("/api/settings/openai-gateway-token", { method: "DELETE" }),
-  testOpenAIKey: () =>
+  // Probes the CONFIGURED assess model by default; pass `model` to probe a
+  // candidate id (e.g. one typed into the free-text box before Save).
+  testOpenAIKey: (model?: string) =>
     request<{
       ok: boolean;
       model: string;
@@ -4605,9 +4639,12 @@ export const api = {
       reply: string;
       input_tokens: number;
       output_tokens: number;
-    }>("/api/settings/openai-key/test", { method: "POST" }),
+    }>("/api/settings/openai-key/test", {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
   // Probes the gateway path EXPLICITLY — symmetric to testAnthropicGateway.
-  testOpenAIGateway: () =>
+  testOpenAIGateway: (model?: string) =>
     request<{
       ok: boolean;
       model: string;
@@ -4615,7 +4652,10 @@ export const api = {
       reply: string;
       input_tokens: number;
       output_tokens: number;
-    }>("/api/settings/openai-gateway/test", { method: "POST" }),
+    }>("/api/settings/openai-gateway/test", {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
   listOpenAIModels: () =>
     request<{
       base_url: string;

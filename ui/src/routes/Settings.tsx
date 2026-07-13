@@ -374,7 +374,8 @@ function AnthropicKeyCard({ keySet }: { keySet: boolean }) {
 
   async function test() {
     try {
-      await testKey.mutateAsync();
+      // undefined → probe the configured assess model (not a hard-coded id).
+      await testKey.mutateAsync(undefined);
     } catch {
       // toast handled by onError
     }
@@ -533,7 +534,8 @@ function CorporateGatewayCard({
 
   async function testConnection() {
     try {
-      await testGateway.mutateAsync();
+      // undefined → probe the configured assess model (not a hard-coded id).
+      await testGateway.mutateAsync(undefined);
     } catch {
       // toast handled by onError
     }
@@ -1120,7 +1122,8 @@ function OpenAIKeyCard({
 
   async function test() {
     try {
-      await testKey.mutateAsync();
+      // undefined → probe the configured assess model (not a hard-coded id).
+      await testKey.mutateAsync(undefined);
     } catch {
       // toast handled by onError
     }
@@ -1291,7 +1294,8 @@ function OpenAICorporateCard({
 
   async function testConnection() {
     try {
-      await testGateway.mutateAsync();
+      // undefined → probe the configured assess model (not a hard-coded id).
+      await testGateway.mutateAsync(undefined);
     } catch {
       // toast handled by onError
     }

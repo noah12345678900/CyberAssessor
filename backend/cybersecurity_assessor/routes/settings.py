@@ -21,6 +21,40 @@ class GatewayTokenBody(BaseModel):
     token: str
 
 
+class ProbeModelBody(BaseModel):
+    """Optional per-request model override for the key/gateway test probes.
+
+    The probes default to the model the assessor is actually configured to use
+    (``cfg.openai_model`` / ``cfg.anthropic_model``) so a passing test proves
+    the real run model works — not a hard-coded stand-in the gateway may not
+    even expose. ``model`` lets the UI probe a candidate id (e.g. one typed
+    into the free-text box when the gateway serves no /v1/models list) before
+    Save. All test endpoints accept an empty body and fall back to config.
+    """
+
+    model: str | None = None
+
+
+def _resolve_probe_model(override: str | None, configured: str | None) -> str:
+    """Pick the probe model: explicit override → configured default → error.
+
+    Never falls back to a hard-coded id. When neither is set, raises a 400
+    telling the user to set a model under Defaults — a silent hard-coded
+    fallback is exactly the bug that made the probe test a model the gateway
+    doesn't serve.
+    """
+    chosen = (override or configured or "").strip()
+    if not chosen:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No model configured to probe. Set a model under Defaults "
+                "(or pass one to the test) before testing the connection."
+            ),
+        )
+    return chosen
+
+
 @router.get("")
 def get_settings() -> dict:
     c = cfg.load_config()
@@ -656,13 +690,15 @@ def clear_anthropic_gateway_token() -> dict:
 
 
 @router.post("/anthropic-key/test")
-def test_anthropic_key() -> dict:
+def test_anthropic_key(body: ProbeModelBody | None = None) -> dict:
     """Round-trip a tiny Anthropic call to prove the stored key works.
 
-    Uses Haiku for a near-free probe (~50 input + ~10 output tokens).
-    Returns the model echo + token usage so the UI can show real success
-    rather than just a 200 OK. Surfaces 401 (bad key) / 429 / 5xx as
-    HTTPExceptions with the upstream message intact.
+    Probes the configured assess model (``cfg.anthropic_model``) so a passing
+    test proves the real run model reaches the endpoint — with an optional
+    ``body.model`` override for probing a candidate id before Save. Returns
+    the model echo + token usage so the UI can show real success rather than
+    just a 200 OK. Surfaces 401 (bad key) / 429 / 5xx as HTTPExceptions with
+    the upstream message intact.
     """
     base_url, key = cfg.resolve_anthropic_endpoint()
     if not key:
@@ -670,6 +706,9 @@ def test_anthropic_key() -> dict:
             status_code=400,
             detail="No API key stored (and no ANTHROPIC_AUTH_TOKEN env var set).",
         )
+    probe_model = _resolve_probe_model(
+        body.model if body else None, cfg.load_config().anthropic_model
+    )
     try:
         from anthropic import Anthropic  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover
@@ -683,12 +722,13 @@ def test_anthropic_key() -> dict:
     # users opt into a corporate AI gateway by setting anthropic_base_url
     # in config.toml.
     client = Anthropic(api_key=key, base_url=base_url)
-    probe_model = "claude-haiku-4-5-20251001"
+    # No temperature: the probed model may be one that rejects temperature
+    # (some Vertex-proxied Claude models return "`temperature` is deprecated
+    # for this model"). A trivial "reply OK" probe doesn't need determinism.
     try:
         resp = client.messages.create(
             model=probe_model,
             max_tokens=16,
-            temperature=0.0,
             messages=[{"role": "user", "content": "Reply with the single word OK."}],
         )
     except Exception as exc:  # noqa: BLE001 — surface ANY upstream failure verbatim
@@ -732,11 +772,13 @@ def test_anthropic_key() -> dict:
 
 
 @router.post("/anthropic-gateway/test")
-def test_anthropic_gateway() -> dict:
+def test_anthropic_gateway(body: ProbeModelBody | None = None) -> dict:
     """Round-trip a tiny Anthropic call using ONLY the gateway URL + gateway token.
 
-    Distinct from ``/anthropic-key/test``, which goes through
-    ``resolve_anthropic_endpoint()`` and silently falls back to the personal
+    Probes the configured assess model (``cfg.anthropic_model``), with an
+    optional ``body.model`` override. Distinct from ``/anthropic-key/test``,
+    which goes through ``resolve_anthropic_endpoint()`` and silently falls
+    back to the personal
     sk-ant key when no gateway token is present. This endpoint refuses to fall
     back — it's the "did my corporate gateway setup actually work" probe — so
     a 400 here means the gateway URL or token slot is empty.
@@ -771,12 +813,15 @@ def test_anthropic_gateway() -> dict:
         ) from exc
 
     client = Anthropic(api_key=token, base_url=base_url)
-    probe_model = "claude-haiku-4-5-20251001"
+    probe_model = _resolve_probe_model(
+        body.model if body else None, c.anthropic_model
+    )
+    # No temperature: some Vertex-proxied Claude models reject it ("`temperature`
+    # is deprecated for this model"). A trivial probe doesn't need determinism.
     try:
         resp = client.messages.create(
             model=probe_model,
             max_tokens=16,
-            temperature=0.0,
             messages=[{"role": "user", "content": "Reply with the single word OK."}],
         )
     except Exception as exc:  # noqa: BLE001
@@ -794,14 +839,13 @@ def test_anthropic_gateway() -> dict:
         elif int(status) == 401:
             hint = " (HTTP 401 — the gateway rejected the token. Check the stored token.)"
         elif int(status) == 404:
-            # Gateways often serve a different model id than api.anthropic.com.
-            # The probe model is locked to Haiku 4.5; if the gateway only proxies
-            # a single named model the probe will 404.
+            # Gateway doesn't expose the probed model id. Now that the probe
+            # uses the CONFIGURED model, a 404 means the configured default
+            # itself isn't served — surface that directly.
             hint = (
-                f" (HTTP 404 — gateway '{base_url}' doesn't expose the probe model "
-                f"'{probe_model}'. The gateway likely proxies only a fixed model id "
-                "(e.g. claude-4-7-opus); set that as your default model under Defaults "
-                "and the assessor flow will work even if this probe fails.)"
+                f" (HTTP 404 — gateway '{base_url}' doesn't expose model "
+                f"'{probe_model}'. Set a model id the gateway serves under "
+                "Defaults.)"
             )
         raise HTTPException(status_code=int(status), detail=msg + hint) from exc
 
@@ -933,12 +977,14 @@ def clear_openai_gateway_token() -> dict:
 
 
 @router.post("/openai-key/test")
-def test_openai_key() -> dict:
+def test_openai_key(body: ProbeModelBody | None = None) -> dict:
     """Round-trip a tiny OpenAI call to prove the stored key works.
 
-    Uses gpt-4o-mini for a near-free probe. Returns the model echo + token
-    usage so the UI can show real success. Same corporate-proxy / 401 / 404
-    hint logic as the Anthropic probe.
+    Probes the configured assess model (``cfg.openai_model``) so a passing
+    test proves the real run model reaches the endpoint — with an optional
+    ``body.model`` override. Returns the model echo + token usage so the UI
+    can show real success. Same corporate-proxy / 401 / 404 hint logic as the
+    Anthropic probe.
     """
     base_url, key = cfg.resolve_openai_endpoint()
     if not key:
@@ -946,6 +992,9 @@ def test_openai_key() -> dict:
             status_code=400,
             detail="No OpenAI key stored (and no OPENAI_API_KEY env var set).",
         )
+    probe_model = _resolve_probe_model(
+        body.model if body else None, cfg.load_config().openai_model
+    )
     try:
         from openai import OpenAI  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover
@@ -955,12 +1004,13 @@ def test_openai_key() -> dict:
         ) from exc
 
     client = OpenAI(api_key=key, base_url=base_url)
-    probe_model = "gpt-4o-mini"
+    # No temperature: the probed model may be a reasoning model (gpt-5.4/5.5,
+    # o-series) that rejects temperature != 1. A 16-token "reply OK" probe
+    # doesn't need determinism, so omitting it keeps the probe model-agnostic.
     try:
         resp = client.chat.completions.create(
             model=probe_model,
             max_tokens=16,
-            temperature=0.0,
             messages=[{"role": "user", "content": "Reply with the single word OK."}],
         )
     except Exception as exc:  # noqa: BLE001
@@ -1000,12 +1050,13 @@ def test_openai_key() -> dict:
 
 
 @router.post("/openai-gateway/test")
-def test_openai_gateway() -> dict:
+def test_openai_gateway(body: ProbeModelBody | None = None) -> dict:
     """Round-trip a tiny OpenAI call using ONLY the gateway URL + gateway token.
 
-    Symmetric to ``/anthropic-gateway/test``. Refuses to fall back to the
-    personal OpenAI key — a 400 here means the gateway URL or token slot is
-    empty.
+    Probes the configured assess model (``cfg.openai_model``), with an optional
+    ``body.model`` override. Symmetric to ``/anthropic-gateway/test``. Refuses
+    to fall back to the personal OpenAI key — a 400 here means the gateway URL
+    or token slot is empty.
     """
     c = cfg.load_config()
     base_url = (c.openai_base_url or "").strip()
@@ -1037,12 +1088,15 @@ def test_openai_gateway() -> dict:
         ) from exc
 
     client = OpenAI(api_key=token, base_url=base_url)
-    probe_model = "gpt-4o-mini"
+    probe_model = _resolve_probe_model(
+        body.model if body else None, c.openai_model
+    )
+    # No temperature: the probed model may be a reasoning model (gpt-5.4/5.5,
+    # o-series) that rejects temperature != 1. A trivial probe doesn't need it.
     try:
         resp = client.chat.completions.create(
             model=probe_model,
             max_tokens=16,
-            temperature=0.0,
             messages=[{"role": "user", "content": "Reply with the single word OK."}],
         )
     except Exception as exc:  # noqa: BLE001
@@ -1060,9 +1114,10 @@ def test_openai_gateway() -> dict:
             hint = " (HTTP 401 — the gateway rejected the token.)"
         elif int(status) == 404:
             hint = (
-                f" (HTTP 404 — gateway '{base_url}' doesn't expose '{probe_model}'. "
-                "Set the gateway's actual model id under Defaults and the assessor "
-                "flow will still work even if this probe fails.)"
+                f" (HTTP 404 — gateway '{base_url}' doesn't expose model "
+                f"'{probe_model}'. Set a model id the gateway serves under "
+                "Defaults, or check the base URL includes the right path "
+                "prefix, e.g. /v1.)"
             )
         raise HTTPException(status_code=int(status), detail=msg + hint) from exc
 

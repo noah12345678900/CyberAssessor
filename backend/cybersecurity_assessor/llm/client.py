@@ -1801,6 +1801,21 @@ class OpenAIClient:
         # surface free of audit-specific kwargs; ``make_client`` reads
         # ``cfg.audit_citations_enabled`` once and propagates here.
         self._audit_citations = audit_citations
+        # Reasoning models (OpenAI gpt-5.4 / gpt-5.5, the o-series, and any
+        # gateway-proxied equivalent) reject ``temperature`` != 1 with a 400
+        # invalid_request_error ("temperature does not support 0.0 with this
+        # model. Only the default (1) value is supported."). This mirrors the
+        # AnthropicClient guard: start optimistic, flip to False on the first
+        # such rejection, then omit the parameter for the rest of the process
+        # so the reasoning model runs at its calibrated default temperature.
+        # This is what lets the assessor's permanent temp-0.0 pin coexist with
+        # a "best available" reasoning model — the pin is a JSON-stability
+        # lever for chat models, and reasoning models are already stable at
+        # their default (verified: gpt-5.5 emits a clean JSON envelope at
+        # temp 1). Every OpenAI call path funnels through
+        # ``_chat_create_temperature_aware`` so the fallback is uniform across
+        # assess, judge, and extraction.
+        self._supports_temperature = True
 
         if _sdk_client is not None:
             self._client = _sdk_client
@@ -1943,6 +1958,63 @@ class OpenAIClient:
             temperature=temperature,
         )
 
+    def _chat_create_temperature_aware(
+        self,
+        *,
+        label: str,
+        **create_kwargs: Any,
+    ) -> Any:
+        """Call ``chat.completions.create`` with the temperature-fallback guard.
+
+        The OpenAI analog of ``AnthropicClient._messages_create_temperature_aware``.
+        Reasoning models (gpt-5.4 / gpt-5.5, o-series, gateway-proxied
+        equivalents) reject ``temperature`` != 1 with a 400
+        ``invalid_request_error``. The first time we hit that we flip
+        ``self._supports_temperature`` to False so every subsequent call in
+        this process omits the parameter entirely, letting the model run at
+        its calibrated default. Detection is by string match to avoid a hard
+        import of ``openai.BadRequestError`` (unit tests stub the SDK).
+
+        All OpenAI ``chat.completions.create`` paths on this client funnel
+        through here so the fallback is uniform across assess, judge, and
+        extraction. Wraps the call in the shared rate-limit retry so a
+        gateway 429 gets the same bounded backoff as the Anthropic client.
+        """
+        from ._rate_limit import run_with_rate_limit_retry
+
+        if not self._supports_temperature:
+            create_kwargs.pop("temperature", None)
+
+        def _do_create() -> Any:
+            try:
+                return self._client.chat.completions.create(**create_kwargs)
+            except Exception as exc:  # noqa: BLE001 - narrow check below
+                message_lower = str(exc).lower()
+                # Retry decision keys off whether THIS call actually sent
+                # ``temperature`` (local kwargs, race-free) rather than the
+                # shared flag — assess-batch runs many CCIs concurrently
+                # through one client, so gating on the shared flag would let a
+                # second thread surface a spurious 400 after the first flipped
+                # it. A reasoning model rejects an unsupported temperature with
+                # a 400 whose message names "temperature"; match that (or the
+                # generic invalid_request_error) and retry once without it.
+                if "temperature" in create_kwargs and (
+                    "temperature" in message_lower
+                    or "invalid_request_error" in message_lower
+                ):
+                    log.warning(
+                        "OpenAI endpoint rejected `temperature` for model %s; "
+                        "retrying without it and disabling for the rest of "
+                        "this process (reasoning model runs at default temp).",
+                        create_kwargs.get("model", self._model),
+                    )
+                    self._supports_temperature = False
+                    create_kwargs.pop("temperature", None)
+                    return self._client.chat.completions.create(**create_kwargs)
+                raise
+
+        return run_with_rate_limit_retry(_do_create, label=label)
+
     def _call_with_user_message(
         self,
         *,
@@ -1957,23 +2029,23 @@ class OpenAIClient:
         request-id / served-model capture or the parse-error sentinel
         contract. Mirrors AnthropicClient._call_with_user_message.
         """
-        # Wrap the SDK call in the shared rate-limit retry helper so a
-        # gateway 429 (Example, OpenAI-direct, or any future proxy) gets
-        # the same bounded backoff as the Anthropic client. Keeps the
-        # plug-and-play story symmetric — see llm/_rate_limit.py.
-        from ._rate_limit import run_with_rate_limit_retry
+        # The temperature-fallback guard + rate-limit retry live in the
+        # shared ``_chat_create_temperature_aware`` helper so the assess
+        # loop, judge, and extractor all share the reasoning-model fallback.
+        create_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "messages": [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if self._supports_temperature:
+            create_kwargs["temperature"] = temperature
 
-        response = run_with_rate_limit_retry(
-            lambda: self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                temperature=temperature,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-            ),
+        response = self._chat_create_temperature_aware(
             label="openai.chat.completions.create",
+            **create_kwargs,
         )
 
         raw_text = _extract_openai_text(response)
@@ -1989,6 +2061,12 @@ class OpenAIClient:
         request_id = getattr(response, "id", "") or ""
         raw_response_json = _response_to_audit_dict(response)
         sys_sha = self.system_prompt_sha
+        # Record the temperature the model ACTUALLY ran at: when the guard
+        # dropped the parameter for a reasoning model, the effective value is
+        # the model's default (1.0), not the requested 0.0. Mirrors the
+        # Anthropic client's ``effective_temperature`` so the audit replay
+        # lands on the real sampler value.
+        effective_temperature = temperature if self._supports_temperature else 1.0
 
         # Truncation-legibility (finding #16): mirror the Anthropic path —
         # if the completion stopped on the length cap, force a
@@ -2013,7 +2091,7 @@ class OpenAIClient:
                 request_id=request_id,
                 raw_response_json=raw_response_json,
                 system_prompt_sha=sys_sha,
-                temperature=temperature,
+                temperature=effective_temperature,
                 max_tokens=self._max_tokens,
                 user_message=user_message,
                 citations=[],
@@ -2039,7 +2117,7 @@ class OpenAIClient:
                 request_id=request_id,
                 raw_response_json=raw_response_json,
                 system_prompt_sha=sys_sha,
-                temperature=temperature,
+                temperature=effective_temperature,
                 max_tokens=self._max_tokens,
                 user_message=user_message,
                 # Audit v1 — parse failure means nothing usable from the
@@ -2066,7 +2144,7 @@ class OpenAIClient:
             request_id=request_id,
             raw_response_json=raw_response_json,
             system_prompt_sha=sys_sha,
-            temperature=temperature,
+            temperature=effective_temperature,
             max_tokens=self._max_tokens,
             user_message=user_message,
             # Audit v1 — collapse None to [] so the persistence layer can
@@ -2082,16 +2160,16 @@ class OpenAIClient:
 
     def extract_system_context(self, prompt: str) -> dict:
         """OpenAI mirror of AnthropicClient.extract_system_context."""
-        from ._rate_limit import run_with_rate_limit_retry
-
-        response = run_with_rate_limit_retry(
-            lambda: self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=2048,
-                temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-            ),
+        create_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self._supports_temperature:
+            create_kwargs["temperature"] = 0.0
+        response = self._chat_create_temperature_aware(
             label="openai.extract_system_context",
+            **create_kwargs,
         )
         raw_text = _extract_openai_text(response).strip()
         return _parse_extraction_json(raw_text)
@@ -2116,22 +2194,22 @@ class OpenAIClient:
         system_text = "\n\n".join(
             str(b.get("text", "")) for b in system_blocks if b.get("text")
         )
-        from ._rate_limit import run_with_rate_limit_retry
-
-        response = run_with_rate_limit_retry(
-            lambda: self._client.chat.completions.create(
-                model=model or self._model,
-                max_tokens=256,
-                temperature=0.0,
-                messages=[
-                    {"role": "system", "content": system_text},
-                    {"role": "user", "content": user_text},
-                ],
-                # Bound this single request so a stalled endpoint can't freeze
-                # the sweep — mirrors the Anthropic judge ceiling.
-                timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
-            ),
+        create_kwargs: dict[str, Any] = {
+            "model": model or self._model,
+            "max_tokens": 256,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+            # Bound this single request so a stalled endpoint can't freeze
+            # the sweep — mirrors the Anthropic judge ceiling.
+            "timeout": _JUDGE_CALL_TIMEOUT_SECONDS,
+        }
+        if self._supports_temperature:
+            create_kwargs["temperature"] = 0.0
+        response = self._chat_create_temperature_aware(
             label="openai.judge_relevance",
+            **create_kwargs,
         )
         raw_text = _extract_openai_text(response).strip()
         u = _openai_usage(response)

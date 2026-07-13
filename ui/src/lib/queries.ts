@@ -2818,12 +2818,13 @@ return useMutation({
 
 type TestAnthropicKeyResult = Awaited<ReturnType<typeof api.testAnthropicKey>>;
 
-/** Round-trip a tiny Haiku call to prove the stored key actually works. */
+/** Round-trip a tiny call to prove the stored key works. The optional mutate
+ *  argument is a model id to probe; omitted → the configured assess model. */
 export const useTestAnthropicKey = (
-  opts?: UseMutationOptions<TestAnthropicKeyResult, Error, void>,
+  opts?: UseMutationOptions<TestAnthropicKeyResult, Error, string | undefined>,
 ) =>
   useMutation({
-    mutationFn: () => api.testAnthropicKey(),
+    mutationFn: (model?: string) => api.testAnthropicKey(model),
     ...opts,
   });
 
@@ -2835,10 +2836,10 @@ type TestAnthropicGatewayResult = Awaited<ReturnType<typeof api.testAnthropicGat
  * so the user knows the gateway itself works, not just "something works".
  */
 export const useTestAnthropicGateway = (
-  opts?: UseMutationOptions<TestAnthropicGatewayResult, Error, void>,
+  opts?: UseMutationOptions<TestAnthropicGatewayResult, Error, string | undefined>,
 ) =>
   useMutation({
-    mutationFn: () => api.testAnthropicGateway(),
+    mutationFn: (model?: string) => api.testAnthropicGateway(model),
     ...opts,
   });
 
@@ -2932,12 +2933,13 @@ return useMutation({
 
 type TestOpenAIKeyResult = Awaited<ReturnType<typeof api.testOpenAIKey>>;
 
-/** Round-trip a tiny gpt-4o-mini call to prove the stored key actually works. */
+/** Round-trip a tiny call to prove the stored key works. The optional mutate
+ *  argument is a model id to probe; omitted → the configured assess model. */
 export const useTestOpenAIKey = (
-  opts?: UseMutationOptions<TestOpenAIKeyResult, Error, void>,
+  opts?: UseMutationOptions<TestOpenAIKeyResult, Error, string | undefined>,
 ) =>
   useMutation({
-    mutationFn: () => api.testOpenAIKey(),
+    mutationFn: (model?: string) => api.testOpenAIKey(model),
     ...opts,
   });
 
@@ -2945,10 +2947,10 @@ type TestOpenAIGatewayResult = Awaited<ReturnType<typeof api.testOpenAIGateway>>
 
 /** Symmetric to useTestAnthropicGateway — probes only the OpenAI gateway path. */
 export const useTestOpenAIGateway = (
-  opts?: UseMutationOptions<TestOpenAIGatewayResult, Error, void>,
+  opts?: UseMutationOptions<TestOpenAIGatewayResult, Error, string | undefined>,
 ) =>
   useMutation({
-    mutationFn: () => api.testOpenAIGateway(),
+    mutationFn: (model?: string) => api.testOpenAIGateway(model),
     ...opts,
   });
 
