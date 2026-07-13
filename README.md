@@ -2,15 +2,15 @@
 
 Standalone desktop app for assessing NIST SP 800-53 controls from eMASS CCIS workbooks.
 
-**Status:** v2.0.0 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
+**Status:** v2.0.2 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
 
 ## Stack
 
 - **UI:** Electron 32 + React 18 + TypeScript + Vite, styled with Tailwind v4 + shadcn/ui + Radix
-- **Backend sidecar:** Python 3.12 + FastAPI + SQLite (via SQLModel)
-- **LLM:** Anthropic SDK with prompt caching
+- **Backend sidecar:** Python 3.12+ + FastAPI + SQLite (via SQLModel)
+- **LLM:** Anthropic and OpenAI SDKs with prompt caching (assessor picks the active model; reasoning models supported)
 - **Excel I/O:** openpyxl (reads) + xlwings (writes that preserve comments/formatting)
-- **CUI-safe:** runs entirely on the assessor's workstation; only outbound traffic is the Anthropic API
+- **CUI-safe:** runs entirely on the assessor's workstation. The only always-on outbound traffic is the configured LLM API (Anthropic or OpenAI). Evidence connectors (SharePoint/Graph, Tenable, Splunk, GitLab, Jira, Confluence, ServiceNow GRC, Archer, eMASS) are OFF by default and reach their endpoints only when the assessor explicitly enables and configures them. Secrets (LLM keys, connector tokens, the MSAL Graph refresh-token cache) are stored encrypted at rest via the OS keyring / Windows DPAPI, and the loopback sidecar requires a per-launch bearer token.
 
 ## Layout
 
