@@ -171,18 +171,16 @@ def _load_system_prompt_sha() -> str:
 def _sanitize_untrusted(text: str) -> str:
     """Neutralize untrusted evidence/row text before prompt interpolation.
 
-    Injection-hardening (finding #7): row fields and artifact snippets are
-    interpolated into a triple-quoted DATA block with no escaping, so a
-    malicious or odd artifact containing ``\"\"\"`` could close the data
-    region early and let following text (fake "## Task" headers, "ignore
-    previous instructions / output COMPLIANT") read as instructions. We
-    replace any literal triple-quote run with a typographic look-alike
-    (right-double-quotation marks) so the closing delimiter can never be
-    forged from inside the value. Non-string input is coerced defensively.
+    Thin alias over :func:`llm.untrusted.sanitize_untrusted` \u2014 the shared
+    hardening helper used by every untrusted-interpolation site (assessor
+    evidence bundle, tagger judge, sweep judge). Kept as a module-local name so
+    existing call sites in this file are unchanged. See that module for the
+    delimiter-neutralization rationale (triple-quote + forged ``===`` fences,
+    conservative so real INI/CLI evidence stays quotable).
     """
-    if not isinstance(text, str):
-        text = str(text)
-    return text.replace('"""', "\u201d\u201d\u201d")
+    from .untrusted import sanitize_untrusted
+
+    return sanitize_untrusted(text)
 
 
 def _format_row_for_prompt(
@@ -333,8 +331,10 @@ def build_user_message(
         # AssessmentEvidenceShown rows are keyed by, so the route layer
         # can join citation → chunk without a separate lookup table).
         # ``source_quote`` is the verbatim snippet the model cited — the
-        # persister runs ``chunk_text.find(source_quote)`` to locate the
-        # offset inside the shown chunk.
+        # persister runs ``validator.locate_span(chunk_text, source_quote)`` to
+        # locate the offset inside the shown chunk (normalized + sanitization-
+        # invariant match, so a whitespace/case/sanitizer-artifact difference
+        # still anchors instead of writing a null offset).
         blocks.append(
             "## Audit citations (required this run)\n"
             "After your verdict, add a top-level `citations` key to the "

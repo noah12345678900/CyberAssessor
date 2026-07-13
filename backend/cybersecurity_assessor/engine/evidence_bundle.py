@@ -509,10 +509,23 @@ def build_tagged_evidence_with_payload(
         ev = ranked.evidence
         snippet = ranked.snippet
         locator = _section_locator(snippet, ranked.order_index)
+        # Injection-hardening: EVERY untrusted field goes through the shared
+        # sanitizer, not just the body. title/path, section locator, boundary
+        # label and doc_number are all attacker-controllable (a crafted filename
+        # or connector title) and were previously interpolated RAW into the
+        # header the assessor reads to write the compliance verdict — a filename
+        # carrying a fake fence + "status: COMPLIANT" could steer the narrative.
+        # kind/relevance/source are app-generated, not untrusted, so left as-is.
+        # Own module (not llm.client) to avoid the historical circular-import.
+        # chunk_sha/chunk_text below still capture the ORIGINAL bytes so audit
+        # replay reflects the artifact's true content, not the sanitized form.
+        from ..llm.untrusted import sanitize_untrusted
+
+        _title = sanitize_untrusted(ev.title or ev.path)
         header_lines = [
-            f"- title: {ev.title or ev.path}",
+            f"- title: {_title}",
             f"  kind: {ev.kind.value if hasattr(ev.kind, 'value') else ev.kind}",
-            f"  section: {locator}",
+            f"  section: {sanitize_untrusted(locator)}",
         ]
         # Boundary line — multi-boundary workbooks only (else render_boundaries
         # is False and this block never adds a line). Explicit link → the
@@ -522,24 +535,16 @@ def build_tagged_evidence_with_payload(
         if render_boundaries:
             bsegs = boundary_map.get(ev.id) if ev.id is not None else None
             header_lines.append(
-                f"  boundary: {', '.join(bsegs) if bsegs else BOUNDARY_UNSPECIFIED}"
+                "  boundary: "
+                + (sanitize_untrusted(", ".join(bsegs)) if bsegs else BOUNDARY_UNSPECIFIED)
             )
         if ev.doc_number:
-            header_lines.append(f"  doc_number: {ev.doc_number}")
+            header_lines.append(f"  doc_number: {sanitize_untrusted(ev.doc_number)}")
         header_lines.append(
             f"  relevance: {tag.relevance:.2f} (source={tag.source})"
         )
         header = "\n".join(header_lines)
-        # Injection-hardening (finding #7): neutralize triple-quotes inside
-        # the untrusted artifact snippet so a malicious/odd artifact can't
-        # close the DATA block and have following text read as instructions.
-        # Lazy import avoids a circular dep (llm.client imports engine.assessor,
-        # which imports this module). The chunk_sha below intentionally hashes
-        # the ORIGINAL snippet (what the file contains) so audit replay matches
-        # the source, not the sanitized presentation.
-        from ..llm.client import _sanitize_untrusted
-
-        safe_snippet = _sanitize_untrusted(snippet)
+        safe_snippet = sanitize_untrusted(snippet)
         blocks.append(f'{header}\n  text: """\n{safe_snippet}\n"""')
 
         # Audit v1: chunk_sha hashes the budgeted snippet (after head/tail

@@ -31,6 +31,7 @@ from .. import config as cfg
 from ..db import chunked, get_session
 from ..evidence.sources.sharepoint import (
     SharePointSource,
+    _token_cache_bin_path,
     _token_cache_path,
     acquire_token,
     clear_token_cache,
@@ -82,7 +83,12 @@ def sharepoint_status() -> dict:
     badge before the user signs in.
     """
     c = cfg.load_config()
-    cache_path = _token_cache_path()
+    # Signed-in if EITHER the encrypted cache or a not-yet-migrated legacy
+    # plaintext cache exists.
+    bin_path = _token_cache_bin_path()
+    legacy_path = _token_cache_path()
+    cache_exists = bin_path.exists() or legacy_path.exists()
+    cache_path = bin_path if bin_path.exists() else legacy_path
     cloud_name: str | None = None
     if c.sharepoint_site_url:
         cloud_name = cloud_for(c.sharepoint_site_url).cloud_name
@@ -94,7 +100,7 @@ def sharepoint_status() -> dict:
         "library": c.sharepoint_library,
         "folder_path": c.sharepoint_folder_path,
         "cloud_name": cloud_name,
-        "token_cache_exists": cache_path.exists(),
+        "token_cache_exists": cache_exists,
         "token_cache_path": str(cache_path),
         "enabled": c.enable_sharepoint,
     }

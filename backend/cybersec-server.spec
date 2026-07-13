@@ -66,6 +66,11 @@ hiddenimports = [
     "pytesseract",
     "pypdfium2",
     "pypdfium2_raw",
+    # win32crypt (pywin32) — DPAPI encryption for the MSAL Graph token cache
+    # (evidence/sources/sharepoint.py). Lazy-imported inside _encrypt/_decrypt,
+    # so name it explicitly; without DPAPI the packaged app would silently fall
+    # back to plaintext token storage, defeating the encryption fix.
+    "win32crypt",
 ]
 
 # Pull the whole package (modules + data files + any C extensions).

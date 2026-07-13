@@ -180,6 +180,42 @@ def create_app() -> FastAPI:
         expose_headers=["X-Total-Count"],
     )
 
+    # Per-launch bearer auth (defense-in-depth over CORS). CORS is browser-only
+    # and does NOT stop a non-browser local process — or a malicious webpage
+    # doing DNS-rebinding/CSRF against 127.0.0.1:<port> — from hitting a sidecar
+    # that deletes workbooks and holds connector secrets. Electron generates a
+    # random token per launch, passes it via the CCIS_AUTH_TOKEN env var, and
+    # sends it as `Authorization: Bearer <token>` on every request (see
+    # ui/electron/main.ts + preload).
+    #
+    # ENV-GATED ON PURPOSE: when CCIS_AUTH_TOKEN is unset the middleware is a
+    # no-op. This keeps the ~2400 tests that build create_app() via TestClient —
+    # and `pnpm dev` / uvicorn --reload — working with zero header churn. Only
+    # the packaged Electron launch sets the token, so only the real deployment
+    # enforces it. /healthz stays open regardless (the CCIS_PORT handshake probe
+    # and packaged-sidecar smoke test hit it before any token is known).
+    _auth_token = os.environ.get("CCIS_AUTH_TOKEN")
+    if _auth_token:
+        import hmac  # noqa: PLC0415
+
+        from starlette.requests import Request  # noqa: PLC0415
+        from starlette.responses import JSONResponse  # noqa: PLC0415
+
+        _OPEN_PATHS = {"/healthz"}
+
+        @app.middleware("http")
+        async def _require_bearer(request: Request, call_next):
+            if request.url.path not in _OPEN_PATHS:
+                header = request.headers.get("authorization", "")
+                expected = f"Bearer {_auth_token}"
+                # Constant-time compare so a timing side-channel can't leak the
+                # token byte-by-byte.
+                if not hmac.compare_digest(header, expected):
+                    return JSONResponse(
+                        {"detail": "Unauthorized"}, status_code=401
+                    )
+            return await call_next(request)
+
     @app.get("/healthz", tags=["meta"])
     def healthz() -> dict[str, str]:
         return {"status": "ok", "version": __version__}

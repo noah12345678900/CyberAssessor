@@ -2689,10 +2689,12 @@ class AssessmentCitation(SQLModel, table=True):
 
     Populated only when ``audit_citations_enabled`` is on (default OFF until
     the eval harness lands and verdict regression can be measured). Offsets
-    are best-effort: ``narrative.find(claim_text)`` and
-    ``chunk_text.find(source_quote)`` — if the LLM paraphrased the quote,
-    the offset fields stay null and the row still carries the claim ↔
-    chunk link with the verbatim ``source_quote``.
+    are best-effort: ``narrative.find(claim_text)`` for the claim side, and
+    ``validator.locate_span(chunk_text, source_quote)`` for the source side
+    (normalized + sanitization-invariant, so whitespace/case/sanitizer-artifact
+    differences still anchor). If the quote genuinely isn't in the chunk the
+    offset fields stay null and the row still carries the claim ↔ chunk link
+    with the verbatim ``source_quote``.
 
     ``extraction_method`` distinguishes LLM-self-citation (v1) from future
     regex-driven post-extraction or human-curated citations — same table,

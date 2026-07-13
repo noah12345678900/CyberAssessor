@@ -334,8 +334,13 @@ class AppConfig(BaseModel):
     # ISSM that you may use the API" switch. As of the single-pill
     # connector refactor these inner gates default ON; the main
     # ``enable_emass`` pill is the only switch the Settings card exposes.
+    #
+    # NOTE: ``connectors_v04_enabled`` is the shared version-cohort gate for
+    # ALL v0.4+ connectors and is declared ONCE above (with the Confluence
+    # block). It was previously redeclared here — a duplicate Pydantic field
+    # that silently shadowed the first with an identical default. Removed so
+    # the field has a single source of truth.
     # ------------------------------------------------------------------
-    connectors_v04_enabled: bool = True
     emass_upcoming_gated_enabled: bool = True
     # ------------------------------------------------------------------
     # Audit v1 — flag-gated per-claim citation co-emission.

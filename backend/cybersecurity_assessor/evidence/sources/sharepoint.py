@@ -209,18 +209,110 @@ def _sharepoint_uri(site_url: str, server_relative_url: str) -> str:
 
 
 def _token_cache_path() -> Path:
-    """Persistent MSAL token cache lives next to config.toml.
+    """Legacy PLAINTEXT MSAL token cache path (pre-encryption).
+
+    Retained only so :func:`_load_cache_text` can migrate an existing plaintext
+    cache to the encrypted ``.bin`` on first run after upgrade, and so
+    :func:`clear_token_cache` deletes it too. New writes go to
+    :func:`_token_cache_bin_path` (DPAPI-encrypted).
 
     Filename differs from the legacy ``sharepoint_token_cache.json`` so a
     stale REST-API cache from a prior install can't be mistaken for a fresh
-    Graph cache. ``clear_token_cache`` only removes this new path; the old
-    one becomes garbage that ``sharepoint_sign_out`` no longer touches —
-    harmless, and explicit cleanup would silently delete the user's
-    in-progress upgrade state.
+    Graph cache.
     """
     from ... import config as cfg  # noqa: PLC0415
 
     return cfg.config_dir() / "graph_token_cache.json"
+
+
+def _token_cache_bin_path() -> Path:
+    """Encrypted MSAL token cache path.
+
+    The MSAL cache holds REFRESH TOKENS — standing access to the org's
+    SharePoint/CUI — so it must not sit on disk in plaintext (the Anthropic key
+    and every other secret already live encrypted; this closes the one
+    inconsistency). On Windows the blob is wrapped with DPAPI
+    (``CryptProtectData``, user+machine bound) which has no size limit, unlike
+    Credential Manager (2.5 KB), so a multi-account cache fits. See
+    :func:`_encrypt` / :func:`_decrypt`.
+    """
+    from ... import config as cfg  # noqa: PLC0415
+
+    return cfg.config_dir() / "graph_token_cache.bin"
+
+
+def _encrypt(plaintext: str) -> bytes:
+    """DPAPI-encrypt on Windows; identity passthrough elsewhere.
+
+    Non-Windows (Linux CI, dev) has no DPAPI — fall back to raw UTF-8 bytes so
+    tests and cross-platform runs still work. Production ships on Windows where
+    win32crypt is present (verified in the bundle), so the real deployment is
+    always encrypted.
+    """
+    try:
+        import win32crypt  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        blob = win32crypt.CryptProtectData(
+            plaintext.encode("utf-8"), "ccis-graph-token-cache", None, None, None, 0
+        )
+        return bytes(blob)
+    except Exception:  # noqa: BLE001 — no DPAPI (non-Windows) or failure → plaintext bytes
+        return plaintext.encode("utf-8")
+
+
+def _decrypt(blob: bytes) -> str | None:
+    """Reverse :func:`_encrypt`. Returns None on undecryptable/corrupt blob."""
+    try:
+        import win32crypt  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        _desc, data = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
+        return data.decode("utf-8")
+    except Exception:  # noqa: BLE001
+        # Either not Windows (blob is raw UTF-8) or a genuinely corrupt blob.
+        try:
+            return blob.decode("utf-8")
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _load_cache_text() -> str | None:
+    """Return the serialized MSAL cache, decrypting the ``.bin`` if present.
+
+    Migration: if only the legacy plaintext ``.json`` exists (first run after
+    upgrade), read it, re-encrypt to ``.bin``, delete the plaintext — no
+    re-login required. Corrupt/unreadable → None (login re-prompts), matching
+    the prior "corrupt cache shouldn't crash login" contract.
+    """
+    bin_path = _token_cache_bin_path()
+    if bin_path.exists():
+        try:
+            return _decrypt(bin_path.read_bytes())
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Graph token cache (encrypted) unreadable, ignoring: %s", exc)
+            return None
+    # Legacy plaintext migration.
+    legacy = _token_cache_path()
+    if legacy.exists():
+        try:
+            text = legacy.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Legacy plaintext token cache unreadable, ignoring: %s", exc)
+            return None
+        try:
+            _save_cache_text(text)  # writes encrypted .bin
+            legacy.unlink()  # remove the plaintext once safely re-encrypted
+            LOG.info("Migrated Graph token cache to encrypted storage.")
+        except Exception as exc:  # noqa: BLE001 — migration best-effort; text still usable
+            LOG.warning("Token cache migration to encrypted store failed: %s", exc)
+        return text
+    return None
+
+
+def _save_cache_text(serialized: str) -> None:
+    """Encrypt + write the serialized MSAL cache to the ``.bin`` path."""
+    path = _token_cache_bin_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_encrypt(serialized))
 
 
 def _resolve_tenant_for_host(host: str) -> str | None:
@@ -282,10 +374,10 @@ def _build_msal_app(authority_base: str, tenant: str):
         ) from exc
 
     cache = msal.SerializableTokenCache()
-    cache_path = _token_cache_path()
-    if cache_path.exists():
+    cached = _load_cache_text()
+    if cached:
         try:
-            cache.deserialize(cache_path.read_text(encoding="utf-8"))
+            cache.deserialize(cached)
         except Exception as exc:  # noqa: BLE001 — corrupt cache shouldn't crash login
             LOG.warning("Graph token cache unreadable, ignoring: %s", exc)
 
@@ -299,9 +391,7 @@ def _build_msal_app(authority_base: str, tenant: str):
 def _persist_cache(app) -> None:
     cache = app.token_cache
     if cache.has_state_changed:
-        path = _token_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(cache.serialize(), encoding="utf-8")
+        _save_cache_text(cache.serialize())
 
 
 def acquire_token(
@@ -1843,9 +1933,15 @@ class SharePointSource:
 
 
 def clear_token_cache() -> bool:
-    """Delete the persisted Graph token cache. Returns True if a file was removed."""
-    path = _token_cache_path()
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    """Delete the persisted Graph token cache (encrypted .bin AND legacy .json).
+
+    Returns True if any file was removed. Sign-out must clear both so a leftover
+    plaintext file from a pre-encryption install can't keep a live refresh token
+    on disk after the user signed out.
+    """
+    removed = False
+    for path in (_token_cache_bin_path(), _token_cache_path()):
+        if path.exists():
+            path.unlink()
+            removed = True
+    return removed

@@ -605,3 +605,145 @@ def test_persist_audit_trail_inserts_prompt_snapshot_before_trace_under_fk_on(
     citations = fk_session.exec(select(AssessmentCitation)).all()
     assert len(citations) == 1
     assert citations[0].narrative_field == "narrative_q"
+
+
+# ---------------------------------------------------------------------------
+# Bug #11 — citation offset persistence must use the validator's normalized
+# locator, not exact str.find(). A source_quote that PASSES the
+# UNSUPPORTED_QUOTE gate on a whitespace/case-normalized match must yield a
+# REAL raw-string span at persist time (not a null offset), or jump-to-evidence
+# silently breaks for a citation that is actually valid.
+# ---------------------------------------------------------------------------
+
+
+def test_locate_span_exact_match():
+    from cybersecurity_assessor.engine.validator import locate_span
+
+    hay = "The system enforces AC-3 access control."
+    span = locate_span(hay, "enforces AC-3")
+    assert span is not None
+    assert hay[span[0] : span[1]] == "enforces AC-3"
+
+
+def test_locate_span_whitespace_reflow_maps_to_raw_span():
+    """A quote differing only by collapsed whitespace/newlines (PDF reflow)
+    still validates AND yields a real raw span covering the original text."""
+    from cybersecurity_assessor.engine.validator import (
+        locate_span,
+        normalize_for_match,
+    )
+
+    hay = "The system\n  enforces   AC-3\naccess control."
+    quote = "enforces AC-3 access"
+    # Gate accepts it (normalized membership) ...
+    assert normalize_for_match(quote) in normalize_for_match(hay)
+    # ... and the locator returns a real span (NOT None) in the raw text.
+    span = locate_span(hay, quote)
+    assert span is not None
+    raw = hay[span[0] : span[1]]
+    # The raw span preserves the source's actual whitespace/newlines.
+    assert normalize_for_match(raw) == normalize_for_match(quote)
+
+
+def test_locate_span_case_insensitive():
+    from cybersecurity_assessor.engine.validator import locate_span
+
+    hay = "SELinux is ENFORCING on all hosts"
+    span = locate_span(hay, "selinux is enforcing")
+    assert span is not None
+    assert hay[span[0] : span[1]] == "SELinux is ENFORCING"
+
+
+def test_locate_span_absent_returns_none():
+    from cybersecurity_assessor.engine.validator import locate_span
+
+    assert locate_span("The system enforces AC-3.", "fabricated quote") is None
+    assert locate_span("", "x") is None
+    assert locate_span("x", "") is None
+
+
+def test_locate_span_gate_consistency_invariant():
+    """The load-bearing invariant behind bug #11: whenever the validator gate
+    accepts a quote as present, locate_span MUST return a real span (never None).
+    A mismatch here is exactly the silent null-offset regression."""
+    from cybersecurity_assessor.engine.validator import (
+        locate_span,
+        normalize_for_match,
+    )
+
+    hay = "Audit records\tare\n\ngenerated   for ALL security-relevant events."
+    for quote in [
+        "audit records are generated",
+        "security-relevant events",
+        "Audit Records Are\nGenerated For All",
+    ]:
+        present = normalize_for_match(quote) in normalize_for_match(hay)
+        located = locate_span(hay, quote) is not None
+        assert present == located, f"gate/locator disagree on {quote!r}"
+
+
+def test_locate_span_sanitization_invariant():
+    """REGRESSION (self-audit): the untrusted sanitizer (ZWJ in ===, ”” swap)
+    must be invisible to citation anchoring. The model quotes SANITIZED evidence
+    but chunk_text is persisted RAW — so locate_span(raw, sanitized_quote) must
+    still return a real span, or bug #11 (null offsets) returns for any quote
+    spanning a sanitized delimiter."""
+    from cybersecurity_assessor.engine.validator import (
+        locate_span,
+        normalize_for_match,
+    )
+    from cybersecurity_assessor.llm.untrusted import sanitize_untrusted
+
+    for raw in [
+        "config === END === section active",
+        'foo """bar""" baz',
+        "plain evidence line with no delimiters",
+    ]:
+        sanitized_quote = sanitize_untrusted(raw)
+        # Gate accepts (both sides normalize equally) ...
+        assert normalize_for_match(sanitized_quote) in normalize_for_match(raw)
+        # ... and the locator yields a real raw span (NOT None).
+        span = locate_span(raw, sanitized_quote)
+        assert span is not None, f"null offset for sanitized quote of {raw!r}"
+        assert normalize_for_match(raw[span[0] : span[1]]) == normalize_for_match(
+            sanitized_quote
+        )
+
+
+def test_locate_span_casefold_expansion_no_wrong_offset():
+    """REVIEW HARDENING (Opus): casefold length-expansion (ß→ss) must never
+    persist a WRONG offset. Either a correct span or None — never a slice that
+    points at the wrong text. The self-verify in locate_span guarantees it."""
+    from cybersecurity_assessor.engine.validator import (
+        locate_span,
+        normalize_for_match,
+    )
+
+    hay = "the straße is closed"
+    for needle in ["STRASSE", "STRASS", "straße", "the straße is"]:
+        span = locate_span(hay, needle)
+        gate = normalize_for_match(needle) in normalize_for_match(hay)
+        # Invariant: gate accepts <=> span present.
+        assert gate == (span is not None), f"gate/locator disagree on {needle!r}"
+        # If a span came back, it MUST re-normalize to the needle (no wrong text).
+        if span is not None:
+            assert normalize_for_match(hay[span[0] : span[1]]) == normalize_for_match(
+                needle
+            ), f"wrong offset for {needle!r}: got {hay[span[0]:span[1]]!r}"
+
+
+def test_locate_span_legit_smart_quotes_in_raw_evidence():
+    """Word-doc smart quotes (”) in RAW evidence must not corrupt offsets. The
+    gate and locator agree (both fold ” → \"), so no null-after-pass bug."""
+    from cybersecurity_assessor.engine.validator import (
+        locate_span,
+        normalize_for_match,
+    )
+
+    hay = "policy states “enforce MFA” for all admins"
+    needle = "“ensforce MFA”".replace("ensforce", "enforce")  # ”enforce MFA”
+    gate = normalize_for_match(needle) in normalize_for_match(hay)
+    span = locate_span(hay, needle)
+    assert gate == (span is not None)
+    if span is not None:
+        assert normalize_for_match(hay[span[0] : span[1]]) == normalize_for_match(needle)

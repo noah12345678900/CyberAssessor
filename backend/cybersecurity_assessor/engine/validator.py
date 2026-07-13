@@ -356,6 +356,119 @@ _AUTO_COMPLIANT_TEMPLATE_RE = re.compile(
 _WS_RUN_RE = re.compile(r"\s+")
 
 
+# Sanitizer artifacts that must be INVISIBLE to quote-matching. The untrusted
+# sanitizer (llm/untrusted.py) inserts a zero-width joiner between runs of "="
+# (fence-break) and swaps ``"""`` -> ``”””``. The model sees SANITIZED evidence
+# and quotes the sanitized form, but the persisted chunk_text is the RAW file
+# bytes (kept for audit fidelity). So matching must be sanitization-INVARIANT:
+# strip the ZWJ and fold the swapped right-double-quote back to a straight quote
+# so a sanitized quote still locates in raw text (and vice-versa). Without this,
+# any quote spanning a sanitized ``===`` or ``"""`` would validate (both sides
+# sanitized) yet fail offset-anchoring against the raw chunk_text — reintroducing
+# the null-offset bug this module exists to prevent.
+_ZWJ = "‍"
+_RDQUOTE = "”"
+
+
+def _defang_char(ch: str) -> str:
+    """Per-char sanitizer-artifact fold. Returns '' to DROP the char (ZWJ)."""
+    if ch == _ZWJ:
+        return ""
+    if ch == _RDQUOTE:
+        return '"'
+    return ch
+
+
+def _walk_normalized(text: str) -> tuple[str, list[int], list[int]]:
+    """The SINGLE normalization walker. Returns (normalized, raw_starts, raw_ends).
+
+    ``normalized`` is the sanitization-invariant, whitespace-collapsed, casefolded
+    form. ``raw_starts[k]`` / ``raw_ends[k]`` are the [start, end) slice of the
+    RAW ``text`` that produced normalized char ``k`` — so a match at normalized
+    ``[pos, last]`` maps to raw ``[raw_starts[pos], raw_ends[last])`` with NO
+    off-by-one, even across casefold expansion (ß→ss: both 's' point at the same
+    raw [i, i+1)) or whitespace-run collapse (the single space spans the whole
+    run). ``normalize_for_match`` and ``locate_span`` BOTH derive from this one
+    function so they can never diverge — the divergence between two hand-written
+    paths was the original bug class.
+
+    Order per raw char: drop ZWJ; fold ``”``→``"``; collapse a whitespace RUN to
+    one space; casefold (may expand to multiple normalized chars, all pointing at
+    the same raw span).
+    """
+    normalized: list[str] = []
+    raw_starts: list[int] = []
+    raw_ends: list[int] = []
+    i = 0
+    n = len(text or "")
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            j = i + 1
+            while j < n and text[j].isspace():
+                j += 1
+            normalized.append(" ")
+            raw_starts.append(i)
+            raw_ends.append(j)  # the single space spans the whole raw run
+            i = j
+            continue
+        folded = _defang_char(ch)
+        if folded == "":
+            i += 1  # ZWJ dropped — advance raw, emit nothing
+            continue
+        for cf in folded.casefold():
+            normalized.append(cf)
+            raw_starts.append(i)
+            raw_ends.append(i + 1)  # every expanded char maps to this one raw char
+        i += 1
+    return "".join(normalized), raw_starts, raw_ends
+
+
+def normalize_for_match(text: str) -> str:
+    """Sanitization-invariant, whitespace/case-insensitive form for matching.
+
+    Single source of truth for "is this quote present in this text" across the
+    audit pipeline — the UNSUPPORTED_QUOTE gate AND the citation offset locator
+    both go through :func:`_walk_normalized`, so a quote the gate accepts always
+    yields a real span. Drops ZWJ, folds ``”``→``"`` (undo sanitizer artifacts),
+    collapses whitespace runs, casefolds.
+    """
+    return _walk_normalized(text)[0]
+
+
+def locate_span(haystack: str, needle: str) -> tuple[int, int] | None:
+    """Find ``needle`` in ``haystack`` under :func:`normalize_for_match` and map
+    the match to a span in the RAW ``haystack``.
+
+    Returns ``(start, end)`` indexing the raw ``haystack``, or ``None`` when the
+    needle isn't present. Uses the same :func:`_walk_normalized` the validator
+    gate uses, so any gate-accepted quote (including a SANITIZED quote located
+    against RAW chunk_text) yields a real span. SELF-VERIFIES: the returned raw
+    slice must re-normalize to the needle, else it returns ``None`` — a null
+    offset is safe (UI just can't jump), a WRONG offset points a 3PAO at the
+    wrong evidence, so we never persist an unverified span.
+    """
+    if not haystack or not needle:
+        return None
+    norm_needle = normalize_for_match(needle)
+    if not norm_needle:
+        return None
+
+    collapsed, raw_starts, raw_ends = _walk_normalized(haystack)
+    pos = collapsed.find(norm_needle)
+    if pos < 0:
+        return None
+    last = pos + len(norm_needle) - 1
+    raw_start = raw_starts[pos]
+    raw_end = raw_ends[last]
+    # Self-verify: the raw slice must normalize back to the needle. Guards every
+    # expansion/boundary edge case (casefold length change, ZWJ/ws at the seam)
+    # — if the arithmetic ever mismatched we return None, never a wrong span.
+    if normalize_for_match(haystack[raw_start:raw_end]) != norm_needle:
+        return None
+    return raw_start, raw_end
+
+
 # ---------------------------------------------------------------------------
 # Embedding-based narrative classification fallback
 # ---------------------------------------------------------------------------
@@ -1132,14 +1245,14 @@ def validate(
     # rather than shipping an invented quote into the SAR. Skipped when no
     # citations were captured (audit layer off) or no evidence text exists.
     if citations and evidence_text:
-        haystack = _WS_RUN_RE.sub(" ", evidence_text).casefold()
+        haystack = normalize_for_match(evidence_text)
         fabricated: list[str] = []
         for cite in citations:
             quote = (cite or {}).get("source_quote") or ""
             quote = quote.strip()
             if not quote:
                 continue
-            needle = _WS_RUN_RE.sub(" ", quote).casefold()
+            needle = normalize_for_match(quote)
             if needle not in haystack:
                 # Truncate for the operator-visible message so a long
                 # fabricated paragraph doesn't blow up the rejection text.

@@ -10,6 +10,7 @@
  */
 
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from "electron";
+import { randomBytes } from "node:crypto";
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,6 +20,12 @@ import process from "node:process";
 const isDev = !app.isPackaged;
 const DEV_URL = "http://localhost:5173";
 const SIDECAR_PORT_RE = /CCIS_PORT=(\d+)/;
+
+// Per-launch bearer token for the loopback sidecar (defense-in-depth over CORS
+// — see server.py's _require_bearer middleware). Generated once per app launch,
+// handed to the sidecar via the CCIS_AUTH_TOKEN env var, and exposed to the
+// renderer via preload so every fetch carries `Authorization: Bearer <token>`.
+const SIDECAR_AUTH_TOKEN = randomBytes(32).toString("hex");
 
 // Opt in early to the warning channels we actually want to act on in dev.
 // Cheaper to surface these now (when one of us is in front of the window) than
@@ -179,6 +186,10 @@ function spawnSidecar(): Promise<string> {
       // Access Denied even for the parent), so self-termination is the
       // only reliable teardown. Covers both graceful quit and crash.
       CCIS_PARENT_PID: String(process.pid),
+      // Per-launch bearer token the sidecar's auth middleware requires on every
+      // request except /healthz. Presence of this var is what turns auth ON in
+      // the sidecar (unset in bare pytest/uvicorn → auth inert).
+      CCIS_AUTH_TOKEN: SIDECAR_AUTH_TOKEN,
     };
     if (isDev) {
       childEnv.PYTHONDEVMODE = "1";
@@ -348,13 +359,40 @@ async function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Renderer sandbox ON (containment layer #8). Verified safe: preload.ts
+      // uses ONLY contextBridge / ipcRenderer / webUtils — no Node built-ins
+      // (fs/path/child_process) — all of which are available in a sandboxed
+      // preload. All Node work already lives in this main process behind IPC.
+      sandbox: true,
     },
   });
 
+  // Popups: only hand SAFE external schemes to the OS shell. Previously ANY
+  // url (incl. file://, smb://) was forwarded to shell.openExternal — a crafted
+  // link from connector data could invoke an arbitrary handler. Allow https +
+  // mailto (and http in dev for the Vite server); deny everything else. The
+  // window itself never opens — action stays "deny".
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const { protocol } = new URL(url);
+      const allowed = isDev
+        ? ["https:", "http:", "mailto:"]
+        : ["https:", "mailto:"];
+      if (allowed.includes(protocol)) shell.openExternal(url);
+    } catch {
+      /* malformed URL — deny silently */
+    }
     return { action: "deny" };
+  });
+
+  // Navigation guard: the main window must never navigate away from the app
+  // shell (dev Vite origin / packaged file://). Blocks a dropped or injected
+  // link from replacing the SPA with arbitrary content. Does NOT fire for Vite
+  // HMR (a websocket, not a document nav) or for webContents.reload(), so dev
+  // and Ctrl+R are unaffected.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const ok = isDev ? url.startsWith(DEV_URL) : url.startsWith("file://");
+    if (!ok) event.preventDefault();
   });
 
   // Push maximize-state changes to the renderer so the custom WindowControls
@@ -406,6 +444,13 @@ async function createWindow() {
 // IPC: preload calls this synchronously to populate window.ccis.sidecarUrl
 ipcMain.on("ccis:sidecar-url-sync", (evt) => {
   evt.returnValue = sidecarUrl;
+});
+
+// IPC: preload reads the per-launch bearer token synchronously so window.ccis
+// can attach it to every fetch. Sync mirrors the sidecar-url pattern — the
+// token exists before the window is created.
+ipcMain.on("ccis:auth-token-sync", (evt) => {
+  evt.returnValue = SIDECAR_AUTH_TOKEN;
 });
 
 // Window controls — replaces the native titleBarOverlay buttons so the

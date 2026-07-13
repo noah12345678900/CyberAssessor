@@ -14,8 +14,13 @@ type FileFilter = { name: string; extensions: string[] };
 // the sidecar is up, so this resolves immediately to a real URL.
 const sidecarUrl: string = (ipcRenderer.sendSync("ccis:sidecar-url-sync") as string) ?? "";
 
+// Per-launch bearer token the sidecar requires on every request except
+// /healthz. Sync-read once here; apiFetch attaches it to each request.
+const authToken: string = (ipcRenderer.sendSync("ccis:auth-token-sync") as string) ?? "";
+
 contextBridge.exposeInMainWorld("ccis", {
   sidecarUrl,
+  authToken,
   openFolder: (): Promise<string | null> => ipcRenderer.invoke("ccis:open-folder"),
   openFile: (filters?: FileFilter[]): Promise<string | null> =>
     ipcRenderer.invoke("ccis:open-file", filters),

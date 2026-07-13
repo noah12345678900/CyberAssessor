@@ -517,10 +517,15 @@ def _persist_audit_trail(
             claim_start + len(claim_text) if claim_start >= 0 else -1
         )
         chunk_text = evidence_to_chunk_text.get(int(evidence_id), "")
-        source_start = chunk_text.find(source_quote) if chunk_text else -1
-        source_end = (
-            source_start + len(source_quote) if source_start >= 0 else -1
-        )
+        # Use the SAME normalized locator the validator's UNSUPPORTED_QUOTE gate
+        # uses (v.locate_span → v.normalize_for_match). Exact str.find here would
+        # return -1 for a quote that legitimately PASSED validation on a
+        # whitespace/case-normalized match — persisting a null offset and
+        # silently breaking jump-to-evidence for a valid citation. locate_span
+        # maps the normalized match back to a real span in the raw chunk_text.
+        source_span = v.locate_span(chunk_text, source_quote) if chunk_text else None
+        source_start = source_span[0] if source_span else -1
+        source_end = source_span[1] if source_span else -1
         session.add(
             AssessmentCitation(
                 assessment_id=assessment_id,
