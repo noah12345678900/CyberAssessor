@@ -96,6 +96,72 @@ _JUDGE_CALL_TIMEOUT_SECONDS = 30.0
 # anyway. Keep just under the API ceiling for headroom.
 _VISION_MAX_IMAGE_BYTES = 4_500_000
 
+# Shared vision instruction — used by BOTH AnthropicClient.describe_image and
+# OpenAIClient.describe_image so the two providers produce comparable, tagger-
+# friendly prose. The output feeds TAGGING only and is never quoted to a 3PAO
+# (OCR is the verbatim-citation surface), so the "don't guess values" clause is
+# the guardrail against a VLM inventing an IP octet or an enforcing/permissive
+# flip.
+_VISION_PROMPT = (
+    "This image is evidence in a NIST 800-53 security assessment. "
+    "Describe what it shows in 3-6 sentences, focusing on anything "
+    "security-relevant: what system/console/tool is shown, what "
+    "settings/states/values are visible, account or access details, "
+    "network/boundary structure, or status indicators. Write in "
+    "plain prose a control assessor would use. Do NOT guess values "
+    "you cannot clearly see."
+)
+
+def _downscale_to_fit(image_bytes: bytes, media_type: str) -> tuple[bytes, str] | None:
+    """RESCUE-ONLY downscale for an image that EXCEEDS the vision size guard.
+
+    This is NOT a preemptive shrink. The describer's whole job is reading small
+    UI text (usernames, group SIDs, config values), and downscaling blurs that
+    first — so images within the guard are sent at full resolution, untouched.
+    This helper runs only when an image is over the cap and would otherwise be
+    skipped to OCR entirely: shrinking it just enough to fit is strictly better
+    than describing nothing.
+
+    Returns ``(bytes, media_type)`` re-encoded to fit under the cap, or ``None``
+    if it still can't fit (or Pillow errors) — caller then skips to OCR. Never
+    raises. Real evidence to date is <1 MB/image, so this path is a rare
+    backstop for an anomalous oversize artifact, not the normal flow.
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as im:
+            has_alpha = im.mode in ("RGBA", "LA") or (
+                im.mode == "P" and "transparency" in im.info
+            )
+            work = im.convert("RGBA") if has_alpha else im.convert("RGB")
+            # Step the longest edge down until the encoded payload fits the cap.
+            for longest in (2200, 1800, 1568, 1280, 1024):
+                if max(work.size) > longest:
+                    scale = longest / float(max(work.size))
+                    resized = work.resize(
+                        (max(1, round(work.width * scale)), max(1, round(work.height * scale))),
+                        Image.LANCZOS,
+                    )
+                else:
+                    resized = work
+                out = BytesIO()
+                if has_alpha:
+                    resized.save(out, format="PNG", optimize=True)
+                    fmt = "image/png"
+                else:
+                    resized.save(out, format="JPEG", quality=88, optimize=True)
+                    fmt = "image/jpeg"
+                data = out.getvalue()
+                if len(data) <= _VISION_MAX_IMAGE_BYTES:
+                    return data, fmt
+            return None
+    except Exception:  # noqa: BLE001 - never let a decode/encode error abort vision
+        return None
+
+
 _KEYRING_SERVICE = "cybersecurity-assessor"
 _KEYRING_USERNAME = "anthropic_api_key"
 
@@ -1643,15 +1709,6 @@ class AnthropicClient:
             )
             return ""
         b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-        prompt = (
-            "This image is evidence in a NIST 800-53 security assessment. "
-            "Describe what it shows in 3-6 sentences, focusing on anything "
-            "security-relevant: what system/console/tool is shown, what "
-            "settings/states/values are visible, account or access details, "
-            "network/boundary structure, or status indicators. Write in "
-            "plain prose a control assessor would use. Do NOT guess values "
-            "you cannot clearly see."
-        )
         content = [
             {
                 "type": "image",
@@ -1661,7 +1718,7 @@ class AnthropicClient:
                     "data": b64,
                 },
             },
-            {"type": "text", "text": prompt},
+            {"type": "text", "text": _VISION_PROMPT},
         ]
         try:
             response = self._messages_create_temperature_aware(
@@ -1816,6 +1873,10 @@ class OpenAIClient:
         # ``_chat_create_temperature_aware`` so the fallback is uniform across
         # assess, judge, and extraction.
         self._supports_temperature = True
+        # Model ids we've already warned about for missing vision support, so a
+        # text-only endpoint logs the "degrading to OCR" notice once per model
+        # rather than once per image (the tagger calls describe_image per image).
+        self._warned_no_vision: set[str] = set()
 
         if _sdk_client is not None:
             self._client = _sdk_client
@@ -2014,6 +2075,105 @@ class OpenAIClient:
                 raise
 
         return run_with_rate_limit_retry(_do_create, label=label)
+
+    def describe_image(
+        self,
+        image_bytes: bytes,
+        *,
+        media_type: str = "image/png",
+        model: str | None = None,
+    ) -> str:
+        """OpenAI mirror of AnthropicClient.describe_image — see that docstring.
+
+        Same contract: rich control-flavored prose for the tagger, OCR kept
+        separately for verbatim citation, "" on any failure so the caller
+        degrades to OCR. Two provider differences:
+
+        * Image block uses the OpenAI-standard shape
+          ``{"type":"image_url","image_url":{"url":"data:<mime>;base64,..."}}``
+          rather than Anthropic's ``source.base64`` block. This ``data:`` URI is
+          the de-facto standard accepted by real OpenAI, Azure OpenAI, vLLM,
+          LiteLLM, LM Studio, and Ollama's OpenAI-compat layer — so the method
+          works against ANY endpoint the user points at, not just one gateway.
+        * Images WITHIN the size guard are sent at full resolution — the
+          describer reads small UI text (usernames, group SIDs, config values),
+          which downscaling would blur, so we never shrink preemptively. An
+          image OVER the guard is downscaled just enough to fit as a rescue
+          (better than skipping it to OCR entirely); if it still can't fit we
+          skip. Real evidence is <1 MB/image, so the rescue path is rare.
+
+        Not all endpoints are multimodal. A text-only model may 400 or silently
+        drop the image block; either way we return "" (OCR fallback) and warn
+        ONCE per model id so a silently-vision-less run is visible in the log
+        rather than mistaken for healthy.
+        """
+        import base64
+
+        if not image_bytes:
+            return ""
+
+        send_bytes, send_media_type = image_bytes, media_type
+        if len(send_bytes) > _VISION_MAX_IMAGE_BYTES:
+            rescued = _downscale_to_fit(send_bytes, media_type)
+            if rescued is None:
+                log.info(
+                    "skipping vision for oversized image (%d bytes > %d cap, "
+                    "could not downscale to fit); OCR-only",
+                    len(send_bytes),
+                    _VISION_MAX_IMAGE_BYTES,
+                )
+                return ""
+            send_bytes, send_media_type = rescued
+            log.info(
+                "downscaled oversized image to %d bytes to fit vision cap",
+                len(send_bytes),
+            )
+        # Normalize a couple of media-type spellings some servers reject.
+        if send_media_type == "image/jpg":
+            send_media_type = "image/jpeg"
+        b64 = base64.standard_b64encode(send_bytes).decode("ascii")
+        content = [
+            {"type": "text", "text": _VISION_PROMPT},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{send_media_type};base64,{b64}"},
+            },
+        ]
+        create_kwargs: dict[str, Any] = {
+            "model": model or self._model,
+            "max_tokens": 768,
+            "messages": [{"role": "user", "content": content}],
+        }
+        # Mirror the other OpenAI call sites: only pass temperature while the
+        # client still believes the model accepts it. The shared helper strips
+        # it on a reasoning-model 400 anyway, but gating here keeps behavior
+        # consistent across assess/judge/vision.
+        if self._supports_temperature:
+            create_kwargs["temperature"] = 0.0
+        try:
+            response = self._chat_create_temperature_aware(
+                label="openai.describe_image",
+                **create_kwargs,
+            )
+            return _extract_openai_text(response).strip()
+        except Exception as exc:  # noqa: BLE001 — degrade to OCR, never abort
+            msg = str(exc).lower()
+            looks_visionless = any(
+                k in msg
+                for k in ("image", "multimodal", "vision", "content", "not support")
+            )
+            model_id = model or self._model
+            if looks_visionless and model_id not in self._warned_no_vision:
+                self._warned_no_vision.add(model_id)
+                log.warning(
+                    "vision appears unsupported by model %s on this endpoint "
+                    "(%s); degrading to OCR for all images this run",
+                    model_id,
+                    type(exc).__name__,
+                )
+            else:
+                log.warning("vision describe_image failed: %s", exc)
+            return ""
 
     def _call_with_user_message(
         self,
