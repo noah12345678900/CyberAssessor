@@ -1822,6 +1822,17 @@ def _extract_text(response: Any) -> str:
 
 _OPENAI_DEFAULT_MODEL = "gpt-5.1"
 
+# OpenAI REASONING models (gpt-5.x / o-series) spend hidden reasoning tokens
+# that count against max_completion_tokens ALONGSIDE the visible output. The
+# shared llm_max_tokens (4096, sized for Anthropic's per-model cap) truncated
+# verdict JSON mid-envelope once reasoning ran. The OpenAI client floors its
+# per-verdict budget here so it works regardless of the shared config value
+# (incl. a persisted config.toml pinned at 4096) WITHOUT bumping the shared
+# value into Anthropic's 400 territory. Only the large assess/verdict call is
+# floored; the small bounded sub-task caps (judge=256, extract=2048, vision=768)
+# are left as-is — they emit little and don't reason long.
+_OPENAI_REASONING_MIN_TOKENS = 32000
+
 
 class OpenAIClient:
     """OpenAI/ChatGPT implementation of the LlmClient Protocol.
@@ -1850,7 +1861,11 @@ class OpenAIClient:
         _sdk_client: Any | None = None,
     ) -> None:
         self._model = model
-        self._max_tokens = max_tokens
+        # Floor the verdict budget to the reasoning minimum: the shared config
+        # (4096, Anthropic-safe) truncates OpenAI reasoning models mid-JSON. Take
+        # the MAX so an explicitly higher config value still wins. Non-reasoning
+        # OpenAI models are unaffected (budget is a cap, billed on actual usage).
+        self._max_tokens = max(max_tokens, _OPENAI_REASONING_MIN_TOKENS)
         self._temperature = temperature
         self._system_prompt = system_prompt or _load_system_prompt()
         # Audit v1 — mirror of AnthropicClient. Flag lives on the
@@ -2046,6 +2061,24 @@ class OpenAIClient:
         if not self._supports_temperature:
             create_kwargs.pop("temperature", None)
 
+        # OpenAI chat.completions deprecated ``max_tokens`` in favor of
+        # ``max_completion_tokens``. For REASONING models (gpt-5.x / o-series)
+        # ``max_tokens`` is REJECTED outright, and the budget must bound the
+        # hidden reasoning tokens + visible output TOGETHER — so a verdict was
+        # truncating mid-JSON when reasoning ate the old 4096 cap. Translate the
+        # key here in the single funnel every OpenAI create() routes through, so
+        # all assess/judge/extractor sites are fixed at once. Safe for
+        # non-reasoning models too (max_completion_tokens is universally
+        # accepted). Anthropic's client uses ``max_tokens`` correctly and is a
+        # separate class — untouched.
+        if "max_tokens" in create_kwargs:
+            # setdefault (not assign) so an explicit max_completion_tokens, if a
+            # caller ever set one, is preserved rather than clobbered.
+            create_kwargs.setdefault(
+                "max_completion_tokens", create_kwargs.pop("max_tokens")
+            )
+            create_kwargs.pop("max_tokens", None)
+
         def _do_create() -> Any:
             try:
                 return self._client.chat.completions.create(**create_kwargs)
@@ -2237,8 +2270,9 @@ class OpenAIClient:
             return LlmProposal(
                 status=ComplianceStatus.NON_COMPLIANT,
                 narrative=(
-                    f"[truncated] response hit max_tokens ({self._max_tokens}) "
-                    "before completing the verdict envelope"
+                    f"[truncated] response hit max_completion_tokens "
+                    f"({self._max_tokens}; reasoning+output combined) before "
+                    "completing the verdict envelope"
                 ),
                 input_tokens=usage["input_tokens"],
                 output_tokens=usage["output_tokens"],

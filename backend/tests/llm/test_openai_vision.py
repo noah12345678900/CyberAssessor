@@ -100,7 +100,10 @@ def test_describe_image_builds_openai_data_uri_payload() -> None:
     assert len(comp.calls) == 1
     kw = comp.calls[0]
     assert kw["model"] == "gpt-test"
-    assert kw["max_tokens"] == 768
+    # The OpenAI funnel renames max_tokens -> max_completion_tokens (reasoning
+    # models reject max_tokens); vision's 768 cap rides through unchanged.
+    assert kw["max_completion_tokens"] == 768
+    assert "max_tokens" not in kw
     # One user message carrying a text block THEN an image_url block.
     messages = kw["messages"]
     assert len(messages) == 1 and messages[0]["role"] == "user"
@@ -212,3 +215,56 @@ def test_warns_once_per_model_when_vision_unsupported(caplog) -> None:
 
     unsupported = [r for r in caplog.records if "unsupported by model" in r.getMessage()]
     assert len(unsupported) == 1  # once for the model, not once per image
+
+
+# ---------------------------------------------------------------------------
+# v2.0.5 — reasoning-model budget: OpenAI must send max_completion_tokens (not
+# the deprecated/rejected max_tokens) and floor the verdict budget so hidden
+# reasoning tokens don't truncate the JSON envelope. Anthropic is untouched.
+# ---------------------------------------------------------------------------
+
+
+def test_openai_renames_max_tokens_to_max_completion_tokens():
+    """Every OpenAI create() call must send max_completion_tokens, never the
+    deprecated max_tokens (reasoning models reject the latter). Exercised via
+    describe_image (which routes through the same _chat_create funnel) using the
+    module's existing fake SDK that records create() kwargs."""
+    comp = _FakeCompletions(content="a console")
+    client = _client(comp)
+    client.describe_image(_small_png(), media_type="image/png")
+    assert comp.calls, "no create() call captured"
+    for kw in comp.calls:
+        assert "max_tokens" not in kw, "deprecated max_tokens leaked to OpenAI SDK"
+        assert "max_completion_tokens" in kw, "must send max_completion_tokens"
+
+
+def test_openai_floors_verdict_budget_to_reasoning_min():
+    """The verdict budget is floored to the reasoning minimum regardless of a
+    lower shared config (incl. a persisted config.toml=4096)."""
+    from cybersecurity_assessor.llm.client import (
+        OpenAIClient,
+        _OPENAI_REASONING_MIN_TOKENS,
+    )
+
+    class _Stub:
+        def __init__(self, *a, **k):
+            pass
+
+    oc = OpenAIClient(max_tokens=4096, _sdk_client=_Stub())
+    assert oc._max_tokens == _OPENAI_REASONING_MIN_TOKENS
+    # An explicitly higher config value still wins (max, not clobber).
+    oc_hi = OpenAIClient(max_tokens=_OPENAI_REASONING_MIN_TOKENS + 1000, _sdk_client=_Stub())
+    assert oc_hi._max_tokens == _OPENAI_REASONING_MIN_TOKENS + 1000
+
+
+def test_anthropic_budget_not_floored():
+    """Anthropic must NOT get the OpenAI reasoning floor — its Messages API caps
+    max_tokens per model and 32000 would 400 on the assess models."""
+    from cybersecurity_assessor.llm.client import AnthropicClient
+
+    class _Stub:
+        def __init__(self, *a, **k):
+            pass
+
+    ac = AnthropicClient(max_tokens=4096, _sdk_client=_Stub())
+    assert ac._max_tokens == 4096

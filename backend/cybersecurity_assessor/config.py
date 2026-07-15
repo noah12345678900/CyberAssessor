@@ -119,6 +119,13 @@ class AppConfig(BaseModel):
     evidence_roots: list[str] = Field(default_factory=list)
     last_workbook: str | None = Field(default=None)
     anthropic_model: str = Field(default="claude-4-8-opus")
+    # Completion budget per LLM call (Anthropic max_tokens / OpenAI
+    # max_completion_tokens). Kept at 4096: this is the value Anthropic's
+    # Messages API caps on for the assess models, and a normal verdict finishes
+    # well under 1k. OpenAI REASONING models need far more headroom because the
+    # budget must also cover hidden reasoning tokens — the OpenAIClient raises
+    # its OWN floor internally (see _OPENAI_REASONING_MIN_TOKENS) rather than
+    # bumping this shared value, which would 400 on Claude's lower per-model cap.
     llm_max_tokens: int = Field(default=4096)
     # Per-file text-extraction byte budget. Huge logs are less valuable than a
     # Splunk insight query result, but truncated text beats nothing — so we

@@ -30,6 +30,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Native tools (uv, pyinstaller) legitimately write warnings to stderr — e.g.
+# `uv run --no-sync` warns when the venv's recorded Python patch version drifts
+# from the interpreter (harmless: the interpreter still runs). Under
+# ErrorActionPreference='Stop', PowerShell can turn native stderr into a
+# terminating NativeCommandError even on a clean exit 0, which previously killed
+# this script AFTER -Clean had already wiped dist/. Opt out of exit-code-based
+# native throwing (we gate on $LASTEXITCODE explicitly) and, crucially, never
+# merge native stderr into a captured variable via 2>&1 under Stop. Guarded so
+# the script still runs on Windows PowerShell 5.1 where this pref doesn't exist.
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
 # Resolve backend/ regardless of CWD so the script works from anywhere.
 $BackendDir = Resolve-Path (Join-Path $PSScriptRoot "..")
 $SpecPath   = Join-Path $BackendDir "cybersec-server.spec"
@@ -45,12 +58,16 @@ try {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $BackendDir "build")
     }
 
-    # Sanity-check PyInstaller is reachable in the synced venv. A friendlier
-    # error than the cryptic "command not found" PyInstaller gives.
+    # Sanity-check PyInstaller is reachable in the venv. A friendlier error than
+    # the cryptic "command not found" PyInstaller gives. Capture STDOUT ONLY
+    # (no 2>&1): a harmless stderr warning from uv (e.g. venv/interpreter patch
+    # drift) must not be captured into $check nor escalate to a fatal error —
+    # we judge success solely by the exit code. stderr still streams to the
+    # console so real errors remain visible.
     Write-Host "==> Checking PyInstaller availability" -ForegroundColor Cyan
-    $check = uv run --no-sync python -c "import PyInstaller; print(PyInstaller.__version__)" 2>&1
+    $check = uv run --no-sync python -c "import PyInstaller; print(PyInstaller.__version__)"
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "PyInstaller not found. Run: uv sync --native-tls --extra packaging --extra sources --extra excel"
+        Write-Error "PyInstaller not reachable in the venv. Install it: uv pip install pyinstaller (it is an ad-hoc dev-only build tool, not a declared project dependency)."
         exit 1
     }
     Write-Host "    PyInstaller $check" -ForegroundColor DarkGray
