@@ -101,8 +101,11 @@ def test_describe_image_builds_openai_data_uri_payload() -> None:
     kw = comp.calls[0]
     assert kw["model"] == "gpt-test"
     # The OpenAI funnel renames max_tokens -> max_completion_tokens (reasoning
-    # models reject max_tokens); vision's 768 cap rides through unchanged.
-    assert kw["max_completion_tokens"] == 768
+    # models reject max_tokens). Vision's budget is floored to the reasoning
+    # sub-task minimum (4000) so gpt-5.x reasoning tokens don't starve the
+    # image description before it's emitted.
+    from cybersecurity_assessor.llm.client import _OPENAI_SUBTASK_MIN_TOKENS
+    assert kw["max_completion_tokens"] == _OPENAI_SUBTASK_MIN_TOKENS
     assert "max_tokens" not in kw
     # One user message carrying a text block THEN an image_url block.
     messages = kw["messages"]
@@ -268,3 +271,49 @@ def test_anthropic_budget_not_floored():
 
     ac = AnthropicClient(max_tokens=4096, _sdk_client=_Stub())
     assert ac._max_tokens == 4096
+
+
+# ---------------------------------------------------------------------------
+# v2.0.6 — judge truncation must be an ERROR, not a silent 0.0. A reasoning
+# model that exhausts max_completion_tokens returns finish_reason=length with
+# empty content; masking that as score 0.0 silently zero-scored every candidate
+# on gpt-5.5. It must return the negative sentinel so the tagger counts it as
+# errored (→ TF-IDF fallback), never a 0.0 decline.
+# ---------------------------------------------------------------------------
+
+
+def test_judge_relevance_truncation_returns_negative_sentinel():
+    from cybersecurity_assessor.llm.client import OpenAIClient
+
+    class _TruncResp:
+        # finish_reason=length + empty content = reasoning ate the whole budget
+        id = "chatcmpl-t"
+        model = "gpt-5.5"
+        class _Ch:
+            finish_reason = "length"
+            class message:  # noqa: N801
+                content = ""
+        choices = [_Ch()]
+        usage = None
+
+    class _Comp:
+        def __init__(self): self.calls = []
+        def create(self, **kw):
+            self.calls.append(kw)
+            return _TruncResp()
+
+    class _Chat:
+        def __init__(self, comp): self.completions = comp
+
+    class _SDK:
+        def __init__(self, comp): self.chat = _Chat(comp)
+
+    comp = _Comp()
+    oc = OpenAIClient(model="gpt-5.5", _sdk_client=_SDK(comp))
+    score, reasoning, _usage = oc.judge_relevance(
+        [{"text": "rubric"}], "candidate control text"
+    )
+    # Negative sentinel => tagger Phase-2 counts this as errored, not a 0.0
+    # decline that would look like a genuine "not relevant".
+    assert score < 0.0, f"truncated judge must return negative sentinel, got {score}"
+    assert "truncated" in reasoning.lower()

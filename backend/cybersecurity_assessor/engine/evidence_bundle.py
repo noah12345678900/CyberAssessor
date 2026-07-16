@@ -525,8 +525,14 @@ def build_tagged_evidence_with_payload(
         header_lines = [
             f"- title: {_title}",
             f"  kind: {ev.kind.value if hasattr(ev.kind, 'value') else ev.kind}",
-            f"  section: {sanitize_untrusted(locator)}",
         ]
+        # Only emit a section reference when it's human-meaningful (a heading or
+        # page). When the locator is None (no heading/page), OMIT the line —
+        # never surface the internal "chunk <n>" index, which the model would
+        # echo into narratives as a jargon citation the assessor/3PAO can't act
+        # on. The model still identifies the artifact by its title above.
+        if locator is not None:
+            header_lines.append(f"  section: {sanitize_untrusted(locator)}")
         # Boundary line — multi-boundary workbooks only (else render_boundaries
         # is False and this block never adds a line). Explicit link → the
         # segment label(s); no explicit link → ``unspecified`` so the model
@@ -695,7 +701,7 @@ def _anchors_from_tag(tag: "EvidenceTag") -> list[str]:
     return list(seen.keys())
 
 
-def _section_locator(snippet: str, order_index: int) -> str:
+def _section_locator(snippet: str, order_index: int) -> str | None:
     """Return the cheapest unambiguous 'where in the doc' tag for a snippet.
 
     Priority:
@@ -703,15 +709,18 @@ def _section_locator(snippet: str, order_index: int) -> str:
          repeatable by the model without hallucination — it's literally in
          the snippet the model reads).
       2. First 'Page N' / 'pg. N' marker extracted from PDF text layers.
-      3. Stable chunk index (order of admission into the evidence bundle),
-         expressed as "chunk <n>" so the auditor knows which admitted
-         artifact this is for this assessment.
+      3. None — no human-meaningful locator. Returns ``None`` (NOT a
+         ``"chunk <n>"`` string) so the caller OMITS the ``section:`` header
+         line entirely. The internal chunk index is an implementation detail
+         (bundle admission order); emitting it made the model echo "chunk 4"
+         into assessor-facing / 3PAO-facing narratives — jargon that reads as
+         a hallucinated citation. The model still identifies the artifact by
+         its title, which is always in the header.
 
-    The returned string is embedded into the prompt header verbatim so the
-    model can echo it in its narrative citation without inventing anything.
-    Only cite what is literally present in the snippet — all three options
-    here are derived from the snippet content or its position, never from
-    external metadata.
+    The returned string (when not None) is embedded into the prompt header
+    verbatim so the model can echo it in its narrative citation without
+    inventing anything — both options are derived from the snippet content,
+    never from external metadata.
     """
     m = _HEADING_RE.search(snippet)
     if m:
@@ -720,7 +729,7 @@ def _section_locator(snippet: str, order_index: int) -> str:
     pm = _PAGE_RE.search(snippet)
     if pm:
         return f"page {pm.group(1)}"
-    return f"chunk {order_index}"
+    return None
 
 
 def _load_snippet(

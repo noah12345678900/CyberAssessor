@@ -42,6 +42,14 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
+# Process-level short-circuit: set True the first time an OpenAI embed() fails
+# (e.g. the gateway serves no embedding model and 500s). resolve_provider()'s
+# auto path then skips OpenAI embeddings for the rest of the process and returns
+# the TF-IDF fallback immediately, so only the FIRST call pays the failed-call
+# cost. Reset in tests via the autouse fixture to avoid cross-test leakage.
+_OPENAI_EMBEDDINGS_DISABLED = False
+
+
 # ---------------------------------------------------------------------------
 # Filler corpus — the empirical "what does vague boilerplate look like"
 # reference set. Held fixed across versions so historical
@@ -146,7 +154,20 @@ class OpenAIEmbeddingsProvider:
             raise RuntimeError(
                 "`openai` SDK is not installed. Add it to backend/pyproject.toml."
             ) from exc
-        self._client = OpenAI(api_key=resolved_key, base_url=base_url)
+        # max_retries=0 + a short timeout: a gateway that doesn't serve an
+        # embedding model (e.g. the GDMS OpenAI-compatible endpoint) returns 500
+        # on every /embeddings call. The SDK's default max_retries=2 with
+        # exponential backoff + ~600s timeout would otherwise block the calling
+        # thread for MINUTES per call — hanging the UI (the CRM-suspicion panel
+        # embeds) and slowing ingest's dense RAG lane. Failing fast lets the
+        # callers' existing try/except fall through to the TF-IDF/local fallback
+        # (and the process short-circuit below) in ~1 RTT instead.
+        self._client = OpenAI(
+            api_key=resolved_key,
+            base_url=base_url,
+            max_retries=0,
+            timeout=10.0,
+        )
 
     @property
     def provider_name(self) -> str:
@@ -162,7 +183,19 @@ class OpenAIEmbeddingsProvider:
         # OpenAI embeddings API: batched is much cheaper than per-text calls.
         # 2048-item batch is the documented limit; we don't expect to exceed it
         # in a single CRM (largest control catalogs run ~400 controls).
-        response = self._client.embeddings.create(model=self._model, input=texts)
+        try:
+            response = self._client.embeddings.create(
+                model=self._model, input=texts
+            )
+        except Exception:
+            # A gateway that doesn't serve an embedding model 500s here. Trip the
+            # process short-circuit so resolve_provider() auto-path skips OpenAI
+            # embeddings for the rest of this process (only the FIRST call pays
+            # the ~1 RTT cost; every later CRM/tagger embed resolves to TF-IDF
+            # instantly). Re-raise so THIS caller's own try/except fallback runs.
+            global _OPENAI_EMBEDDINGS_DISABLED
+            _OPENAI_EMBEDDINGS_DISABLED = True
+            raise
         return [list(item.embedding) for item in response.data]
 
 
@@ -458,6 +491,10 @@ def resolve_provider(
     if prefer == "tfidf":
         return TfidfFallbackProvider()
     # Auto path: try OpenAI silently, fall back to TF-IDF on any failure.
+    # Once an OpenAI embed() has 500'd this process (gateway serves no embedding
+    # model), skip straight to TF-IDF so no later call pays the failed-call cost.
+    if _OPENAI_EMBEDDINGS_DISABLED:
+        return TfidfFallbackProvider()
     try:
         return OpenAIEmbeddingsProvider()
     except Exception:

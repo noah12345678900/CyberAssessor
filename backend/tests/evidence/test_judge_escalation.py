@@ -454,6 +454,47 @@ def test_is_command_error_only_classifies_brief_phrases():
     assert _is_command_error_only(_XRDP_DEPLOYED_BODY) is False
 
 
+def test_is_command_error_only_ignores_diagnostic_path_warnings():
+    """A benign 'No such file or directory' inside a tool WARNING / [Errno N]
+    line is NOT a failed command — the command RAN and produced real evidence.
+
+    Regression for the OpenAI-run zero-tag bug: 7 real CTP transcripts (and a
+    release-notes PDF quoting the same line) were wrongly excluded from the
+    never-zero floor because every ``ipa`` command emits:
+      ``ipa: WARNING: Failed to write schema: [Errno 2] No such file or
+        directory: '/glustershare/home/.../.cache/ipa'``
+    while the command itself succeeded (sudo rules matched, account state, etc.).
+    Only a BARE/shell-emitted path error (cat:/bash: ...) still counts as a
+    failed launch.
+    """
+    from cybersecurity_assessor.evidence.tagger import _is_command_error_only
+
+    ipa_warning_body = (
+        "$ ipa group-find --user cybertestadmin\n"
+        "ipa: WARNING: Failed to write schema: [Errno 2] No such file or "
+        "directory: '/glustershare/home/cybertestadmin/.cache/ipa'\n"
+        "10 Sudo Rules matched\n"
+        "Account disabled: False\n"
+    )
+    # The command ran fine; the warning must NOT flag it as error-only.
+    assert _is_command_error_only(ipa_warning_body) is False
+
+    # An [Errno N] diagnostic alongside real IA-5 evidence -> still False.
+    errno_with_output = (
+        "[Errno 2] No such file or directory: '/tmp/x'\n"
+        "Constraint violation: Password reuse not permitted\n"
+    )
+    assert _is_command_error_only(errno_with_output) is False
+
+    # But a genuine bare-shell launch failure is STILL caught.
+    assert _is_command_error_only(
+        "cat: /etc/missing: No such file or directory"
+    ) is True
+    assert _is_command_error_only(
+        "bash: ./runme.sh: No such file or directory"
+    ) is True
+
+
 # ===========================================================================
 # 4. Escalation does NOT fire when the escalation model is None
 # ===========================================================================

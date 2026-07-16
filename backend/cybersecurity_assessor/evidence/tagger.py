@@ -981,6 +981,22 @@ _SUCCESSFUL_OUTPUT_RES = (
 )
 
 
+# "No such file or directory" / "Not a directory" are failure-to-execute signals
+# ONLY when they are the command's OWN error — NOT when they appear inside a
+# tool's diagnostic log line (``ipa: WARNING: Failed to write schema: [Errno 2]
+# No such file or directory: '.../.cache/ipa'``). That warning means the command
+# RAN FINE and produced real evidence; the missing path is an incidental cache
+# dir. Treating it as a command failure wrongly excluded 7 real CTP transcripts
+# (and a release-notes PDF quoting the same warning) from the never-zero floor,
+# leaving them zero-tagged. A path-error line prefixed by a log level or an
+# ``[Errno N]`` tag is a diagnostic, not a launch failure — strip those before
+# the failure scan so only a bare/shell-emitted path error still counts.
+_LOGLEVEL_PATH_ERROR_RE = re.compile(
+    r"(?im)^.*?(?:\b(?:WARNING|WARN|INFO|DEBUG|NOTICE)\b|\[Errno\s*\d+\]).*"
+    r"(?:No such file or directory|Not a directory).*$"
+)
+
+
 def _is_command_error_only(text: str) -> bool:
     """True when the body's only signal is a command that FAILED TO EXECUTE.
 
@@ -995,11 +1011,19 @@ def _is_command_error_only(text: str) -> bool:
     codes are deliberately NOT failure-to-execute signals (they are valid
     enforcement evidence), so a transcript whose only "error" is a denial is
     NOT classified as command-error-only and remains eligible to escalate.
+
+    A ``No such file or directory`` / ``Not a directory`` that appears inside a
+    log-level WARNING/INFO line or an ``[Errno N]`` diagnostic is NOT a launch
+    failure (the command ran and merely warned about a missing incidental path),
+    so those lines are stripped before the failure scan.
     """
     if not text:
         return False
     cleaned = _strip_terminal_noise(text)
-    if not any(rx.search(cleaned) for rx in _FAILURE_TO_EXECUTE_RES):
+    # Drop diagnostic path-error lines (tool warnings), keeping bare/shell path
+    # errors that DO indicate a failed launch.
+    scan = _LOGLEVEL_PATH_ERROR_RE.sub("", cleaned)
+    if not any(rx.search(scan) for rx in _FAILURE_TO_EXECUTE_RES):
         return False
     # A real command also ran (success signal present) → not error-only.
     if any(rx.search(cleaned) for rx in _SUCCESSFUL_OUTPUT_RES):

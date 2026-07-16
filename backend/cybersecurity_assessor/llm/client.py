@@ -1833,6 +1833,18 @@ _OPENAI_DEFAULT_MODEL = "gpt-5.1"
 # are left as-is — they emit little and don't reason long.
 _OPENAI_REASONING_MIN_TOKENS = 32000
 
+# Reasoning-model floor for the SMALL bounded sub-task calls (judge relevance,
+# system-context extraction, vision describe). Their visible replies are tiny
+# JSON (~30-300 tokens), so the old hardcoded caps (256/768/2048) were fine for
+# non-reasoning models — but a reasoning model (gpt-5.x/o-series) spends hidden
+# reasoning tokens against the SAME max_completion_tokens budget and blew past
+# 256, returning EMPTY content (finish_reason=length) that parsed to score 0.0.
+# That silently zero-scored every judge candidate on gpt-5.5 (accepted=0,
+# errored=0), which then exposed a never-zero-floor gap. 4000 leaves ample room
+# for reasoning + the small answer; billing is per emitted token, so a model
+# that answers short still costs the same.
+_OPENAI_SUBTASK_MIN_TOKENS = 4000
+
 
 class OpenAIClient:
     """OpenAI/ChatGPT implementation of the LlmClient Protocol.
@@ -2174,7 +2186,9 @@ class OpenAIClient:
         ]
         create_kwargs: dict[str, Any] = {
             "model": model or self._model,
-            "max_tokens": 768,
+            # Reasoning-model floor: 768 starved gpt-5.x reasoning before the
+            # image description was emitted. See _OPENAI_SUBTASK_MIN_TOKENS.
+            "max_tokens": max(768, _OPENAI_SUBTASK_MIN_TOKENS),
             "messages": [{"role": "user", "content": content}],
         }
         # Mirror the other OpenAI call sites: only pass temperature while the
@@ -2356,7 +2370,9 @@ class OpenAIClient:
         """OpenAI mirror of AnthropicClient.extract_system_context."""
         create_kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": 2048,
+            # Reasoning-model floor (extraction reply is a small JSON dict, but
+            # reasoning tokens share the budget). See _OPENAI_SUBTASK_MIN_TOKENS.
+            "max_tokens": max(2048, _OPENAI_SUBTASK_MIN_TOKENS),
             "messages": [{"role": "user", "content": prompt}],
         }
         if self._supports_temperature:
@@ -2390,7 +2406,10 @@ class OpenAIClient:
         )
         create_kwargs: dict[str, Any] = {
             "model": model or self._model,
-            "max_tokens": 256,
+            # Reasoning-model floor: a tiny 256 cap starved gpt-5.5's hidden
+            # reasoning and returned empty JSON (parsed to 0.0). See
+            # _OPENAI_SUBTASK_MIN_TOKENS.
+            "max_tokens": _OPENAI_SUBTASK_MIN_TOKENS,
             "messages": [
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_text},
@@ -2412,6 +2431,20 @@ class OpenAIClient:
             output_tokens=u["output_tokens"],
             cache_read_input_tokens=u["cache_read_tokens"],
         )
+        # Truncation (finish_reason=length) is an INFRASTRUCTURE failure, not a
+        # semantic "not relevant" — a reasoning model that spent the whole
+        # budget thinking returns empty/partial content. Signal it with the
+        # NEGATIVE sentinel (-1.0), which the tagger's Phase-2 loop counts as
+        # `errored` (→ trips the TF-IDF Tier-5 fallback) rather than silently
+        # recording a 0.0 decline. Masking truncation as 0.0 is exactly what let
+        # a too-small judge cap silently zero-score every candidate on gpt-5.5.
+        if _openai_truncated(response):
+            return (
+                -1.0,
+                f"[truncated] judge hit max_completion_tokens "
+                f"(reasoning+output combined); raw={raw_text[:60]!r}",
+                usage,
+            )
         try:
             obj = _parse_extraction_json(raw_text)
             score_raw = obj.get("score", obj.get("relevance", 0.0))

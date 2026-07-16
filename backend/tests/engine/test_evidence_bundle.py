@@ -1086,3 +1086,34 @@ def test_ocrd_image_is_a_corroborator(session, objective, tmp_path):
     )
     _tag(session, evidence_id=ev.id, objective_id=objective.id, relevance=1.0)
     assert has_nonscan_evidence(objective.id, session) is True
+
+
+# ---------------------------------------------------------------------------
+# v2.0.6 — no internal "chunk <n>" jargon in the evidence header. The section
+# locator emits a heading/page when one exists, else None (caller omits the
+# section: line) so the model never echoes "chunk 4" into a 3PAO-facing narrative.
+# ---------------------------------------------------------------------------
+
+
+def test_section_locator_heading_and_page_and_none():
+    from cybersecurity_assessor.engine.evidence_bundle import _section_locator
+
+    # A markdown heading -> "§ <heading>"
+    assert _section_locator("## Access Control Policy\nbody text", 3).startswith("§")
+    # A page marker on its own line -> "page N"
+    assert _section_locator("intro\nPage 7\nmore", 3) == "page 7"
+    # Neither -> None (NOT "chunk 3"); caller omits the section line.
+    out = _section_locator("plain terminal output, no heading or page", 3)
+    assert out is None
+
+
+def test_evidence_header_omits_chunk_reference(session, objective, tmp_path):
+    """A snippet with no heading/page must NOT put 'chunk N' in the prompt
+    header — the section: line is omitted entirely."""
+    from cybersecurity_assessor.engine.evidence_bundle import _section_locator
+
+    # Guard the specific regression: the fallback is None, so no 'chunk' string.
+    assert _section_locator("no heading here just prose", 5) is None
+    # And a heading path never contains the word 'chunk'.
+    loc = _section_locator("# Firewall Config\nrules...", 5)
+    assert loc is not None and "chunk" not in loc.lower()
