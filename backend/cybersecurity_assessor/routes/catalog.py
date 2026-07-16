@@ -1321,10 +1321,49 @@ def delete_requirement_source(
     ).all()
     for m in existing_maps:
         s.delete(m)
+
+    # Also delete the SYNTHETIC Baseline the PSC loader materialized alongside
+    # this source. load_program_controls (program_controls_loader.py) mirrors a
+    # program overlay as a Baseline + BaselineControl set keyed by
+    # (framework_id, source_ref=path, PROGRAM_CONTROLS) so it renders in the
+    # Workbooks "Manage overlays" attach dialog (which reads WorkbookOverlay →
+    # Baseline, NOT RequirementSource). Deleting only the RequirementSource left
+    # that Baseline — and any WorkbookOverlay attachment to it — orphaned: the
+    # overlay vanished from the Import-overlay list but lingered in the attach
+    # dialog. Cascade the synthetic Baseline here (mirrors the baseline-delete
+    # fan-out in routes/baselines.py). Keyed by source_ref=path, so a source
+    # with no on-disk path (path is None) has no synthetic baseline to remove.
+    synthetic_removed = False
+    if source.path:
+        synthetic = s.exec(
+            select(Baseline).where(
+                Baseline.framework_id == source.framework_id,
+                Baseline.source_ref == source.path,
+                Baseline.source_type == BaselineSourceType.PROGRAM_CONTROLS,
+            )
+        ).first()
+        if synthetic is not None:
+            bid = synthetic.id
+            s.exec(delete(BaselineControl).where(BaselineControl.baseline_id == bid))
+            s.exec(delete(BaselineObjective).where(BaselineObjective.baseline_id == bid))
+            s.exec(delete(WorkbookOverlay).where(WorkbookOverlay.baseline_id == bid))
+            # Drop any AssessmentImplementation slice this overlay produced so the
+            # Baseline delete can't FK-fail under foreign_keys=ON (mirrors the
+            # belt-and-suspenders NULL in routes/baselines.py:delete_baseline).
+            s.exec(
+                update(AssessmentImplementation)
+                .where(AssessmentImplementation.source_baseline_id == bid)
+                .values(source_baseline_id=None)
+            )
+            s.delete(synthetic)
+            synthetic_removed = True
+
+    source_name = source.name
     s.delete(source)
     s.commit()
     return {
         "deleted_source_id": source_id,
-        "name": source.name,
+        "name": source_name,
         "maps_removed": len(existing_maps),
+        "synthetic_baseline_removed": synthetic_removed,
     }

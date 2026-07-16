@@ -2,7 +2,7 @@
 
 Standalone desktop app for assessing NIST SP 800-53 controls from eMASS CCIS workbooks.
 
-**Status:** v2.0.4 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
+**Status:** v2.0.8 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
 
 ## Stack
 

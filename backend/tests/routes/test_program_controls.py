@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 # Make the backend package importable from any pytest cwd.
 _BACKEND = Path(__file__).resolve().parents[2]
@@ -24,11 +24,16 @@ if str(_BACKEND) not in sys.path:
 from cybersecurity_assessor import models  # noqa: F401,E402  -- registers tables
 from cybersecurity_assessor.db import get_session  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
+    Baseline,
+    BaselineControl,
+    BaselineSourceType,
     Control,
     Framework,
     Objective,
     RequirementMap,
     RequirementSource,
+    Workbook,
+    WorkbookOverlay,
 )
 from cybersecurity_assessor.server import create_app  # noqa: E402
 
@@ -210,3 +215,83 @@ def test_program_controls_empty_when_no_overlays(env):
     resp = env["client"].get(f"/api/controls/{empty_control_id}/program-controls")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_delete_requirement_source_cascades_synthetic_baseline(env):
+    """Deleting a PSC RequirementSource also removes the synthetic Baseline and
+    its WorkbookOverlay attachment.
+
+    Regression: a PSC import materializes BOTH a RequirementSource (Import-overlay
+    list) AND a synthetic PROGRAM_CONTROLS Baseline keyed by source_ref=path
+    (the Workbooks "Manage overlays" attach dialog reads WorkbookOverlay →
+    Baseline). Deleting only the RequirementSource left the Baseline + any
+    WorkbookOverlay attachment orphaned — the overlay vanished from the import
+    list but lingered in the attach dialog. The delete must cascade both.
+    """
+    path = "C:/overlays/psc_ground.xlsx"
+    with Session(env["engine"]) as s:
+        # A PSC source WITH a path (the synthetic-baseline key is source_ref=path).
+        src = RequirementSource(
+            framework_id=env["fw_r5_id"],
+            name="T1TL Ground PSC",
+            path=path,
+        )
+        s.add(src)
+        s.commit()
+        s.refresh(src)
+        source_id = src.id
+
+        # The synthetic Baseline the loader would have materialized alongside it,
+        # keyed by (framework_id, source_ref=path, PROGRAM_CONTROLS).
+        synthetic = Baseline(
+            framework_id=env["fw_r5_id"],
+            name="T1TL Ground PSC",
+            source_type=BaselineSourceType.PROGRAM_CONTROLS,
+            source_ref=path,
+        )
+        s.add(synthetic)
+        s.commit()
+        s.refresh(synthetic)
+        baseline_id = synthetic.id
+        s.add(
+            BaselineControl(
+                baseline_id=baseline_id,
+                control_id=env["control_id"],
+                tailoring_reason="Mapped by program overlay T1TL Ground PSC",
+            )
+        )
+        # A workbook with this overlay ATTACHED (the row the attach dialog shows).
+        wb = Workbook(path="C:/wb/yoloteam.xlsx", filename="yoloteam.xlsx")
+        s.add(wb)
+        s.commit()
+        s.refresh(wb)
+        s.add(WorkbookOverlay(workbook_id=wb.id, baseline_id=baseline_id))
+        s.commit()
+
+    resp = env["client"].delete(f"/api/catalog/requirement-sources/{source_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_source_id"] == source_id
+    assert body["synthetic_baseline_removed"] is True
+
+    # Both the synthetic Baseline and the attachment are gone — the attach
+    # dialog will no longer surface the deleted overlay.
+    with Session(env["engine"]) as s:
+        assert s.get(RequirementSource, source_id) is None
+        assert s.get(Baseline, baseline_id) is None
+        assert (
+            s.exec(
+                select(WorkbookOverlay).where(
+                    WorkbookOverlay.baseline_id == baseline_id
+                )
+            ).first()
+            is None
+        )
+        assert (
+            s.exec(
+                select(BaselineControl).where(
+                    BaselineControl.baseline_id == baseline_id
+                )
+            ).first()
+            is None
+        )

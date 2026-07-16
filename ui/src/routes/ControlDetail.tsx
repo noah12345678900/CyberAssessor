@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
-import Editor, { DiffEditor } from "@monaco-editor/react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -1715,24 +1714,12 @@ function AssessmentPanel({
             per-scope editors below. */}
         {!isMultiImpl && (
           <Field label="Narrative (column Q)">
-            <div className="rounded-md border overflow-hidden">
-              <Editor
-                height="280px"
-                language="markdown"
-                value={narrativeQ}
-                onChange={(v) => setNarrativeQ(v ?? "")}
-                theme="light"
-                options={{
-                  fontSize: 13,
-                  minimap: { enabled: false },
-                  wordWrap: "on",
-                  lineNumbers: "off",
-                  scrollBeyondLastLine: false,
-                  folding: false,
-                  renderLineHighlight: "none",
-                }}
-              />
-            </div>
+            <Textarea
+              value={narrativeQ}
+              onChange={(e) => setNarrativeQ(e.target.value)}
+              className="h-[280px] resize-y font-mono text-[13px] leading-relaxed"
+              placeholder="Assessment narrative (markdown) — written to column Q…"
+            />
           </Field>
         )}
 
@@ -2040,26 +2027,10 @@ function ProposalPreview({
             </div>
           </div>
           {showDiff && (
-            <div className="rounded-md border overflow-hidden">
-              <DiffEditor
-                height="240px"
-                language="markdown"
-                original={current.narrative}
-                modified={proposedNarrative ?? ""}
-                theme="light"
-                options={{
-                  fontSize: 12,
-                  readOnly: true,
-                  renderSideBySide: true,
-                  minimap: { enabled: false },
-                  wordWrap: "on",
-                  lineNumbers: "off",
-                  scrollBeyondLastLine: false,
-                  folding: false,
-                  renderLineHighlight: "none",
-                }}
-              />
-            </div>
+            <NarrativeDiff
+              original={current.narrative ?? ""}
+              modified={proposedNarrative ?? ""}
+            />
           )}
         </div>
       )}
@@ -2106,6 +2077,88 @@ function DiffRow({
       <Button variant="outline" size="sm" onClick={onUse} className="h-7 text-xs shrink-0">
         Use
       </Button>
+    </div>
+  );
+}
+
+// Read-only line diff of the current vs proposed narrative. Replaces the Monaco
+// DiffEditor, which fetched the editor from a CDN at runtime and hung forever on
+// air-gapped machines (no external egress). This is a self-contained LCS line
+// diff — zero dependencies, no web workers, no network — rendering removed lines
+// with a red strike and added lines on green. Narratives are short prose, so a
+// simple DOM render is more than adequate (Monaco's virtualization only matters
+// for huge files, which these never are).
+function _diffLines(
+  a: string[],
+  b: string[],
+): Array<{ type: "same" | "add" | "del"; text: string }> {
+  // Classic LCS DP table, then backtrack into an edit script.
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0),
+  );
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] =
+        a[i] === b[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out: Array<{ type: "same" | "add" | "del"; text: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ type: "same", text: a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push({ type: "del", text: a[i] });
+      i++;
+    } else {
+      out.push({ type: "add", text: b[j] });
+      j++;
+    }
+  }
+  while (i < n) out.push({ type: "del", text: a[i++] });
+  while (j < m) out.push({ type: "add", text: b[j++] });
+  return out;
+}
+
+function NarrativeDiff({
+  original,
+  modified,
+}: {
+  original: string;
+  modified: string;
+}) {
+  const rows = useMemo(
+    () => _diffLines(original.split("\n"), modified.split("\n")),
+    [original, modified],
+  );
+  return (
+    <div className="rounded-md border overflow-auto max-h-[240px] bg-muted/20">
+      <pre className="text-xs font-mono leading-relaxed p-2 m-0 whitespace-pre-wrap">
+        {rows.map((r, idx) => (
+          <div
+            key={idx}
+            className={
+              r.type === "add"
+                ? "bg-green-500/15 text-green-800"
+                : r.type === "del"
+                  ? "bg-red-500/15 text-red-800 line-through"
+                  : "text-muted-foreground"
+            }
+          >
+            <span className="select-none opacity-60 mr-2">
+              {r.type === "add" ? "+" : r.type === "del" ? "-" : " "}
+            </span>
+            {r.text || " "}
+          </div>
+        ))}
+      </pre>
     </div>
   );
 }
