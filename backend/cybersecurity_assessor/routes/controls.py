@@ -186,6 +186,49 @@ def _coerce_abstain_persistence_fields(
 _ABSTAIN_PREFIX_RE = re.compile(r"^\[Needs review — [^\]]*\]\n\n")
 
 
+# Internal RAG chunk-index reference (e.g. "chunk 4") the model sometimes echoes
+# from the evidence-bundle ``section:`` header into its narrative. It is bundle-
+# admission-order jargon that means nothing to an assessor/3PAO. We scrub it from
+# the OUTPUT narrative text only — the prompt header still carries ``chunk <n>``
+# (model input, tagging, scoring all byte-unchanged); this is a pure
+# presentation cleanup at the narrative boundary. Matches ``chunk 4``,
+# ``chunk 12`` optionally wrapped in the common citation connectives so the
+# surrounding sentence stays grammatical: "Examined X chunk 3 and Y" -> "Examined
+# X and Y"; "documented in chunk 2." -> "documented in.".. handled conservatively.
+_CHUNK_REF_RE = re.compile(
+    r"""(?ix)
+    (?:                      # optional leading connective to absorb
+        \s+(?:in|at|per|from|see|,)\s+
+        |\s+
+    )?
+    chunk\s+\d+              # the jargon token itself
+    """,
+)
+
+
+def _scrub_chunk_refs(narrative: str | None) -> str | None:
+    """Remove internal ``chunk <n>`` references from a NARRATIVE for display.
+
+    Output-only: applied to the finalized narrative text right before it is
+    returned/persisted. Does NOT touch the prompt, tagging, scoring, evidence
+    selection, or audit capture — those keep the chunk index. A no-op for any
+    narrative that never mentioned a chunk. Collapses the doubled spaces / stray
+    " ," left behind so the sentence stays clean.
+    """
+    if not narrative or "chunk" not in narrative.lower():
+        return narrative
+    out = _CHUNK_REF_RE.sub("", narrative)
+    # Tidy residue left by the excision:
+    #   * a doubled connective comma ("SSP, chunk 12, which" -> "SSP,, which")
+    out = re.sub(r",\s*,", ",", out)
+    #   * runs of spaces
+    out = re.sub(r"\s{2,}", " ", out)
+    #   * a space or comma stranded before terminal punctuation
+    out = re.sub(r"[\s,]+([.;:])", r"\1", out)
+    out = re.sub(r"\s+,", ",", out)
+    return out.strip()
+
+
 def _strip_abstain_prefix(narrative: str | None) -> str | None:
     """Remove a leading ``[Needs review — …]`` marker from a narrative.
 
@@ -1391,6 +1434,20 @@ def assess_objective(body: AssessRequest, s: Session = Depends(get_session)) -> 
         )
         rec.finish(cost_usd=cost)
 
+    # OUTPUT-ONLY: strip internal "chunk <n>" jargon from the finalized decision
+    # narratives before ANY downstream use (response DTO, persistence, the
+    # recomputed narrative_stitched). The decision is already fully computed —
+    # tagging, scoring, validation, supersession all ran on the un-scrubbed text
+    # and the prompt still carried the chunk index — so this changes nothing but
+    # the assessor/3PAO-facing wording. Per-scope map values scrubbed too.
+    decision.narrative = _scrub_chunk_refs(decision.narrative)
+    decision.narrative_on_prem = _scrub_chunk_refs(decision.narrative_on_prem)
+    decision.narrative_cloud = _scrub_chunk_refs(decision.narrative_cloud)
+    if decision.narratives_by_scope:
+        decision.narratives_by_scope = {
+            k: _scrub_chunk_refs(v) for k, v in decision.narratives_by_scope.items()
+        }
+
     # Persist as a pending-human-review row so navigating away doesn't
     # discard the proposal (the prior failure mode that produced "Save
     # button disappeared after I left the screen"). Apply-to-workbook
@@ -2050,6 +2107,19 @@ def assess_objectives_batch(
                     boundary_brief=boundary_brief,
                     override_epoch=_epoch,
                 )
+                # OUTPUT-ONLY chunk-jargon scrub — mirror the single-control
+                # path so batch-assessed narratives are equally clean. Decision
+                # is fully computed (tagging/scoring/validation already ran on
+                # the un-scrubbed text); this only affects displayed/persisted
+                # wording. See _scrub_chunk_refs.
+                d.narrative = _scrub_chunk_refs(d.narrative)
+                d.narrative_on_prem = _scrub_chunk_refs(d.narrative_on_prem)
+                d.narrative_cloud = _scrub_chunk_refs(d.narrative_cloud)
+                if d.narratives_by_scope:
+                    d.narratives_by_scope = {
+                        k: _scrub_chunk_refs(v)
+                        for k, v in d.narratives_by_scope.items()
+                    }
                 _batch_progress.record_done(
                     body.workbook_id, _obj.objective_id, errored=False
                 )
