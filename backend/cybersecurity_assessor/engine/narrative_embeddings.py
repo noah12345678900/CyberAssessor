@@ -42,12 +42,49 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
-# Process-level short-circuit: set True the first time an OpenAI embed() fails
-# (e.g. the gateway serves no embedding model and 500s). resolve_provider()'s
-# auto path then skips OpenAI embeddings for the rest of the process and returns
-# the TF-IDF fallback immediately, so only the FIRST call pays the failed-call
-# cost. Reset in tests via the autouse fixture to avoid cross-test leakage.
+# Process-level short-circuit: set True when an OpenAI embed() fails with a
+# FATAL "this gateway has no usable embeddings model" signal (connection error,
+# 404, auth, 5xx). resolve_provider()'s auto path then skips OpenAI embeddings
+# for the rest of the process and returns the TF-IDF fallback immediately.
+# NOT tripped by a plain timeout (chunking makes timeouts a capacity signal, not
+# a liveness one). Reset in tests via the autouse fixture.
 _OPENAI_EMBEDDINGS_DISABLED = False
+
+# Per-HTTP-call embedding batch size. The full control catalog (~922 controls)
+# in ONE embeddings.create call exceeded the client timeout (~12s) and tripped
+# the kill-switch, silently disabling the dense retrieval lane for the whole
+# ingest. Chunking keeps each call small (~1-2s) so a fixed per-call timeout is a
+# stable bound that never rots as the catalog grows — 922 or 10k controls just
+# means more chunks, same per-chunk cost.
+_EMBED_BATCH_SIZE = 128
+
+
+def _is_fatal_embed_error(exc: BaseException) -> bool:
+    """True if the error means the gateway has no usable embeddings model.
+
+    Fatal (disable OpenAI embeddings this process): connection error, 404, auth,
+    5xx. NOT fatal (fall back for this call only, keep the lane alive): a plain
+    timeout or rate-limit — the model works, this batch was just slow/throttled.
+    Matched by class-name + message text so it survives SDK stubs and renames.
+    """
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if "timeout" in name or "timed out" in msg:
+        return False
+    if "ratelimit" in name or "rate limit" in msg or "429" in msg:
+        return False
+    # Class name is the reliable signal (SDK-typed exceptions) — prefer it.
+    if any(k in name for k in ("connection", "apiconnection", "notfound",
+                               "authentication", "permissiondenied")):
+        return True
+    # Message text: match phrases, and HTTP codes only in the SDK's canonical
+    # "error code: NNN" form so a stray "500" inside prose can't false-positive.
+    if "not found" in msg or "unauthorized" in msg or "forbidden" in msg:
+        return True
+    if any(f"error code: {code}" in msg for code in
+           ("401", "403", "404", "500", "502", "503", "504")):
+        return True
+    return False  # unknown → don't permanently poison the lane
 
 
 # ---------------------------------------------------------------------------
@@ -154,19 +191,18 @@ class OpenAIEmbeddingsProvider:
             raise RuntimeError(
                 "`openai` SDK is not installed. Add it to backend/pyproject.toml."
             ) from exc
-        # max_retries=0 + a short timeout: a gateway that doesn't serve an
-        # embedding model (e.g. the GDMS OpenAI-compatible endpoint) returns 500
-        # on every /embeddings call. The SDK's default max_retries=2 with
-        # exponential backoff + ~600s timeout would otherwise block the calling
-        # thread for MINUTES per call — hanging the UI (the CRM-suspicion panel
-        # embeds) and slowing ingest's dense RAG lane. Failing fast lets the
-        # callers' existing try/except fall through to the TF-IDF/local fallback
-        # (and the process short-circuit below) in ~1 RTT instead.
+        # Per-call timeout + one retry. A gateway with no embeddings model 500s
+        # (fatal, caught by _is_fatal_embed_error) fast, so we never hang the UI
+        # for the SDK's ~600s default. embed() now CHUNKS (128/call), so the
+        # timeout bounds a small fixed batch (~1-2s) with headroom — the old
+        # timeout=10 on a single 922-item batch timed out at ~12s and wrongly
+        # killed the dense lane. 15s gives cold-TLS slack; max_retries=1 rides a
+        # transient blip.
         self._client = OpenAI(
             api_key=resolved_key,
             base_url=base_url,
-            max_retries=0,
-            timeout=10.0,
+            max_retries=1,
+            timeout=15.0,
         )
 
     @property
@@ -178,25 +214,36 @@ class OpenAIEmbeddingsProvider:
         return self._model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed ``texts`` in ``_EMBED_BATCH_SIZE`` chunks.
+
+        Chunking is the fix for the dense-lane recall regression: the full
+        control catalog in one call exceeded the timeout and permanently
+        disabled OpenAI embeddings, silently killing the dense RAG lane. Small
+        chunks complete fast, so a slow-but-alive gateway finishes normally.
+
+        Only a FATAL error on the FIRST chunk (see ``_is_fatal_embed_error`` —
+        no model / auth / 5xx) trips the process kill-switch. A timeout or a
+        later-chunk failure aborts THIS embed (caller falls back to TF-IDF for
+        this call) without poisoning the whole process. Partial results are
+        never returned — a half-embedded catalog gives confidently-wrong
+        nearest neighbors, worse than a clean TF-IDF fallback.
+        """
         if not texts:
             return []
-        # OpenAI embeddings API: batched is much cheaper than per-text calls.
-        # 2048-item batch is the documented limit; we don't expect to exceed it
-        # in a single CRM (largest control catalogs run ~400 controls).
-        try:
-            response = self._client.embeddings.create(
-                model=self._model, input=texts
-            )
-        except Exception:
-            # A gateway that doesn't serve an embedding model 500s here. Trip the
-            # process short-circuit so resolve_provider() auto-path skips OpenAI
-            # embeddings for the rest of this process (only the FIRST call pays
-            # the ~1 RTT cost; every later CRM/tagger embed resolves to TF-IDF
-            # instantly). Re-raise so THIS caller's own try/except fallback runs.
-            global _OPENAI_EMBEDDINGS_DISABLED
-            _OPENAI_EMBEDDINGS_DISABLED = True
-            raise
-        return [list(item.embedding) for item in response.data]
+        global _OPENAI_EMBEDDINGS_DISABLED
+        out: list[list[float]] = []
+        for start in range(0, len(texts), _EMBED_BATCH_SIZE):
+            chunk = texts[start : start + _EMBED_BATCH_SIZE]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model, input=chunk
+                )
+            except Exception as exc:  # noqa: BLE001 — classified below
+                if start == 0 and _is_fatal_embed_error(exc):
+                    _OPENAI_EMBEDDINGS_DISABLED = True
+                raise
+            out.extend(list(item.embedding) for item in response.data)
+        return out
 
 
 # ---------------------------------------------------------------------------

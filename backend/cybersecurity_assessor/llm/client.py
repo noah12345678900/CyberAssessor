@@ -89,6 +89,47 @@ DEFAULT_TEMPERATURE = 0.0  # PERMANENT — schema-strict classification, no JSON
 # call degrades that one candidate to keyword-only instead of freezing the run.
 _JUDGE_CALL_TIMEOUT_SECONDS = 30.0
 
+# HyDE query-expansion scaffolds. A single rewrite is a nondeterministic single
+# point of failure (one rewrite may name AU-1 but drop AU-2, cascading to a false
+# NC). expand_to_control_prose uses scaffold [0]; expand_to_control_prose_multi
+# runs ALL THREE and unions the prose so a control any angle surfaces enters the
+# candidate pool. The three angles are deliberately different cognitive framings
+# of the same evidence — "what it does", "what an auditor checks", "what fails
+# without it" — so their union covers more controls than any single rewrite. Each
+# takes ``{evidence}``. Precision is unchanged: RRF + the 0.6 judge still gate
+# acceptance; this only widens recall.
+_HYDE_SCAFFOLDS: tuple[str, ...] = (
+    (
+        "You are a NIST 800-53 control expert. Below is raw technical evidence "
+        "(a config dump, command output, screenshot text, or scan result). Write "
+        "2-4 sentences of NIST 800-53 CONTROL LANGUAGE describing what security "
+        "control(s) this evidence would demonstrate — the kind of prose a "
+        "control's requirement or assessment objective uses. Name relevant "
+        "control families/IDs if obvious. Do NOT judge compliance, do NOT quote "
+        "the evidence verbatim, do NOT add preamble — output only the "
+        "control-language description.\n\n=== EVIDENCE ===\n{evidence}\n"
+        "=== END EVIDENCE ==="
+    ),
+    (
+        "You are a NIST 800-53 assessor. Below is raw technical evidence. List, "
+        "in NIST control language, EVERY distinct security capability or control "
+        "objective this evidence could help substantiate — be exhaustive across "
+        "control FAMILIES, not just the most obvious one. Name each relevant "
+        "control family/ID. Output only the control-language description, no "
+        "preamble, no compliance verdict, no verbatim quotes.\n\n"
+        "=== EVIDENCE ===\n{evidence}\n=== END EVIDENCE ==="
+    ),
+    (
+        "You are a NIST 800-53 control expert. Below is raw technical evidence. "
+        "Consider what security controls would be UNSATISFIED or at risk if this "
+        "evidence did not exist — then describe, in NIST control language, the "
+        "control objectives this evidence supports. Name relevant control "
+        "families/IDs. Output only the control-language description — no "
+        "preamble, no verdict, no verbatim quotes.\n\n"
+        "=== EVIDENCE ===\n{evidence}\n=== END EVIDENCE ==="
+    ),
+)
+
 # Max source bytes for a vision describe_image call. Anthropic's per-image
 # limit is ~5 MB of source data; beyond that the base64-inflated request is
 # rejected (or strains memory under concurrent ingest), so we skip vision for
@@ -1643,19 +1684,7 @@ class AnthropicClient:
         Returns "" on any failure so the caller degrades to the other lanes
         (a HyDE miss must never abort tagging).
         """
-        prompt = (
-            "You are a NIST 800-53 control expert. Below is raw technical "
-            "evidence (a config dump, command output, screenshot text, or "
-            "scan result). Write 2-4 sentences of NIST 800-53 CONTROL "
-            "LANGUAGE describing what security control(s) this evidence would "
-            "demonstrate — the kind of prose a control's requirement or "
-            "assessment objective uses. Name relevant control families/IDs if "
-            "obvious. Do NOT judge compliance, do NOT quote the evidence "
-            "verbatim, do NOT add preamble — output only the control-language "
-            "description.\n\n=== EVIDENCE ===\n"
-            + evidence_text[:8000]
-            + "\n=== END EVIDENCE ==="
-        )
+        prompt = _HYDE_SCAFFOLDS[0].format(evidence=evidence_text[:8000])
         try:
             response = self._messages_create_temperature_aware(
                 label="anthropic.expand_to_control_prose",
@@ -1669,6 +1698,24 @@ class AnthropicClient:
         except Exception as exc:  # noqa: BLE001 — degrade, never abort tagging
             log.warning("HyDE expansion failed: %s", exc)
             return ""
+
+    def expand_to_control_prose_multi(
+        self, evidence_text: str, *, model: str | None = None
+    ) -> str:
+        """Multi-sample HyDE — but Claude runs at temperature 0, so ONE call is
+        already deterministic and complete.
+
+        Multi-sampling exists to average out run-to-run VARIANCE on providers
+        that can't pin temperature (OpenAI gpt-5.x reasoning models). Claude has
+        no such variance — a second/third rewrite would just cost 3x tokens and
+        latency for output that doesn't change the candidate set. So on the
+        Anthropic path ``_multi`` deliberately delegates to the single call. The
+        OpenAIClient override does the real N-scaffold union. This keeps the
+        tagger's uniform ``expand_to_control_prose_multi`` call correct for both
+        providers with zero branching in the tagger, and — critically — adds NO
+        cost or behavior change to the already-working Claude path.
+        """
+        return self.expand_to_control_prose(evidence_text, model=model)
 
     # ------------------------------------------------------------------
     # Vision — describe an image for tagging (OCR stays for verbatim)
@@ -2221,6 +2268,82 @@ class OpenAIClient:
             else:
                 log.warning("vision describe_image failed: %s", exc)
             return ""
+
+    def expand_to_control_prose(
+        self, evidence_text: str, *, model: str | None = None
+    ) -> str:
+        """OpenAI mirror of AnthropicClient.expand_to_control_prose (HyDE).
+
+        CRITICAL: this method was MISSING from OpenAIClient, so on the OpenAI
+        provider the tagger's ``getattr(client, "expand_to_control_prose")``
+        returned None and HyDE silently no-opped — killing BOTH the hyde-cosine
+        and triage candidate lanes (2 of 5). That's why a no-control-ID governing
+        doc reached AU-1 (sparse) but dropped AU-2/AU-6/AU-12 on OpenAI while
+        Claude (which HAS this method) tagged all of them. Adding it restores
+        lane parity between providers.
+
+        Returns "" on any failure so the caller degrades to the other lanes.
+        """
+        prompt = _HYDE_SCAFFOLDS[0].format(evidence=evidence_text[:8000])
+        create_kwargs: dict[str, Any] = {
+            "model": model or self._model,
+            "max_tokens": max(512, _OPENAI_SUBTASK_MIN_TOKENS),
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self._supports_temperature:
+            create_kwargs["temperature"] = 0.0
+        try:
+            response = self._chat_create_temperature_aware(
+                label="openai.expand_to_control_prose", **create_kwargs
+            )
+            return _extract_openai_text(response).strip()
+        except Exception as exc:  # noqa: BLE001 — degrade, never abort tagging
+            log.warning("HyDE expansion failed: %s", exc)
+            return ""
+
+    def expand_to_control_prose_multi(
+        self, evidence_text: str, *, model: str | None = None
+    ) -> str:
+        """OpenAI multi-sample HyDE — union of all ``_HYDE_SCAFFOLDS``.
+
+        Why this is real on OpenAI (unlike the Anthropic override which delegates
+        to a single call): gpt-5.x reasoning models can't pin temperature=0 and
+        vary run-to-run, so a single rewrite may drop a control (the AU-2/6/12
+        miss). Asking three different framings and unioning the prose averages
+        that variance out — a control any scaffold surfaces enters the pool. RRF
+        + the 0.6 judge still gate acceptance, so recall widens, precision holds.
+
+        The 3 scaffolds are INDEPENDENT I/O, so they run CONCURRENTLY (one slow
+        reasoning call would otherwise make this ~3x wall-clock on the ingest hot
+        path — measured 123s sequential vs ~40s concurrent). The SDK client is
+        thread-safe (the tagger judge fan-out uses it the same way). Order is
+        irrelevant — we union the results.
+        """
+        def _one(scaffold: str) -> str:
+            prompt = scaffold.format(evidence=evidence_text[:8000])
+            create_kwargs: dict[str, Any] = {
+                "model": model or self._model,
+                "max_tokens": max(512, _OPENAI_SUBTASK_MIN_TOKENS),
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if self._supports_temperature:
+                create_kwargs["temperature"] = 0.0
+            try:
+                response = self._chat_create_temperature_aware(
+                    label="openai.expand_to_control_prose_multi", **create_kwargs
+                )
+                return _extract_openai_text(response).strip()
+            except Exception as exc:  # noqa: BLE001 — degrade, never abort
+                log.debug("HyDE scaffold failed (continuing): %s", exc)
+                return ""
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(
+            max_workers=len(_HYDE_SCAFFOLDS), thread_name_prefix="hyde-scaffold"
+        ) as pool:
+            parts = [p for p in pool.map(_one, _HYDE_SCAFFOLDS) if p]
+        return "\n\n".join(parts)
 
     def _call_with_user_message(
         self,

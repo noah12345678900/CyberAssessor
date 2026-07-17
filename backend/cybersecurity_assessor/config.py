@@ -232,10 +232,15 @@ class AppConfig(BaseModel):
     # per-stage worker pools is what keeps a burst from tripping the gateway's
     # "Too many calls" 429 in the first place, so the retry budget in
     # _rate_limit.py becomes a backstop instead of the primary throttle.
-    # Default 10 matches the Example gateway's comfortable sustained rate observed
-    # during assess-batch runs. ``<= 0`` ⇒ no global cap (each pool self-limits).
-    # config.toml only — no Settings UI.
-    llm_max_concurrency: int = Field(default=10)
+    # Default 5: the GDMS OpenAI gateway (gpt-5.5, eastus2) rate-limits harder
+    # than the Example gateway did — at 10 concurrent, assess-batch and ingest
+    # tagging drew sustained 429 storms (one CCI, CCI-001184, exhausted its retry
+    # budget and surfaced a RateLimitError). Lowering the admission gate to 5 lets
+    # the reactive backoff in _rate_limit.py stay a backstop instead of the
+    # primary throttle, and on a rate-limited endpoint fewer-but-steadier calls
+    # finish faster than a burst that keeps re-tripping the limit. ``<= 0`` ⇒ no
+    # global cap (each pool self-limits). config.toml only — no Settings UI.
+    llm_max_concurrency: int = Field(default=5)
     # Feature flags for optional connectors
     enable_sharepoint: bool = False
     enable_tenable: bool = False

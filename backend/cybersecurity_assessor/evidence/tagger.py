@@ -2253,12 +2253,21 @@ def tag_evidence(
                     or str(evidence.id)
                 )
                 # HyDE query-expansion: rewrite the raw body into NIST control
-                # prose ONCE per under-tagged artifact. Feeds the hyde + triage
-                # RAG lanes. Best-effort — "" on failure degrades to the other
-                # lanes (sparse/dense/folder still run). Gated identically to
-                # the judge (only under-tagged artifacts pay for it).
+                # prose per under-tagged artifact. Feeds the hyde + triage RAG
+                # lanes. Best-effort — "" on failure degrades to the other lanes
+                # (sparse/dense/folder still run). Gated identically to the judge
+                # (only under-tagged artifacts pay for it).
+                #
+                # Prefer the MULTI-sample variant (unions 3 scaffolds) so a single
+                # nondeterministic rewrite can't silently drop a control's
+                # candidacy — the failure mode that dropped AU-2/6/12 on OpenAI.
+                # Fall back to the single-shot method, then to no-op, so any
+                # client (incl. offline stubs) still tags via the deterministic
+                # lanes.
                 hyde_prose = ""
-                expand = getattr(client, "expand_to_control_prose", None)
+                expand = getattr(client, "expand_to_control_prose_multi", None) or getattr(
+                    client, "expand_to_control_prose", None
+                )
                 if callable(expand):
                     try:
                         hyde_prose = expand(text, model=judge_model) or ""
