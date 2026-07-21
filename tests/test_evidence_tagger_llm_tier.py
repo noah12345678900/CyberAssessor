@@ -564,3 +564,116 @@ def test_judge_outage_falls_back_to_tfidf(session):
     sources = {t.source for t in tags}
     assert "llm" not in sources, "an outage must not yield llm-sourced tags"
     assert sources & {"auto", "auto_review"}, "TF-IDF fallback should have tagged"
+
+
+# ---------------------------------------------------------------------------
+# Second-stage VERIFIER (parallel Phase-1.5). The verifier LLM call runs in a
+# bounded parallel pre-pass mirroring the judge; Phase 2 applies its
+# {cid: relationship} result by lookup. These pin: discard removes the tag,
+# retain rides the label into the rationale, fail-open keeps the tag on error,
+# and the whole thing is deterministic across runs (parallel completion order
+# must NOT leak into the tag set).
+# ---------------------------------------------------------------------------
+
+
+class _StubJudgeVerify:
+    """Judge + verifier stub. ``scores`` drives judge_relevance; ``rels`` maps
+    cid -> relationship label for verify_relationship; ``verify_raise_for`` makes
+    the verifier raise (fail-open path)."""
+
+    def __init__(self, scores, rels=None, verify_raise_for=None):
+        self.scores = {c.lower(): s for c, s in scores.items()}
+        self.rels = {c.lower(): r for c, r in (rels or {}).items()}
+        self.verify_raise_for = {c.lower() for c in (verify_raise_for or set())}
+        self.verify_calls: list[str] = []
+
+    def judge_relevance(self, system_blocks, user_text, *, model=None):
+        cid = _cid_from_user_text(user_text).lower()
+        return self.scores.get(cid, 0.0), f"reason-{cid}", None
+
+    def verify_relationship(self, system_blocks, user_text, *, model=None):
+        cid = _cid_from_user_text(user_text).lower()
+        self.verify_calls.append(cid)
+        if cid in self.verify_raise_for:
+            raise RuntimeError(f"verifier down for {cid}")
+        rel = self.rels.get(cid, "partial_implementation")
+        # Mirror the real client: return RAW JSON envelope text (tagger parses it).
+        import json as _json
+        return _json.dumps({"relationship": rel, "evidence_span": "", "reason": "r"}), None
+
+
+def _run_verify(client, specs):
+    tags, add = _recorder()
+    result = _tag_via_llm(
+        _DISJOINT_ARTIFACT,
+        client=client,
+        judge_model="stub-judge",
+        verifier_model="stub-verify",
+        all_by_control=_controls(specs),
+        artifact_title="stub artifact",
+        add=add,
+    )
+    return result[:3], tags
+
+
+def test_verifier_discard_removes_tag_but_retain_keeps_it():
+    """A 0.6-band candidate the verifier calls 'unrelated' is discarded; one it
+    labels a retain-relationship is tagged with the label in the rationale."""
+    client = _StubJudgeVerify(
+        scores={"ac-1": 0.6, "ac-2": 0.6},          # both at the band -> verified
+        rels={"ac-1": "unrelated", "ac-2": "partial_implementation"},
+    )
+    (hits, attempted, errored), tags = _run_verify(
+        client,
+        [("ac-1", "alpha"), ("ac-2", "bravo")],
+    )
+    tagged_oids = {t["objective_id"] for t in tags}
+    # ac-1 (unrelated) dropped; ac-2 (partial) kept.
+    ac2_oid = _controls([("ac-1", "alpha"), ("ac-2", "bravo")])["ac-2"][0].id
+    ac1_oid = _controls([("ac-1", "alpha"), ("ac-2", "bravo")])["ac-1"][0].id
+    assert ac2_oid in tagged_oids
+    assert ac1_oid not in tagged_oids
+    # the retained tag carries the relationship label in its rationale.
+    ac2_tag = next(t for t in tags if t["objective_id"] == ac2_oid)
+    assert "partial_implementation" in ac2_tag["rationale"]
+    # both band candidates were verified.
+    assert set(client.verify_calls) == {"ac-1", "ac-2"}
+
+
+def test_verifier_fails_open_keeps_tag_on_error():
+    """If the verifier call raises, the judged-accept tag is KEPT (fail-open),
+    never dropped on infrastructure failure."""
+    client = _StubJudgeVerify(
+        scores={"ac-3": 0.6},
+        rels={"ac-3": "unrelated"},   # would discard IF the call succeeded
+        verify_raise_for={"ac-3"},    # but it raises -> fail open -> keep
+    )
+    (hits, attempted, errored), tags = _run_verify(client, [("ac-3", "charlie")])
+    assert len(tags) == 1, "verifier error must not drop the judged-accept tag"
+
+
+def test_confident_accept_above_band_skips_verifier():
+    """A score above the band (0.65) is a confident accept — the verifier is NOT
+    called for it (cost saver), and it tags with no relationship label."""
+    client = _StubJudgeVerify(scores={"ac-4": 0.95})
+    (hits, attempted, errored), tags = _run_verify(client, [("ac-4", "delta")])
+    assert len(tags) == 1
+    assert client.verify_calls == [], "confident accept must skip the verifier"
+
+
+def test_verifier_parallel_is_deterministic_across_runs():
+    """Two runs over the same inputs must produce the IDENTICAL tag set — the
+    parallel verify pre-pass must not leak completion order into the result."""
+    specs = [(f"ac-{n}", f"body{n}") for n in range(1, 12)]
+    scores = {c: 0.6 for c, _ in specs}          # all in-band -> all verified
+    rels = {c: ("unrelated" if i % 3 == 0 else "partial_implementation")
+            for i, (c, _) in enumerate(specs)}
+    outs = []
+    for _ in range(2):
+        client = _StubJudgeVerify(scores=scores, rels=rels)
+        _stats, tags = _run_verify(client, specs)
+        outs_this = sorted(
+            (t["objective_id"], t["rationale"]) for t in tags
+        )
+        outs.append(outs_this)
+    assert outs[0] == outs[1], "parallel verifier must be deterministic run-to-run"

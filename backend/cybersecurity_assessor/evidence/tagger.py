@@ -2128,6 +2128,55 @@ def _tag_via_llm(
             for fut in as_completed(futs):
                 judged[futs[fut]] = fut.result()
 
+    # --- Phase 1.5: verify the 0.6-band accepts IN PARALLEL --------------------
+    # The second-stage verifier is a per-candidate LLM call, exactly like the
+    # judge. Running it inline in the sequential Phase-2 loop (the original wiring)
+    # serialized every band call — on a borderline-heavy doc that added dozens of
+    # back-to-back round-trips and dominated wall-clock. Mirror the Phase-1 judge
+    # concurrency EXACTLY: gather the in-band candidates (in judged order),
+    # seed the verifier prompt-cache with the first (so the fan-out doesn't race
+    # and re-send the artifact body per worker), fan the rest out at the same
+    # bounded pool, collect index-aligned, collapse to a {cid: relationship} map.
+    # Phase 2 then just LOOKS UP the label — no LLM call, no mutation, in
+    # candidate order — so determinism and add()'s single-thread contract are
+    # preserved. Verifier fails OPEN (None = keep tag), same as before.
+    verified: dict[str, str | None] = {}
+    if verifier_model is not None and verifier_brief is not None:
+        band: list[str] = [
+            e[0]  # cid
+            for e in judged
+            if e is not None
+            and e[3] is None                       # no exception
+            and e[1] is not None                   # has a score
+            and _VERIFIER_BAND_LO <= e[1] <= _VERIFIER_BAND_HI
+        ]
+        if band:
+            def _verify(cid: str) -> tuple[str, str | None]:
+                vres = _verify_band(
+                    client, verifier_model, verifier_brief, cid,
+                    judge_by_cid.get(cid, ""),
+                )
+                # vres is (relationship, detail) | None; None = fail-open keep.
+                return cid, (vres[0] if vres is not None else None)
+
+            vres_list: list[tuple[str, str | None] | None] = [None] * len(band)
+            vres_list[0] = _verify(band[0])        # seed the verifier cache
+            vrest = band[1:]
+            if vrest:
+                vworkers = max(1, min(_LLM_TIER_JUDGE_WORKERS, len(vrest)))
+                with ThreadPoolExecutor(
+                    max_workers=vworkers, thread_name_prefix="tagger-verify"
+                ) as vpool:
+                    vfuts = {
+                        vpool.submit(_verify, cid): i
+                        for i, cid in enumerate(vrest, start=1)
+                    }
+                    for vf in as_completed(vfuts):
+                        vres_list[vfuts[vf]] = vf.result()
+            for pair in vres_list:
+                if pair is not None:
+                    verified[pair[0]] = pair[1]
+
     # --- Phase 2: apply verdicts sequentially (deterministic, single-thread) -
     # add() is the sole EvidenceTag construction site and is NOT thread-safe, so
     # all mutation happens here on the calling thread, in candidate order.
@@ -2182,30 +2231,23 @@ def _tag_via_llm(
             if score is not None:
                 declined.append((cid, score, reasoning or ""))
             continue
-        # SECOND-STAGE VERIFIER (2026-07-20): the recall-first judge dumps genuine
-        # partials AND true noise at the 0.6 accept floor. For candidates in that
-        # ambiguous band, run the categorical verifier: it discards ONLY the
-        # genuinely "unrelated" ones (per the assessor's standard — retain
-        # anything that materially informs an outcome) and labels the rest
-        # (partial/planned/gap/context) as metadata for the assessment narrative.
-        # Confident accepts (score above the band) skip it — saves a call. The
-        # verifier fails OPEN: any error/timeout keeps the tag (never drop a
-        # judged-accept on infra failure). Gated on verifier_model being set.
-        relationship: str | None = None
-        if (
-            verifier_model is not None
-            and _VERIFIER_BAND_LO <= score <= _VERIFIER_BAND_HI
-        ):
-            vres = _verify_band(
-                client, verifier_model, verifier_brief, cid, judge_by_cid.get(cid, "")
-            )
-            if vres is not None:
-                relationship, _detail = vres
-                if relationship == _VERIFIER_DISCARD_LABEL:
-                    # Genuinely unrelated — discard (the clean removal). Record as
-                    # declined so the never-zero floor still has a candidate pool.
-                    declined.append((cid, score, reasoning or ""))
-                    continue
+        # SECOND-STAGE VERIFIER (2026-07-20; parallelized 2026-07-21): the
+        # recall-first judge dumps genuine partials AND true noise at the 0.6
+        # accept floor. The categorical verifier discards ONLY the genuinely
+        # "unrelated" ones (per the assessor's standard — retain anything that
+        # materially informs an outcome) and labels the rest (partial/planned/
+        # gap/context) as metadata for the assessment narrative. The verifier
+        # LLM calls already ran, IN PARALLEL, in Phase 1.5 above; here we just
+        # look up the result — no LLM call in this sequential loop. ``verified``
+        # only holds in-band cids; a cid absent from it (confident accept above
+        # the band, or verifier off) has relationship None. Verifier fails OPEN
+        # (None = keep the tag), so a missing/None entry never drops a tag.
+        relationship: str | None = verified.get(cid)
+        if relationship == _VERIFIER_DISCARD_LABEL:
+            # Genuinely unrelated — discard (the clean removal). Record as
+            # declined so the never-zero floor still has a candidate pool.
+            declined.append((cid, score, reasoning or ""))
+            continue
         llm_hits += _emit_llm_tag(
             add, all_by_control, cid, score, reasoning, relationship=relationship
         )
