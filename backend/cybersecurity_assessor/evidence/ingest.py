@@ -697,13 +697,26 @@ def ingest_source(
     # disabled ingests have no client to escalate with, so we leave it None and
     # tag_evidence never enters the escalation path. None in config also disables.
     tagger_escalation_model: str | None = None
+    # Second-stage verifier model (2026-07-20). Runs on 0.6-band judge accepts to
+    # discard genuinely-unrelated tags and label the rest (partial/planned/gap/
+    # context). ON by default: uses the JUDGE model unless llm_verifier_model
+    # overrides it. Disabled only when llm_verifier_enabled is false, or when
+    # there's no live judge client to verify with. None => whole stage off.
+    tagger_verifier_model: str | None = None
     if tagger_status == "ok":
         try:
+            _cfg = load_config()
             tagger_escalation_model = getattr(
-                load_config(), "llm_judge_escalation_model", None
+                _cfg, "llm_judge_escalation_model", None
             )
+            if getattr(_cfg, "llm_verifier_enabled", True):
+                tagger_verifier_model = (
+                    getattr(_cfg, "llm_verifier_model", None)
+                    or tagger_judge_model
+                )
         except Exception:  # pragma: no cover - never let config wedge an ingest
             tagger_escalation_model = None
+            tagger_verifier_model = None
     # Resolve the vision + corpus-augmentation gates ONCE for the whole walk
     # (config knobs, not per-file properties).
     vision_on = _vision_enabled()
@@ -997,6 +1010,7 @@ def ingest_source(
                 client=tagger_client,
                 judge_model=tagger_judge_model,
                 escalation_model=tagger_escalation_model,
+                verifier_model=tagger_verifier_model,
                 augment_corpus=augment_corpus_on,
                 evidence_metadata=doc.metadata,
             )

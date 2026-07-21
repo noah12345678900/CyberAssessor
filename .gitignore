@@ -100,6 +100,18 @@ evidence_cache/
 tmp/
 .leverA_backup/
 _eval_current_vs_gold.json
+# Tagger eval scratch: measurement JSON/outputs + LLM caches produced by the
+# recall harness / pool adjudicator / verifier scripts. The SCRIPTS are tracked
+# (stage_recall_harness.py, pool_adjudicate*.py, verify_band.py); only their
+# underscore-prefixed run artifacts and cache dirs are ignored.
+backend/scripts/_*.json
+backend/scripts/_*.out
+backend/scripts/_*.txt
+backend/scripts/_*.log
+backend/scripts/_hyde_cache/
+backend/scripts/_adjudication_cache/
+backend/scripts/_verifier_cache/
+backend/scripts/_analyze_noise.py
 
 # Vendored Tesseract OCR binary (~164MB) — bundled into the installer at build
 # time but NOT committed: it's a large third-party binary, re-acquirable from

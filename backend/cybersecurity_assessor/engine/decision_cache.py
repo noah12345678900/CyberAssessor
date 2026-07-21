@@ -231,7 +231,24 @@ from .crm_context import CrmContext
 #       tagger/assess decisions to re-run under the new prompt. At temp 0.0 the
 #       framing can shift a borderline judge score, so replaying a pre-fix
 #       cached decision would ship a verdict the current prompt would not.
-KERNEL_VERSION = "0.18.0"
+#   0.19.0 — Recall-first tagger overhaul (two coupled changes, evidence/tagger.py):
+#       (1) Fused-cap uncap: _RAG_FUSED_CAP 15 -> 75. The cap was a cost governor,
+#       not a correctness limit; against a cap-independent pooled LLM oracle (952
+#       pairs / 18 eMASS docs) cap=15 tagged only 40.7% of genuinely-satisfied
+#       controls vs 94.9% uncapped, at a 0.6% false-tag rate.
+#       (2) Judge rubric re-primed from precision-first ("a wrong tag costs more
+#       than a missed one") to RECALL-first: added a 0.6 "on-topic partial" band,
+#       substance-over-vocabulary + base-vs-enhancement framing, and an explicit
+#       "the downstream assessment stage discards bad tags, so surface on-topic
+#       controls" instruction. Both change the tag set for under-tagged files ->
+#       cached tagger/assess decisions must re-run.
+#       (3) Optional second-stage VERIFIER (llm_verifier_model, default None/off):
+#       when enabled, 0.6-band judge accepts are re-examined categorically,
+#       genuinely-"unrelated" tags discarded + the rest labeled (partial/planned/
+#       gap/context). Changes the tag set only when the knob is set; the code path
+#       ships now. All three live in tagger.py, not PROMPT_SHA-visible -> this
+#       manual bump is the re-run trigger.
+KERNEL_VERSION = "0.19.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to

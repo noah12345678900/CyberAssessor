@@ -47,7 +47,10 @@ if str(_HERE) not in sys.path:
 
 from cybersecurity_assessor import models  # noqa: F401,E402 -- register tables
 from cybersecurity_assessor.evidence.tagger import (  # noqa: E402
+    _RAG_PER_LANE_TOPN,
+    _cid_numeric_key,
     _family_from_path,
+    _lane_folder,
     _rank_to_rrf,
     tag_evidence,
 )
@@ -186,6 +189,58 @@ def test_rank_to_rrf_accumulates_across_lanes():
 )
 def test_family_from_path(path, expected):
     assert _family_from_path(path) == expected
+
+
+# ===========================================================================
+# Folder-lane numeric ordering: dotted-decimal cids must sort NUMERICALLY
+# (base before enhancement, low enh-number first) so the top-N cap keeps the
+# foundational controls, not the alphabetical-first ones. This is the fix for
+# the folder-lane truncation bug: `sorted()` on strings kept ia-2.10/2.11/2.12
+# and dropped ia-2.8 (alpha position ~16 in a 56-control family).
+# ===========================================================================
+
+
+def test_cid_numeric_key_orders_base_before_enhancements():
+    cids = ["ia-2.11", "ia-2.2", "ia-10", "ia-2", "ia-2.10", "ia-2.8", "ia-1"]
+    ordered = sorted(cids, key=_cid_numeric_key)
+    assert ordered == [
+        "ia-1",
+        "ia-2",
+        "ia-2.2",
+        "ia-2.8",
+        "ia-2.10",
+        "ia-2.11",
+        "ia-10",
+    ]
+
+
+def test_cid_numeric_key_base_sorts_ahead_of_its_own_enhancement():
+    # ia-2 (base) must precede ia-2.1 (its enhancement); string sort agrees here
+    # but the invariant is that enh=0 (the base) always leads the group.
+    assert _cid_numeric_key("ia-2") < _cid_numeric_key("ia-2.1")
+    assert _cid_numeric_key("au-6") < _cid_numeric_key("au-6.1")
+
+
+def test_folder_lane_numeric_cap_keeps_low_numbered_enhancements():
+    """Regression: a family larger than the per-lane cap must retain the
+    low-numbered enhancements (ia-2.8), not the string-first ones (ia-2.10+)."""
+    # Build a synthetic IA family bigger than the cap, in an order that would
+    # trip the old alphabetical bug (ia-2.10..2.20 sort before ia-2.2..2.9).
+    fam_cids = (
+        ["ia-1", "ia-2"]
+        + [f"ia-2.{n}" for n in range(1, 25)]
+        + [f"ia-{n}" for n in range(3, 12)]
+    )
+    all_by_control = {cid: [] for cid in fam_cids}
+    got = _lane_folder("file:///C:/x/07.IA/evidence.txt", all_by_control)
+    assert len(got) == _RAG_PER_LANE_TOPN
+    # ia-2.8 (foundational) MUST survive the cap; the old sorted() dropped it.
+    assert "ia-2.8" in got
+    # and the base control leads.
+    assert got[0] == "ia-1"
+    # no high-numbered enhancement should crowd out a low one that didn't make it
+    if "ia-2.20" in got:
+        assert "ia-2.5" in got  # numeric order guarantees this
 
 
 # ===========================================================================

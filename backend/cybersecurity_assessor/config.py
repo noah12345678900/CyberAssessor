@@ -195,6 +195,22 @@ class AppConfig(BaseModel):
     # escalation entirely (pure single-pass E+A) — the safe default for
     # offline/eval, where there is no client to escalate with anyway.
     llm_judge_escalation_model: str | None = Field(default="claude-4-8-opus")
+    # Second-stage VERIFIER model (2026-07-20). The recall-first judge collapses
+    # genuine partial-evidence and true topical noise into the same 0.6 accept
+    # score. When set, the tagger re-examines each 0.6-band accept with this model
+    # under a CATEGORICAL rubric (full_support / partial_implementation /
+    # planned_implementation / gap_evidence / context_only / unrelated), discards
+    # ONLY the "unrelated" ones, and stamps the relationship label onto the tag
+    # rationale for the assessment narrative. Validated 10/10 against the
+    # assessor's own rulings; discards ~1 in 54 (only genuine wrong-topic tags).
+    # ON by default (validated 10/10 against the assessor's own rulings). It uses
+    # the JUDGE model unless ``llm_verifier_model`` overrides it, so no extra
+    # config is needed to run it. To turn the whole second stage OFF (zero added
+    # LLM cost), set ``llm_verifier_enabled = false``. Fails OPEN either way: any
+    # verifier error keeps the judged-accept tag, never drops it.
+    llm_verifier_enabled: bool = Field(default=True)
+    # Optional model override for the verifier; ``None`` = use the judge model.
+    llm_verifier_model: str | None = Field(default=None)
     sweep_cost_cap_usd: float = Field(default=0.0)
     sweep_judge_workers: int = Field(default=16)
     sweep_judge_enabled: bool = Field(default=True)

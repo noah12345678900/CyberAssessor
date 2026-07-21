@@ -1664,6 +1664,31 @@ class AnthropicClient:
         # as judge-ERRORED (retryable / fall-back), NOT a 0.0 abstention.
         return -1.0, f"[parse_error] {last_exc}: {last_raw[:80]!r}", usage
 
+    def verify_relationship(
+        self,
+        system_blocks: list[dict],
+        user_text: str,
+        *,
+        model: str | None = None,
+    ) -> tuple[str, _UsageBlock]:
+        """Second-stage verifier: same request as judge_relevance but returns the
+        RAW model text (relationship-envelope JSON parsed by the tagger) instead
+        of a numeric score. ``max_tokens`` is 512 (the envelope carries a span +
+        reason, larger than the score JSON). Returns ("", usage) on failure so
+        the caller fails open (keeps the tag)."""
+        response = self._messages_create_temperature_aware(
+            label="anthropic.verify_relationship",
+            model=model or self._model,
+            max_tokens=512,
+            temperature=0.0,
+            system=system_blocks,
+            messages=[{"role": "user", "content": user_text}],
+            timeout=_JUDGE_CALL_TIMEOUT_SECONDS,
+        )
+        raw = _extract_text(response).strip()
+        usage = _UsageBlock.from_sdk(getattr(response, "usage", None))
+        return raw, usage
+
     # ------------------------------------------------------------------
     # HyDE query-expansion — bridge the config→policy vocabulary gap
     # ------------------------------------------------------------------
@@ -2580,6 +2605,47 @@ class OpenAIClient:
         except (ValueError, TypeError, KeyError) as exc:
             return 0.0, f"[parse_error] {exc}: {raw_text[:80]!r}", usage
         return score, reasoning, usage
+
+    def verify_relationship(
+        self,
+        system_blocks: list[dict],
+        user_text: str,
+        *,
+        model: str | None = None,
+    ) -> tuple[str, _UsageBlock]:
+        """Second-stage verifier call: same request shape as judge_relevance but
+        returns the RAW model text (a relationship-envelope JSON the tagger
+        parses) instead of a numeric score. Returns ``("", usage)`` on truncation
+        so the caller fails open (keeps the tag). Parsing lives in the tagger so
+        the relationship vocabulary stays in one place."""
+        system_text = "\n\n".join(
+            str(b.get("text", "")) for b in system_blocks if b.get("text")
+        )
+        create_kwargs: dict[str, Any] = {
+            "model": model or self._model,
+            "max_tokens": _OPENAI_SUBTASK_MIN_TOKENS,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+            "timeout": _JUDGE_CALL_TIMEOUT_SECONDS,
+        }
+        if self._supports_temperature:
+            create_kwargs["temperature"] = 0.0
+        response = self._chat_create_temperature_aware(
+            label="openai.verify_relationship",
+            **create_kwargs,
+        )
+        raw_text = _extract_openai_text(response).strip()
+        u = _openai_usage(response)
+        usage = _UsageBlock(
+            input_tokens=u["input_tokens"],
+            output_tokens=u["output_tokens"],
+            cache_read_input_tokens=u["cache_read_tokens"],
+        )
+        if _openai_truncated(response):
+            return "", usage  # fail-open: caller keeps the tag
+        return raw_text, usage
 
 
 def _extract_openai_text(response: Any) -> str:
