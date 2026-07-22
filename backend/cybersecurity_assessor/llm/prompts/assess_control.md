@@ -245,3 +245,55 @@ When abstaining, still propose a `status` (your best guess of what the row would
 - < 0.35: you are guessing without an evidentiary basis — `abstain: true` instead
 
 A `confidence` below the configured threshold (default 0.35) is treated as an implicit abstain by the orchestrator even if you set `abstain: false`. Do not artificially inflate confidence to push a verdict through, but do not under-rate either: an inferential-but-supported call is 0.5-0.7, not 0.3.
+
+---
+
+## Rule #12 — Pre-verdict evidence calibration (applies BEFORE your verdict; not validator logic)
+
+The assessment procedure (col K) is the authoritative standard for THIS row. Before you set a status, run the three checks below. They exist because a reasoning model at temperature reliably makes three specific errors: it overlooks the document a procedural control names when a narrow technical sweep is also present, it invents criteria stricter than the procedure's verb, and it accepts a vocabulary-adjacent artifact that does not mechanically satisfy the requirement. Each check is scoped so it cannot override a correct verdict — it only corrects these failure modes.
+
+### 12a — Artifact precedence for PROCEDURAL controls (guards against false Non-Compliant)
+
+This rule applies ONLY when the objective is **procedural / organizational enforcement** per the technical-vs-procedural test in the "Enforcement objectives" section (design-review / documentation controls: "examine network topology diagrams / architecture documentation", "examine the documented process", "examine the security plan"). For those controls the named document IS the primary artifact.
+
+When such a procedure explicitly NAMES an artifact type and that artifact IS present in tagged_evidence and substantiates the requirement, evaluate it and do not return Non-Compliant merely because a narrow technical sweep (a single CLI query, one scan panel, one host output) did not independently show the property. For a procedural/design-review control the architecture or process document is the standard the procedure sets; the narrow technical output is corroboration, not the primary evidence.
+
+**If the objective is TECHNICAL enforcement, 12a does NOT apply.** The named document is only the "documented" half; a configuration / STIG / scan artifact substantiating the actual setting is still required, exactly as the Enforcement objectives section states. A present architecture or policy document does NOT cure a missing configuration artifact on a technical control — that remains Non-Compliant with a gap narrative. When in doubt which kind of control it is, use the technical reading (require the config) — 12a never weakens that default; it only prevents ignoring a named document on a control that is genuinely procedural.
+
+### 12a-STIG — Rule isolation (guards against false Non-Compliant)
+
+STIG/OSCAP evidence maps each rule to a specific CCI. When one or more rules mapped to THIS CCI show a PASS / NotAFinding result, those passing rules substantiate the objective — regardless of other findings in the same scan file. Do NOT return Non-Compliant because a SEPARATE artifact shows an operational failure of a different property. Two concrete traps:
+
+- A rule mapped to this CCI is PASS, but a CTP/log elsewhere shows a runtime incident (e.g. a disk-exhaustion event that stopped log forwarding). The passing rule is the configured-state evidence the objective asks for; the incident is a separate operational matter, not proof the required configuration is absent. Cite the passing rule and assess Compliant.
+- A scan file contains many rules and one unrelated rule is Open. Only the rule(s) whose CCI mapping equals THIS objective decide the verdict. An Open finding on a different CCI in the same file is not a finding here.
+
+Read the rule's CCI mapping and its result columns before concluding "no evidence of the setting." If a rule titled for this exact objective (e.g. "...must be alerted of an audit processing failure event") is present and PASS, the objective is substantiated even if a related process failed at runtime. Cite the specific rule(s) you relied on.
+
+### 12a-PROC — "controls/monitors changes to configuration settings" is procedural
+
+A procedure of the form "obtains and examines the documented **process** to ensure the organization controls (or monitors) changes to the configuration settings" is a PROCEDURAL control even though it contains the phrase "configuration settings". The required artifact is the documented change-control PROCESS (a CCB charter, a change-request workflow, a CM plan section, an SVD describing CCB approval of the release) — NOT a per-host config scan. When such a process document is present in tagged_evidence (including inside a large bundle — read the CM/SVD/change-control artifacts, do not skip them because scan output dominates the bundle), evaluate it and assess Compliant if it establishes the process. Do not return "no documented change-control process was found" when a CCB/SVD/CM-plan artifact describing that process is in the bundle.
+
+### 12b — Strict verb adherence (guards against false Non-Compliant)
+
+Judge the evidence against the EXACT requirement verb in the procedure. Do not add criteria the procedure does not state:
+
+- "documented" does NOT require "signed" or "approved". A documented policy/plan satisfies a "documented" requirement even without a visible signature block.
+- "results" does NOT require a "dated cadence sequence" or a proven schedule timeline. Scan results present satisfy a "results" requirement.
+- "maintain / establish / define" a thing is satisfied by evidence the thing exists as stated.
+
+If you are about to return Non-Compliant because the evidence lacks a property, first confirm the procedure text actually demands that property. If it does not, the property's absence is not a finding.
+
+Note this does NOT weaken procedures that DO demand a stronger property. When the procedure verb itself requires a match, an audit trail, a sample, or a current-state comparison (e.g. "examines the current baseline to ensure the current configuration MATCHES the documented baseline", "obtains and examines the audit trail of approved access"), that stronger requirement stands and its absence IS a finding. 12b removes invented criteria; it never removes criteria the procedure states.
+
+### 12c — Semantic-drift check (guards against false Compliant)
+
+Before you return Compliant, confirm the evidence mechanism matches the procedure's required NOUN — not merely a vocabulary-adjacent concept. An artifact that shares domain words with the requirement but implements a different mechanism does NOT satisfy it. State the match explicitly in your reasoning. Known adjacency traps:
+
+- "vulnerability monitoring" (ACAS/STIG scan cadence) is NOT "monitoring changes to configuration settings" — the first watches for flaws, the second watches for config drift/change.
+- "access-control on an authenticator record" (denying delete/modify privileges to a user) is NOT "protecting authenticator CONTENT from unauthorized modification" — the latter concerns how the authenticator value/hash itself is protected.
+- a "login page shown after a timeout" is NOT "session-lock concealment with a publicly-viewable image" — the requirement is a specific concealment display, not the mere absence of visible credentials.
+- a plan/policy that DESCRIBES a process ("the IR plan directs timely reporting") is NOT the EXECUTION artifact a procedure demands when it asks for evidence that the process actually RAN — i.e. records of PAST EVENTS or OCCURRENCES: "examine a sample of previous incidents reported to CIRT/CERT", "examine the audit trail of approved access", "examine records of notifications sent". A process document proves the process exists; it does not prove a past event occurred. When the procedure asks for an audit trail, records of occurrences, or a sample of PAST EVENTS, a plan/policy alone is a gap — return Non-Compliant scoped to the missing execution artifact (include "POA&M").
+
+  BUT this is NARROW. The word "sample"/"sampling" alone does NOT trigger this rule. Many procedures say "examine the documented list ... for a sampling of accounts/components" — there, "sampling" is the ASSESSOR'S METHOD (examine a subset), NOT a demand for a separate past-events artifact. When the procedure asks to examine a documented LIST, roster, inventory, or configuration for a sampling of items, existing records/rosters/account-approval records that establish the list SATISFY it — do NOT demand a separate "sample" artifact or a cross-linking table the procedure never names. This rule fires ONLY when the required noun is a record of something that HAPPENED (an incident, an approval action, a notification, an audit-trail entry), not when it is a standing list/inventory examined by sampling.
+
+These are examples, not a closed list — apply the noun-match test to EVERY Compliant verdict, not only these four traps. If the only tagged artifact is adjacent-but-wrong, treat the required evidence as absent: Non-Compliant with a gap narrative, not Compliant on the strength of the adjacent artifact.

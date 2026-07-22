@@ -248,7 +248,34 @@ from .crm_context import CrmContext
 #       gap/context). Changes the tag set only when the knob is set; the code path
 #       ships now. All three live in tagger.py, not PROMPT_SHA-visible -> this
 #       manual bump is the re-run trigger.
-KERNEL_VERSION = "0.19.0"
+#   0.20.0 — Assessor calibration "Rule #12" appended to assess_control.md
+#       (PROMPT_SHA-visible, so the SHA change ALSO auto-invalidates; this bump
+#       is the explicit changelog anchor). Fixes 9 procedure-adjudicated verdict
+#       defects found in the OpenAI-vs-Claude flip audit, validated by a full-
+#       pipeline A/B replay (N=21, 40 stratified both-engine-agreement guards):
+#       12a  Artifact precedence for PROCEDURAL controls — read the procedure-
+#            named doc (arch/process/security-plan) first; do NOT NC on a narrow
+#            technical sweep when the named doc substantiates it. Gated on the
+#            technical-vs-procedural test so it never weakens the config-required
+#            default (recovers SC-7.2/7.3, CM-6.12).
+#       12a-STIG  Rule isolation — a PASS/NotAFinding rule mapped to THIS CCI
+#            substantiates the objective even if a separate operational incident
+#            or an unrelated Open rule sits in the same scan file (recovers AU-5.1).
+#       12a-PROC  "controls/monitors changes to configuration settings" is a
+#            PROCEDURAL control; the artifact is the CCB/SVD/CM-plan process doc,
+#            not a per-host config scan (recovers CM-6.12).
+#       12b  Strict verb adherence — documented != signed/approved; results !=
+#            dated-cadence timeline; with a carve-out preserving procedures that
+#            DO demand a match/audit-trail/sample (recovers AC-4.4).
+#       12c  Semantic-drift check — reject a vocabulary-adjacent artifact that
+#            does not mechanically satisfy the required noun (vuln-monitoring !=
+#            change-monitoring; delete-priv != authenticator-content protection;
+#            login-page != image-concealment; process doc != past-event records).
+#            Tightened so "sampling of accounts/list" does NOT trigger the past-
+#            events branch (fixed the CCI-002115 guard regression) while keeping
+#            the incident/audit-trail branch (recovers AC-11(1).1, IR-6.3,
+#            CM-6.11, IA-5.18). A/B: 0 regressions across 40 guards.
+KERNEL_VERSION = "0.20.0"
 
 # Sha256 of the system prompt that drives the LLM. Computed once at
 # import time so editing the prompt file requires a process restart to
