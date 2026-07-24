@@ -3032,9 +3032,10 @@ function PrivacyTab() {
               in workbooks, exports, or POAM bundles.
             </p>
             <p>
-              SharePoint authentication uses MSAL device-code flow
-              against a public-client app registration. No client secret
-              is stored anywhere; the encrypted token cache lives under{" "}
+              SharePoint authentication uses MSAL interactive (browser)
+              sign-in against a public-client app registration, falling
+              back to device-code only on headless installs. No client
+              secret is stored anywhere; the encrypted token cache lives under{" "}
               <span className="font-mono text-xs">~/.cybersecurity-assessor/</span>{" "}
               and can be deleted from the Connectors tab.
             </p>
@@ -4622,13 +4623,19 @@ function SharePointConnectorCard() {
   // refreshes on save so editing the URL → Save flips the badge.
   const detectedCloud = status.data?.cloud_name ?? null;
   const pending = result?.pending && result.user_code && result.verification_uri;
+  // Interactive (browser) sign-in in progress: the backend opened the system
+  // browser and is waiting on the loopback redirect. No device code is emitted
+  // in this flow — it's the primary path on desktop (bypasses the device-code
+  // Conditional Access block). Distinguished from a real failure by pending=true
+  // with no user_code.
+  const interactivePending = result?.pending && !result.user_code;
 
-  // Turn polling on while a device-code prompt is showing; turn it off as soon
-  // as the user finishes signing in (token cache appears) or the prompt is
-  // cancelled / replaced by a final result.
+  // Turn polling on while ANY sign-in is in flight (device-code prompt OR the
+  // interactive browser window) so the card auto-flips to signed-in the moment
+  // the token cache lands.
   useEffect(() => {
-    setPolling(!!pending);
-  }, [pending]);
+    setPolling(!!pending || !!interactivePending);
+  }, [pending, interactivePending]);
 
   // When polling detects the cache has landed mid-prompt, drop the stale
   // "Sign in to continue" panel so the card visibly flips to signed-in.
@@ -4751,7 +4758,7 @@ function SharePointConnectorCard() {
             variant="outline"
             onClick={runTest}
             disabled={test.isPending || !siteUrl.trim()}
-            title="Authenticate via device-code and verify the site URL + folder are reachable."
+            title="Opens a browser to sign in, then verifies the site URL + folder are reachable."
           >
             {test.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -4837,7 +4844,25 @@ function SharePointConnectorCard() {
           </div>
         )}
 
-        {result && !pending && (
+        {interactivePending && (
+          <div className="rounded-md border border-amber-300/60 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/30 px-3 py-2 space-y-1">
+            <div className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Waiting for browser sign-in
+            </div>
+            <p className="text-sm">
+              A browser window was opened for you to sign in. Complete the
+              sign-in there — this card will flip to signed-in automatically once
+              you finish.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              If no window opened, click{" "}
+              <span className="font-medium">Sign in &amp; test</span> again.
+            </p>
+          </div>
+        )}
+
+        {result && !pending && !interactivePending && (
           <div
             className={
               result.ok

@@ -193,7 +193,13 @@ def test_boundary_sweep(body: TestBody | None = None) -> dict:
     # expensive and would defeat the "cheap probe" contract.
     endpoint = cloud_for(site_url)
     try:
-        token = acquire_token(endpoint=endpoint, site_host=src._site_host)
+        # allow_interactive=False keeps this a CHEAP, non-blocking probe: it
+        # only succeeds on a cached token. Sign-in UX (interactive browser or
+        # device-code) is owned by the main SharePoint card — this endpoint
+        # must not pop a browser mid-request; it defers instead (401 below).
+        token = acquire_token(
+            endpoint=endpoint, site_host=src._site_host, allow_interactive=False
+        )
     except GraphAuthError as exc:
         # The shared SharePoint card owns the device-code UX. Surface a
         # 401 so the UI prompts the user to sign in over there rather

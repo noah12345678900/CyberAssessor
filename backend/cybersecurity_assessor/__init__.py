@@ -1,3 +1,3 @@
 """CCIS Assessor — standalone NIST 800-53 control assessor."""
 
-__version__ = "2.1.1"
+__version__ = "2.1.2"

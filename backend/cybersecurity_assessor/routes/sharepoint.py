@@ -281,33 +281,44 @@ def _acquire_graph_token_for_sweep(site_url: str) -> dict:
                 return {"ok": False, "detail": str(exc)}
             return {"ok": True}
 
-        # Still running ⇒ MSAL is in device-code mode. Wait briefly for the
-        # callback payload to land, then surface it to the UI.
-        if _SWEEP_DEVICE_CODE_EVENT.wait(timeout=15.0):
-            if "exc" in error_holder:
-                return {"ok": False, "detail": str(error_holder["exc"])}
-            payload = dict(_SWEEP_DEVICE_CODE_PAYLOAD)
-            return {
-                "ok": False,
-                "pending": True,
-                "device_code": payload.get("device_code"),
-                "user_code": payload.get("user_code"),
-                "verification_uri": payload.get("verification_uri"),
-                "expires_in": payload.get("expires_in"),
-                "interval": payload.get("interval"),
-                "message": payload.get(
-                    "message",
-                    f"Go to {payload.get('verification_uri')} and enter code "
-                    f"{payload.get('user_code')}. Then click Sweep again.",
-                ),
-            }
-
+        # Still signing in past the silent window. Interactive (desktop default)
+        # blocks on the browser and emits NO device code — the thread just
+        # finishes when the user completes sign-in. Device-code (headless) sets
+        # the event immediately. Poll for whichever happens first.
+        deadline = time.time() + 180.0
+        while time.time() < deadline:
+            if _SWEEP_DEVICE_CODE_EVENT.is_set():
+                if "exc" in error_holder:
+                    return {"ok": False, "detail": str(error_holder["exc"])}
+                payload = dict(_SWEEP_DEVICE_CODE_PAYLOAD)
+                if payload.get("user_code"):
+                    return {
+                        "ok": False,
+                        "pending": True,
+                        "device_code": payload.get("device_code"),
+                        "user_code": payload.get("user_code"),
+                        "verification_uri": payload.get("verification_uri"),
+                        "expires_in": payload.get("expires_in"),
+                        "interval": payload.get("interval"),
+                        "message": payload.get(
+                            "message",
+                            f"Go to {payload.get('verification_uri')} and enter "
+                            f"code {payload.get('user_code')}. Then click Sweep "
+                            "again.",
+                        ),
+                    }
+            if not thread.is_alive():
+                if "exc" in error_holder:
+                    return {"ok": False, "detail": str(error_holder["exc"])}
+                return {"ok": True}
+            thread.join(timeout=1.0)
+        # Browser sign-in still open past the window — ask the user to finish.
         return {
             "ok": False,
             "pending": True,
             "detail": (
-                "MSAL is still initializing the sign-in flow for the sweep. "
-                "Try again in a few seconds."
+                "A browser sign-in window was opened. Complete the sign-in "
+                "there, then click Sweep again."
             ),
         }
     finally:
@@ -425,8 +436,8 @@ def test_sharepoint(body: TestBody | None = None) -> dict:
         thread = threading.Thread(target=_runner, name="sharepoint-test", daemon=True)
         thread.start()
 
-        # Wait up to 5s for either the silent-acquisition path to finish OR for
-        # MSAL to emit a device code.
+        # Wait up to 5s for the silent-acquisition path (cached refresh token)
+        # to finish with no prompt at all.
         thread.join(timeout=5.0)
         if not thread.is_alive():
             # Silent path finished (cache hit) — return the actual result.
@@ -435,33 +446,59 @@ def test_sharepoint(body: TestBody | None = None) -> dict:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
             return {"ok": True, "pending": False, **result_holder.get("result", {})}
 
-        # Still running — should mean MSAL is in device-code mode. Wait briefly
-        # for the callback payload.
-        if _DEVICE_CODE_EVENT.wait(timeout=15.0):
-            if "exc" in error_holder:
-                exc = error_holder["exc"]
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            payload = dict(_DEVICE_CODE_PAYLOAD)
-            return {
-                "ok": False,
-                "pending": True,
-                "device_code": payload.get("device_code"),
-                "user_code": payload.get("user_code"),
-                "verification_uri": payload.get("verification_uri"),
-                "expires_in": payload.get("expires_in"),
-                "interval": payload.get("interval"),
-                "message": payload.get(
-                    "message",
-                    f"Go to {payload.get('verification_uri')} and enter code "
-                    f"{payload.get('user_code')}. Then click Test again.",
-                ),
-            }
+        # Still running past the silent window ⇒ a sign-in is in progress. Two
+        # possible flows now:
+        #   * INTERACTIVE (the default on desktop): acquire_token opened the
+        #     system browser and is BLOCKING on the loopback redirect. No
+        #     device-code payload will ever appear; the thread simply finishes
+        #     once the user completes (or cancels) the browser sign-in.
+        #   * DEVICE-CODE (headless fallback): the on_device_code callback fires
+        #     and _DEVICE_CODE_EVENT is set almost immediately.
+        # Poll for whichever happens first. The browser sign-in can take a
+        # while (MFA, account picker), so give it a generous window; the
+        # request stays open only as long as the user is actively signing in.
+        deadline = time.time() + 180.0  # 3 min — covers MFA / account picker
+        while time.time() < deadline:
+            # Device-code callback landed first → surface the code (headless).
+            if _DEVICE_CODE_EVENT.is_set():
+                if "exc" in error_holder:
+                    exc = error_holder["exc"]
+                    raise HTTPException(status_code=502, detail=str(exc)) from exc
+                payload = dict(_DEVICE_CODE_PAYLOAD)
+                if payload.get("user_code"):
+                    return {
+                        "ok": False,
+                        "pending": True,
+                        "device_code": payload.get("device_code"),
+                        "user_code": payload.get("user_code"),
+                        "verification_uri": payload.get("verification_uri"),
+                        "expires_in": payload.get("expires_in"),
+                        "interval": payload.get("interval"),
+                        "message": payload.get(
+                            "message",
+                            f"Go to {payload.get('verification_uri')} and enter "
+                            f"code {payload.get('user_code')}. Then click Test "
+                            "again.",
+                        ),
+                    }
+            # Interactive (or device-code) finished → return the real result.
+            if not thread.is_alive():
+                if "exc" in error_holder:
+                    exc = error_holder["exc"]
+                    raise HTTPException(status_code=502, detail=str(exc)) from exc
+                return {"ok": True, "pending": False, **result_holder.get("result", {})}
+            thread.join(timeout=1.0)
 
-        # Neither finished nor produced a device code — likely a network hang.
+        # Sign-in didn't complete inside the window — the browser is probably
+        # still open. Tell the user to finish it, then re-test (which will hit
+        # the now-populated silent cache).
         return {
             "ok": False,
             "pending": True,
-            "detail": "MSAL is still initializing the sign-in flow. Try again in a few seconds.",
+            "detail": (
+                "A browser sign-in window was opened. Complete the sign-in "
+                "there, then click Sign in & test again."
+            ),
         }
     finally:
         # Don't release the lock here — the background thread may still be

@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -394,17 +395,51 @@ def _persist_cache(app) -> None:
         _save_cache_text(cache.serialize())
 
 
+# Device-code flow is blocked by a Conditional Access policy on many
+# GovCloud/DoD tenants (Microsoft is making "block device code flow" a
+# managed-default CA policy; error AADSTS53003 "does not meet the criteria to
+# access this resource ... authentication flow ... restricted by your admin").
+# INTERACTIVE (browser-redirect) auth is NOT covered by that policy — it looks
+# like a normal first-party browser sign-in the tenant already permits. So the
+# happy path is interactive; device-code stays as a fallback for headless boxes
+# (no local browser / DISPLAY) where interactive can't open a window.
+# Verified 2026-07-23 against gdmscollab.sharepoint.us: device-code -> AADSTS53003,
+# interactive -> token issued + Graph site resolved.
+
+
+def _interactive_supported() -> bool:
+    """True when a local browser-redirect sign-in can realistically work.
+
+    Interactive auth needs a browser + a loopback redirect. In a headless
+    sidecar (no display, or explicitly disabled) it can't, so we let the caller
+    fall back to device-code. Env override ``CCIS_SHAREPOINT_NO_INTERACTIVE=1``
+    forces the device-code path (useful for CI / server installs)."""
+    if os.environ.get("CCIS_SHAREPOINT_NO_INTERACTIVE") == "1":
+        return False
+    # Windows/macOS desktop always has a default browser; on Linux require a
+    # DISPLAY/WAYLAND session, else a loopback browser launch will just hang.
+    if sys.platform in ("win32", "darwin"):
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def acquire_token(
     *,
     endpoint: CloudEndpoint,
     site_host: str | None = None,
     on_device_code: Callable[[dict], None] | None = None,
+    allow_interactive: bool = True,
 ) -> str:
     """Return a Microsoft Graph access token, prompting for sign-in if needed.
 
-    Silent-first via the on-disk refresh token cache; device-code fallback
-    on miss. The callback receives the MSAL flow dict so the HTTP probe can
-    push ``user_code`` / ``verification_uri`` into the response payload.
+    Order of attempts:
+      1. **Silent** via the on-disk refresh-token cache (no prompt).
+      2. **Interactive** (browser popup) when supported — bypasses the
+         device-code Conditional Access block. This is the primary sign-in.
+      3. **Device-code** fallback — only when interactive is unsupported
+         (headless) or explicitly disabled. The ``on_device_code`` callback
+         receives the MSAL flow dict so the HTTP probe can surface
+         ``user_code`` / ``verification_uri`` to the UI.
 
     Args:
         endpoint: Resolved cloud (authority + graph base + audience). Drives
@@ -418,7 +453,11 @@ def acquire_token(
             cross-tenant scenarios (assessor in tenant A, site in tenant B);
             without it Graph rejects /sites/{host}:/... with 400
             invalidRequest because the token's tenant doesn't match.
-        on_device_code: Callback that receives the device-code flow dict.
+        on_device_code: Callback that receives the device-code flow dict
+            (only invoked on the device-code fallback path).
+        allow_interactive: When False, skip the interactive browser attempt
+            and go straight to device-code (used by callers that must stay
+            non-blocking / headless).
     """
     tenant = MSAL_TENANT
     if site_host:
@@ -434,6 +473,7 @@ def acquire_token(
     app = _build_msal_app(endpoint.authority_base, tenant)
     scopes = _scopes_for(endpoint)
 
+    # 1. Silent — cached refresh token, no user interaction.
     accounts = app.get_accounts()
     if accounts:
         result = app.acquire_token_silent(scopes, account=accounts[0])
@@ -441,6 +481,34 @@ def acquire_token(
             _persist_cache(app)
             return result["access_token"]
 
+    # 2. Interactive — the primary sign-in on desktop. Opens the system
+    #    browser and does the OAuth redirect on a loopback port. Not blocked
+    #    by the device-code CA policy.
+    if allow_interactive and _interactive_supported():
+        try:
+            result = app.acquire_token_interactive(
+                scopes=scopes,
+                prompt="select_account",
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to device-code
+            LOG.warning(
+                "Interactive sign-in could not start (%s); falling back to "
+                "device-code.",
+                exc,
+            )
+            result = None
+        if result and "access_token" in result:
+            _persist_cache(app)
+            return result["access_token"]
+        if result is not None:
+            LOG.warning(
+                "Interactive sign-in did not yield a token (%s: %s); trying "
+                "device-code fallback.",
+                result.get("error"),
+                (result.get("error_description") or "")[:200],
+            )
+
+    # 3. Device-code fallback — headless environments or interactive disabled.
     flow = app.initiate_device_flow(scopes=scopes)
     if "user_code" not in flow:
         raise RuntimeError(
