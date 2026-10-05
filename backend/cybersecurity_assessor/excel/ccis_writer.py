@@ -24,19 +24,26 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 from openpyxl import load_workbook
 
 from ..models import ComplianceStatus
-from .xlsx_surgery import CellValue, patch_cells as _patch_cells
+from .ccis_reader import CcisSheetLayout, _detect_sheet_layout
+from .xlsx_surgery import CellValue
+from .xlsx_surgery import patch_cells as _patch_cells
 
 # Sheet name candidates in priority order. Must match ccis_reader.
-_WORKING_SHEET_NAMES = ["WORKING SHEET", "Working Sheet", "Working sheet"]
+_WORKING_SHEET_NAMES = [
+    "WORKING SHEET",
+    "Working Sheet",
+    "Working sheet",
+    "Template",
+]
 
 # Writable columns (1-based, matches A1 column letters via _col_letter).
 COL_REQUIRED = 1  # A
@@ -54,7 +61,7 @@ COL_RESULTS = 17  # Q
 # First data row in WORKING SHEET (rows 1-5 are metadata, 6 is headers).
 _FIRST_DATA_ROW = 7
 # Upper bound matches ccis_reader._MAX_DATA_ROW.
-_MAX_DATA_ROW = 500
+_MAX_DATA_ROW = 5000
 
 # Date format written to col O. eMASS accepts ISO 8601.
 _DATE_FMT = "%Y-%m-%d"
@@ -134,8 +141,16 @@ def _resolve_sheet_name(path: Path) -> str:
         if "working" in name.lower():
             return name
     raise ValueError(
-        f"No WORKING SHEET found in {path.name}. Sheets: {names}"
+        f"No CCIS data sheet found in {path.name}. Sheets: {names}"
     )
+
+
+def _read_sheet_layout(path: Path, sheet_name: str) -> CcisSheetLayout:
+    wb = load_workbook(path, read_only=True, data_only=False)
+    try:
+        return _detect_sheet_layout(wb[sheet_name])
+    finally:
+        wb.close()
 
 
 def _coerce_status(value: ComplianceStatus | str | None) -> str | None:
@@ -292,7 +307,7 @@ class WorkbookWriteVerificationError(RuntimeError):
 def _backup_path(workbook_path: Path) -> Path:
     # Compact ISO 8601 UTC — e.g. 20260603T142530Z. Filename-safe on
     # NTFS, sortable lexicographically, no separator chars.
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
     return workbook_path.with_name(workbook_path.name + f"{_BACKUP_PREFIX}{ts}")
 
 
@@ -571,7 +586,7 @@ def write_single(
 
 
 def _normalize_control_for_match(value: object) -> str | None:
-    """Mirror ccis_reader._normalize_control for col B comparisons."""
+    """Mirror ccis_reader._normalize_control for control-column comparisons."""
     if value is None:
         return None
     s = str(value).strip().upper().replace(" ", "")
@@ -588,8 +603,10 @@ def _canonical_cci(value: str) -> str:
     return f"CCI-{int(m.group(1)):06d}"
 
 
-def _scan_col_b(path: Path, sheet_name: str) -> list[tuple[int, str | None]]:
-    """Return ``[(row, normalized_control), ...]`` for rows 7..MAX in col B.
+def _scan_control_column(
+    path: Path, sheet_name: str, control_col: int
+) -> list[tuple[int, str | None]]:
+    """Return normalized control ids for rows 7..MAX in the detected column.
 
     Read-only openpyxl is fast and doesn't take a file lock. Used by
     :func:`insert_cci_row` to locate the right insertion point.
@@ -598,9 +615,16 @@ def _scan_col_b(path: Path, sheet_name: str) -> list[tuple[int, str | None]]:
     try:
         ws = wb[sheet_name]
         out: list[tuple[int, str | None]] = []
-        # ws.iter_rows is the read-only path; we ask for col B only.
-        for row_idx in range(_FIRST_DATA_ROW, _MAX_DATA_ROW + 1):
-            cell = ws.cell(row=row_idx, column=COL_CONTROL)
+        # ws.iter_rows is the read-only path; inspect only the control column.
+        for row_idx, (cell,) in enumerate(
+            ws.iter_rows(
+                min_row=_FIRST_DATA_ROW,
+                max_row=_MAX_DATA_ROW,
+                min_col=control_col,
+                max_col=control_col,
+            ),
+            start=_FIRST_DATA_ROW,
+        ):
             out.append((row_idx, _normalize_control_for_match(cell.value)))
         return out
     finally:
@@ -657,14 +681,18 @@ def insert_cci_row(
     cci_canonical = _canonical_cci(cci_id)
 
     sheet_name = _resolve_sheet_name(path)
+    layout = _read_sheet_layout(path, sheet_name)
 
     with safe_write(path) as ctx:
-        # Scan col B to find the insertion point. Track the last row that
+        # Scan the detected control column to find the insertion point. Track
+        # the last row that
         # matches our control, plus the last non-blank row overall as a
         # fallback when the control isn't in the workbook yet.
         last_match_row: int | None = None
         last_nonblank_row: int = _FIRST_DATA_ROW - 1
-        for row_num, norm in _scan_col_b(path, sheet_name):
+        for row_num, norm in _scan_control_column(
+            path, sheet_name, layout.control_col
+        ):
             if norm is None:
                 # Don't break early — some templates leave occasional
                 # blank rows between control groups. _MAX_DATA_ROW caps
@@ -691,15 +719,16 @@ def insert_cci_row(
         expected: dict[str, str] = {}
         cells: dict[str, CellValue] = {}
 
-        required_val = "YES" if required else ""
-        a_addr = f"{_col_letter(COL_REQUIRED)}{insert_at}"
-        cells[a_addr] = required_val if required_val else None
-        if required_val:
-            expected[a_addr] = required_val
+        if layout.required_col is not None:
+            required_val = "YES" if required else ""
+            required_addr = f"{_col_letter(layout.required_col)}{insert_at}"
+            cells[required_addr] = required_val if required_val else None
+            if required_val:
+                expected[required_addr] = required_val
 
-        b_addr = f"{_col_letter(COL_CONTROL)}{insert_at}"
-        cells[b_addr] = control_id
-        expected[b_addr] = control_id
+        control_addr = f"{_col_letter(layout.control_col)}{insert_at}"
+        cells[control_addr] = control_id
+        expected[control_addr] = control_id
 
         if ap_acronym is not None:
             g_addr = f"{_col_letter(COL_AP_ACRONYM)}{insert_at}"

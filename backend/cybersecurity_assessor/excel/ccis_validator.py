@@ -25,10 +25,9 @@ to ``ccis_reader`` in the same commit.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
@@ -36,14 +35,14 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .ccis_reader import (
     COL_AP_ACRONYM,
     COL_CCI,
-    COL_CONTROL,
     COL_DATE_TESTED,
-    COL_REQUIRED,
     COL_RESULTS,
     COL_STATUS,
     COL_TESTER,
+    CcisSheetLayout,
     _coerce_date,
     _coerce_text,
+    _detect_sheet_layout,
     _normalize_cci_cell,
     _normalize_control,
     _resolve_sheet,
@@ -52,9 +51,7 @@ from .ccis_reader import (
 # Expected header text at row 6 — used to detect "columns shifted" failures.
 # Match is case-insensitive substring, so eMASS template tweaks like
 # "Compliance Status (current)" still pass.
-_EXPECTED_HEADERS: dict[int, str] = {
-    COL_REQUIRED: "required",
-    COL_CONTROL: "control",
+_EXPECTED_COMMON_HEADERS: dict[int, str] = {
     COL_AP_ACRONYM: "ap",
     COL_CCI: "cci",
     COL_STATUS: "compliance status",
@@ -70,22 +67,6 @@ _FIRST_DATA_ROW = 7
 _VALID_STATUSES: frozenset[str] = frozenset(
     {"Compliant", "Non-Compliant", "Not Applicable"}
 )
-
-# Columns scanned by the bottom-up "last data row" sweep. We pick the
-# columns an assessor would actually populate; the eMASS pre-fill columns
-# (B through K) all stay set even on rows where the assessor hasn't done
-# anything, so including them in the scan would defeat trailing-null
-# tolerance. Limiting to writable + identity columns gives the right
-# "stops at the last row a human touched" semantics.
-_DATA_COLUMNS = (
-    COL_CONTROL,
-    COL_CCI,
-    COL_STATUS,
-    COL_DATE_TESTED,
-    COL_TESTER,
-    COL_RESULTS,
-)
-
 
 # ---------------------------------------------------------------------------
 # Public dataclasses
@@ -165,14 +146,16 @@ def validate_workbook(
     if not path.exists():
         raise FileNotFoundError(f"CCIS workbook not found: {path}")
 
-    # read_only=True: this function never calls wb.save(). Opening
-    # read-write would let a crash mid-validation leave Excel holding a
-    # write lock on the user's original CCIS workbook -- precisely the
-    # footgun the working-copy split was meant to close.
-    wb = load_workbook(path, read_only=True, data_only=False)
+    # Use normal in-memory mode but never call ``save``. The validator makes
+    # many random cell reads; openpyxl's read-only worksheet rescans XML for
+    # each ``sheet.cell`` call and takes minutes on the 4,500-row eMASS Test
+    # Result template. Normal mode loads once, releases the file when closed,
+    # and remains logically read-only because this function performs no writes.
+    wb = load_workbook(path, read_only=False, data_only=False)
     try:
         try:
             sheet = _resolve_sheet(wb)
+            layout = _detect_sheet_layout(sheet)
         except ValueError as exc:
             return ValidationReport(
                 workbook_path=path,
@@ -193,8 +176,8 @@ def validate_workbook(
             data_row_count=0,
         )
 
-        _check_headers(sheet, report)
-        last_row = _last_data_row(sheet)
+        _check_headers(sheet, report, layout)
+        last_row = _last_data_row(sheet, layout)
         report.last_data_row = last_row
         report.data_row_count = max(0, last_row - _FIRST_DATA_ROW + 1)
 
@@ -204,7 +187,7 @@ def validate_workbook(
                 if known_control_ids is not None
                 else None
             )
-            _check_rows(sheet, last_row, report, known)
+            _check_rows(sheet, last_row, report, known, layout)
 
         return report
     finally:
@@ -216,13 +199,22 @@ def validate_workbook(
 # ---------------------------------------------------------------------------
 
 
-def _check_headers(sheet: Worksheet, report: ValidationReport) -> None:
+def _check_headers(
+    sheet: Worksheet, report: ValidationReport, layout: CcisSheetLayout
+) -> None:
     """Verify the row-6 header text matches the expected column layout.
 
     A shift here means every downstream read/write would land on the wrong
     column — a hard error, not a warning.
     """
-    for col, expected in _EXPECTED_HEADERS.items():
+    expected_headers = dict(_EXPECTED_COMMON_HEADERS)
+    expected_headers[layout.control_col] = "control acronym"
+    if layout.required_col is not None:
+        expected_headers[layout.required_col] = "required"
+    if layout.control_set_col is not None:
+        expected_headers[layout.control_set_col] = "control set"
+
+    for col, expected in expected_headers.items():
         raw = sheet.cell(row=_HEADER_ROW, column=col).value
         text = _coerce_text(raw) or ""
         if expected not in text.lower():
@@ -239,7 +231,7 @@ def _check_headers(sheet: Worksheet, report: ValidationReport) -> None:
             )
 
 
-def _last_data_row(sheet: Worksheet) -> int:
+def _last_data_row(sheet: Worksheet, layout: CcisSheetLayout) -> int:
     """Bottom-up scan: return the row index of the last row with data.
 
     Returns ``_HEADER_ROW`` if no data row has any value in the scanned
@@ -253,8 +245,16 @@ def _last_data_row(sheet: Worksheet) -> int:
     max_row = sheet.max_row or _HEADER_ROW
     if max_row <= _HEADER_ROW:
         return _HEADER_ROW
+    data_columns = (
+        layout.control_col,
+        COL_CCI,
+        COL_STATUS,
+        COL_DATE_TESTED,
+        COL_TESTER,
+        COL_RESULTS,
+    )
     for row in range(max_row, _HEADER_ROW, -1):
-        for col in _DATA_COLUMNS:
+        for col in data_columns:
             if sheet.cell(row=row, column=col).value not in (None, ""):
                 return row
     return _HEADER_ROW
@@ -265,12 +265,13 @@ def _check_rows(
     last_row: int,
     report: ValidationReport,
     known_control_ids: set[str] | None,
+    layout: CcisSheetLayout,
 ) -> None:
     """Per-row checks: identity, status, dates, duplicates, orphans, formulas."""
     seen_identity: dict[tuple[str, str], int] = {}
 
     for row_idx in range(_FIRST_DATA_ROW, last_row + 1):
-        control_raw = sheet.cell(row=row_idx, column=COL_CONTROL).value
+        control_raw = sheet.cell(row=row_idx, column=layout.control_col).value
         cci_raw = sheet.cell(row=row_idx, column=COL_CCI).value
         status_raw = sheet.cell(row=row_idx, column=COL_STATUS).value
         date_raw = sheet.cell(row=row_idx, column=COL_DATE_TESTED).value
