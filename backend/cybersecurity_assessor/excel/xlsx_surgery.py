@@ -40,9 +40,9 @@ import re
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
-from typing import Mapping
 from xml.etree import ElementTree as ET
 
 CellValue = str | int | float | datetime | date | bool | None
@@ -52,7 +52,12 @@ CellValue = str | int | float | datetime | date | bool | None
 _EXCEL_EPOCH = datetime(1899, 12, 30)
 
 # Sheet name candidates in priority order (mirrors ccis_writer/ccis_reader).
-_WORKING_SHEET_NAMES = ["WORKING SHEET", "Working Sheet", "Working sheet"]
+_WORKING_SHEET_NAMES = [
+    "WORKING SHEET",
+    "Working Sheet",
+    "Working sheet",
+    "Template",
+]
 
 # XML namespaces used by xlsx parts.
 _NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"

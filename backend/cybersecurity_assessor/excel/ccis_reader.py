@@ -1,12 +1,11 @@
 """CCIS workbook reader (openpyxl, read-only).
 
-Column layout is taken verbatim from the nist-assessor plugin's
-``ccis-workbook-guide.md`` (the eMASS Export schema) — do not invent a
-different mapping. WORKING SHEET data rows start at row 7; row 6 is
-headers; rows 1-5 are system metadata.
+Column layout is taken from the eMASS CCIS export and Test Result Import
+schemas. Data rows start at row 7; row 6 is headers; rows 1-5 are system
+metadata. The two schemas differ only in columns A-B:
 
-    Col A  Required for assessment?       "YES" or blank
-    Col B  Control Acronym                "AC-2(1)"
+    CCIS:  Col A Required?; Col B Control Acronym
+    Test Result Import: Col A Control Acronym; Col B Control Set
     Col C  Control Information            full control text + supplemental
     Col D  Control Implementation Status  "Planned" / "Implemented"
     Col E  Security Control Designation   "Hybrid" / "Common" / "System-Specific"
@@ -38,7 +37,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +47,14 @@ from sqlmodel import Session, select
 
 from ..models import Control, Framework, Objective
 
-# Sheet name candidates in priority order.
-_WORKING_SHEET_NAMES = ["WORKING SHEET", "Working Sheet", "Working sheet"]
+# Sheet name candidates in priority order. eMASS Test Result Import exports use
+# ``Template`` instead of ``WORKING SHEET`` and omit the leading required flag.
+_WORKING_SHEET_NAMES = [
+    "WORKING SHEET",
+    "Working Sheet",
+    "Working sheet",
+    "Template",
+]
 
 # Assignment Values tab carries ODP (Organization-Defined Parameter)
 # values. Column layout drifts between eMASS template revs, so the
@@ -62,8 +67,9 @@ _ASSIGNMENT_VALUES_SHEET_NAMES = ["Assignment Values", "Assignment values"]
 # cells (the eMASS template pads with thousands of empty rows).
 _EMPTY_ROW_RUN_LIMIT = 5
 
-# Safety cap (plugin's B7:B325 implies ~319 CCIs; we go higher to be safe).
-_MAX_DATA_ROW = 500
+# Safety cap. Test Result Import templates are preallocated to 4,500 rows and
+# can contain well over 500 CCIs, so keep a little headroom above that shape.
+_MAX_DATA_ROW = 5000
 
 # Match "CCI-000015" / "CCI 15" — REQUIRES the CCI prefix.
 _CCI_PREFIXED_RE = re.compile(r"CCI[-\s]?(\d{1,7})", re.IGNORECASE)
@@ -102,15 +108,15 @@ COL_PREV_RESULTS = 21  # U
 
 @dataclass
 class CcisRow:
-    """One CCI row from the WORKING SHEET.
+    """One CCI row from a supported eMASS data sheet.
 
     ``excel_row`` is the absolute 1-based row index — write paths use it
     to address the same row via xlwings without re-finding it.
     """
 
     excel_row: int
-    required: bool  # col A == "YES"
-    control_id: str  # col B, "AC-2(1)"
+    required: bool  # col A == "YES", or True for Test Result templates
+    control_id: str  # col B in CCIS; col A in Test Result templates
     ap_acronym: str | None  # col G, "AC-2.1"
     cci_id: str | None  # col H, canonical "CCI-002110"
     implementation_status: str | None  # col D
@@ -176,6 +182,22 @@ class CcisIndex:
         return {r.ap_acronym: r for r in self.rows if r.ap_acronym}
 
 
+@dataclass(frozen=True)
+class CcisSheetLayout:
+    """The only column-layout difference between supported eMASS exports.
+
+    A normal CCIS working sheet stores ``Required for assessment?`` in column
+    A and ``Control Acronym`` in B. A Test Result Import ``Template`` stores
+    ``Control Acronym`` in A and ``Control Set`` in B. Columns C through U are
+    identical. Because the import template already represents the selected
+    assessment population, rows in that form are treated as required.
+    """
+
+    required_col: int | None
+    control_col: int
+    control_set_col: int | None = None
+
+
 # ---------------------------------------------------------------------------
 # Cell coercion helpers
 # ---------------------------------------------------------------------------
@@ -188,7 +210,10 @@ def _resolve_sheet(wb) -> Worksheet:
     for name in wb.sheetnames:
         if "working" in name.lower():
             return wb[name]
-    raise ValueError(f"No WORKING SHEET found. Available sheets: {wb.sheetnames}")
+    raise ValueError(
+        "No CCIS data sheet found (expected WORKING SHEET or Template). "
+        f"Available sheets: {wb.sheetnames}"
+    )
 
 
 def _normalize_cci_cell(raw: Any) -> str | None:
@@ -231,12 +256,46 @@ def _coerce_bool_yes(raw: Any) -> bool:
     return str(raw).strip().upper() == "YES"
 
 
+def _detect_sheet_layout(sheet: Worksheet) -> CcisSheetLayout:
+    """Detect a CCIS working sheet or Test Result Import template from row 6."""
+
+    header_a = (_coerce_text(sheet.cell(row=6, column=1).value) or "").casefold()
+    header_b = (_coerce_text(sheet.cell(row=6, column=2).value) or "").casefold()
+
+    if "required" in header_a and "control" in header_b:
+        return CcisSheetLayout(required_col=1, control_col=2)
+    if "control acronym" in header_a and "control set" in header_b:
+        return CcisSheetLayout(required_col=None, control_col=1, control_set_col=2)
+
+    # Preserve the historical reader contract for known sheet names even when
+    # a lightweight fixture or older export has incomplete header labels. The
+    # validator still reports header mismatches; parsing itself remains
+    # permissive just as it was before layout detection was introduced.
+    if sheet.title.casefold() == "template":
+        return CcisSheetLayout(required_col=None, control_col=1, control_set_col=2)
+    if "working" in sheet.title.casefold():
+        return CcisSheetLayout(required_col=1, control_col=2)
+
+    raise ValueError(
+        f"Unrecognized CCIS header layout on sheet {sheet.title!r}: "
+        f"A6={sheet.cell(row=6, column=1).value!r}, "
+        f"B6={sheet.cell(row=6, column=2).value!r}."
+    )
+
+
 def _coerce_date(raw: Any) -> datetime | None:
     if raw is None:
         return None
     if isinstance(raw, datetime):
         return raw
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d-%b-%Y", "%Y-%m-%dT%H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %H:%M:%S",
+        "%d-%b-%Y",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
         try:
             return datetime.strptime(str(raw).strip(), fmt)
         except ValueError:
@@ -256,6 +315,7 @@ def _read_index_uncached(path: Path) -> CcisIndex:
     """The actual parse. Split out so the cached wrapper stays thin."""
     wb = load_workbook(path, read_only=True, data_only=True)
     sheet = _resolve_sheet(wb)
+    layout = _detect_sheet_layout(sheet)
 
     rows: list[CcisRow] = []
     empty_run = 0
@@ -272,7 +332,7 @@ def _read_index_uncached(path: Path) -> CcisIndex:
         if len(values) < _MAX_COL:
             values = values + (None,) * (_MAX_COL - len(values))
 
-        control_raw = values[COL_CONTROL - 1]
+        control_raw = values[layout.control_col - 1]
         control_id = _normalize_control(control_raw)
         if not control_id:
             empty_run += 1
@@ -284,7 +344,11 @@ def _read_index_uncached(path: Path) -> CcisIndex:
         rows.append(
             CcisRow(
                 excel_row=row_idx,
-                required=_coerce_bool_yes(values[COL_REQUIRED - 1]),
+                required=(
+                    True
+                    if layout.required_col is None
+                    else _coerce_bool_yes(values[layout.required_col - 1])
+                ),
                 control_id=control_id,
                 ap_acronym=_coerce_text(values[COL_AP_ACRONYM - 1]),
                 cci_id=_normalize_cci_cell(values[COL_CCI - 1]),
@@ -979,7 +1043,7 @@ def _write_snapshot(path: Path, index: CcisIndex) -> None:
     payload = {
         "workbook_path": str(index.workbook_path),
         "sheet_name": index.sheet_name,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "rows": [_row_to_snapshot_dict(r) for r in index.rows],
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

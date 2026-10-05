@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cybersecurity-assessor"
-version = "2.0.0"
+version = "2.1.3"
 description = "Standalone NIST 800-53 control assessor — FastAPI sidecar for the Electron UI."
 authors = [{ name = "Noah Jaskolski", email = "noah@nuon.ai" }]
 license = { text = "Proprietary — internal use only" }
 requires-python = ">=3.12"
-readme = "../README.md"
+readme = { text = "Standalone NIST 800-53 control assessor.", content-type = "text/markdown" }
 
 dependencies = [
   # Web sidecar
