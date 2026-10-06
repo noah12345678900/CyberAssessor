@@ -116,6 +116,15 @@ interface ControlRow extends Control {
   crm?: Record<number, CrmResp>;
 }
 
+function formatLinkedArtifacts(objective: Objective): string {
+  return (objective.linked_artifacts ?? [])
+    .map((artifact) => {
+      const label = artifact.title?.trim() || artifact.filename;
+      return `${label} | ${artifact.display_path}`;
+    })
+    .join("\n");
+}
+
 // Per-CRM responsibility values for a single control, both deployment scopes.
 interface CrmResp {
   responsibility: string | null;
@@ -743,8 +752,12 @@ export function Controls() {
       const perControl = await Promise.all(
         rows.map(async (r) => {
           const objectives = await queryClient.fetchQuery<Objective[]>({
-            queryKey: qk.objectivesWithMappings(r.id),
-            queryFn: () => api.listObjectives(r.id, true),
+            queryKey: qk.objectivesWithMappings(r.id, workbookId),
+            queryFn: () =>
+              api.listObjectives(r.id, true, workbookId, !!workbookId),
+            // Linked evidence can change independently of the control catalog.
+            // Refresh on every export so the downloaded references are current.
+            staleTime: 0,
           });
           const assessments = workbookId
             ? await queryClient.fetchQuery<Assessment[]>({
@@ -818,6 +831,7 @@ export function Controls() {
         "cci_id",
         "cci_source",
         "cci_text",
+        "linked_artifacts",
         "req_source",
         "req_number",
         "req_text",
@@ -883,7 +897,8 @@ export function Controls() {
           // Control has no CCIs mapped (DISA CCI overlay not loaded, or a
           // bespoke framework). Still emit the control row so the export
           // doesn't silently drop it — CCI + req + assessment columns stay
-          // blank (3 cci + 3 req + 7 assessment cols = 13 trailing empties).
+          // blank (3 cci + 1 artifact + 3 req + 7 assessment cols = 14
+          // trailing empties).
           controlsWithNoCcis += 1;
           lines.push(
             [
@@ -891,6 +906,7 @@ export function Controls() {
               "", // cci_id
               "", // cci_source
               "", // cci_text
+              "", // linked_artifacts
               "", // req_source
               "", // req_number
               "", // req_text
@@ -925,6 +941,7 @@ export function Controls() {
                 o.objective_id,
                 o.source,
                 o.text,
+                formatLinkedArtifacts(o),
                 "", // req_source
                 "", // req_number
                 "", // req_text
@@ -948,6 +965,7 @@ export function Controls() {
                   o.objective_id,
                   o.source,
                   o.text,
+                  formatLinkedArtifacts(o),
                   m.source_name,
                   m.requirement_number,
                   m.requirement_text,

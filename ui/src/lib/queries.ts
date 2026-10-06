@@ -146,8 +146,14 @@ export const qk = {
   // lightweight drill-down view and the CSV export don't fight over the same
   // cache entry (Mappings would be undefined for one consumer and present for
   // the other, causing flicker on tab switches).
-  objectivesWithMappings: (controlId: number) =>
-    ["control", controlId, "objectives", "with-mappings"] as const,
+  objectivesWithMappings: (controlId: number, workbookId?: number) =>
+    [
+      "control",
+      controlId,
+      "objectives",
+      "with-mappings",
+      { workbook: workbookId ?? null },
+    ] as const,
   // Program-specific controls (overlay "shall" statements like SDA-127)
   // grouped by RequirementSource for one base control. Framework filter
   // participates in the key so multi-framework DBs don't cross-cache.
