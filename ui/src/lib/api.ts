@@ -191,6 +191,13 @@ export interface Control {
   framework_id?: number;
 }
 
+export interface LinkedArtifactReference {
+  evidence_id: number;
+  filename: string;
+  display_path: string;
+  title: string | null;
+}
+
 export interface Objective {
   id: number;
   objective_id: string;
@@ -211,6 +218,11 @@ export interface Objective {
    * include_mappings=true; older endpoints leave it undefined.
    */
   mappings?: RequirementMapping[];
+  /**
+   * Evidence artifacts linked to this CCI for the requested workbook.
+   * Populated only when the caller passes include_evidence=true.
+   */
+  linked_artifacts?: LinkedArtifactReference[];
   /**
    * Workbook Column L (inherited) value for this CCI — e.g. "Local",
    * "DoW Enterprise", "Yes", "No". This is the authority for the flex
@@ -3524,9 +3536,11 @@ export const api = {
     controlId: number,
     includeMappings = false,
     workbookId?: number,
+    includeEvidence = false,
   ) => {
     const params = new URLSearchParams();
     if (includeMappings) params.set("include_mappings", "true");
+    if (includeEvidence) params.set("include_evidence", "true");
     if (workbookId !== undefined) params.set("workbook_id", String(workbookId));
     const qs = params.toString();
     return request<Objective[]>(

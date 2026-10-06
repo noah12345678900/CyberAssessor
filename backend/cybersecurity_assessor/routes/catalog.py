@@ -45,6 +45,8 @@ from ..models import (
     BaselineObjective,
     BaselineSourceType,
     Control,
+    Evidence,
+    EvidenceTag,
     Framework,
     Objective,
     RequirementMap,
@@ -53,6 +55,7 @@ from ..models import (
     WorkbookOverlay,
     iso_utc,
 )
+from .evidence import _display_path, _leaf_name
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
@@ -382,6 +385,7 @@ def list_controls(
 def list_objectives(
     control_id: int,
     include_mappings: bool = False,
+    include_evidence: bool = False,
     workbook_id: int | None = None,
     s: Session = Depends(get_session),
 ) -> list[dict]:
@@ -394,6 +398,11 @@ def list_objectives(
     export can pull both objectives and mappings in one round-trip per
     control.
 
+    With ``include_evidence=true``, each objective also carries a deduplicated
+    ``linked_artifacts`` list. Evidence is always workbook-scoped, so callers
+    must also supply ``workbook_id``. This prevents another assessment's
+    artifacts from appearing in the selected workbook's export.
+
     When ``workbook_id`` is provided and the workbook is tied to a baseline,
     each objective also carries ``in_workbook`` — True if the workbook's
     source surfaced this CCI (via BaselineObjective), False if it's a
@@ -402,7 +411,14 @@ def list_objectives(
     omitted or the workbook has no baseline, ``in_workbook`` is True for
     every row (backwards-compat default — show everything as if scoped).
     """
+    if include_evidence and workbook_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="workbook_id is required when include_evidence=true",
+        )
+
     rows = s.exec(select(Objective).where(Objective.control_id_fk == control_id)).all()
+    objective_ids = [o.id for o in rows if o.id is not None]
 
     # Resolve the in-workbook CCI set. Default to "all in" when we can't
     # narrow it — keeps existing callers (drill-down, CSV export) unchanged.
@@ -410,7 +426,6 @@ def list_objectives(
     if workbook_id is not None:
         wb = s.get(Workbook, workbook_id)
         if wb is not None and wb.baseline_id is not None:
-            objective_ids = [o.id for o in rows if o.id is not None]
             if objective_ids:
                 # Exclude soft-deleted rows so the in-workbook badge
                 # reflects the current workbook roster — a CCI the user
@@ -428,8 +443,7 @@ def list_objectives(
                 in_workbook_ids = set()
 
     mappings_by_objective: dict[int, list[dict]] = {}
-    if include_mappings and rows:
-        objective_ids = [o.id for o in rows if o.id is not None]
+    if include_mappings and objective_ids:
         if objective_ids:
             # Single join query — name the source so the CSV can distinguish
             # multiple overlays if more than one is loaded against the same
@@ -451,6 +465,39 @@ def list_objectives(
                     }
                 )
 
+    linked_artifacts_by_objective: dict[int, list[dict]] = {}
+    if include_evidence and objective_ids:
+        artifact_rows = s.exec(
+            select(EvidenceTag.objective_id, Evidence)
+            .join(Evidence, Evidence.id == EvidenceTag.evidence_id)
+            .where(
+                EvidenceTag.objective_id.in_(objective_ids),  # type: ignore[attr-defined]
+                Evidence.workbook_id == workbook_id,
+            )
+        ).all()
+        seen: dict[int, set[int]] = {}
+        for objective_id, evidence in artifact_rows:
+            seen_for_objective = seen.setdefault(objective_id, set())
+            if evidence.id is None or evidence.id in seen_for_objective:
+                continue
+            seen_for_objective.add(evidence.id)
+            linked_artifacts_by_objective.setdefault(objective_id, []).append(
+                {
+                    "evidence_id": evidence.id,
+                    "filename": _leaf_name(evidence.path),
+                    "display_path": _display_path(evidence.path),
+                    "title": evidence.title,
+                }
+            )
+        for artifacts in linked_artifacts_by_objective.values():
+            artifacts.sort(
+                key=lambda artifact: (
+                    (artifact["title"] or artifact["filename"]).casefold(),
+                    artifact["display_path"].casefold(),
+                    artifact["evidence_id"],
+                )
+            )
+
     return [
         {
             "id": o.id,
@@ -465,6 +512,11 @@ def list_objectives(
             **(
                 {"mappings": mappings_by_objective.get(o.id, [])}
                 if include_mappings
+                else {}
+            ),
+            **(
+                {"linked_artifacts": linked_artifacts_by_objective.get(o.id, [])}
+                if include_evidence
                 else {}
             ),
         }
