@@ -3096,7 +3096,11 @@ def tag_evidence(
     # row already in the review queue with a more specific reason is left
     # alone. Caller commits.
     if newly_tagged_objective_ids:
-        invalidate_assessments_for_objectives(session, newly_tagged_objective_ids)
+        invalidate_assessments_for_objectives(
+            session,
+            newly_tagged_objective_ids,
+            workbook_id=evidence.workbook_id,
+        )
 
     # Measure-first log line (verdict-neutral). One grep-able record per evidence
     # file so a corpus ingest can be reduced with `grep tier5_judge` to answer

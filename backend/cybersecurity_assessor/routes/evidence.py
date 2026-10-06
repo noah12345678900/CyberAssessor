@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import Session, delete, select
 
 from ..catalogs.crosswalk_resolver import (
@@ -60,6 +60,7 @@ from ..models import (
     PoamEvidence,
     ScopeLinkSource,
     StigFinding,
+    Workbook,
     iso_utc,
 )
 
@@ -568,108 +569,147 @@ def list_evidence(
 
 @router.delete("")
 def clear_evidence(
-    purge_text: bool = True, s: Session = Depends(get_session)
+    workbook_id: int,
+    purge_text: bool = True,
+    s: Session = Depends(get_session),
 ) -> dict:
-    """Nuke the evidence index.
+    """Clear one workbook's evidence index and dependent audit rows.
 
-    Wipes ``Evidence`` and every row that FK-references an evidence id:
-    ``EvidenceTag``, ``StigFinding``, ``PoamEvidence``, the scope-link M2M
-    tables (``EvidenceComponent`` / ``EvidenceAsset`` / ``EvidenceBoundary``),
-    the sweep-token provenance (``BoundaryTokenSource``), and the per-assessment
-    evidence-shown audit rows (``AssessmentEvidenceShown`` and its
-    ``AssessmentCitation`` children). Optionally deletes the extracted-text
-    cache files on disk too (default on — there's no point keeping orphaned
-    .txt blobs after the rows are gone).
+    Evidence is hard-bound to a workbook. The clear action follows that same
+    ownership boundary: artifacts, tags, findings, POAM links, scope links,
+    prompt-evidence rows, and token provenance are removed only for the
+    requested workbook. Assessments for affected objectives are flagged for
+    review only within that workbook.
 
-    The catalog, workbooks, baselines, superseded chains, and the Assessment
-    rows themselves (verdicts + narratives) are NOT touched — only the artifact
-    index and the evidence-derived audit pointers. Every affected assessment is
-    flagged for re-review below, so the now-stale evidence-shown records (which
-    point at artifacts that no longer exist) are deleted rather than left
-    dangling; they regenerate on the next assess. Re-ingest the source folder
-    to repopulate.
-
-    Why this enumerates ALL FK children where :func:`delete_one_evidence` does
-    not: SQLite runs with ``PRAGMA foreign_keys=ON`` (see db.py), so a bulk
-    ``delete(Evidence)`` raises ``IntegrityError`` the moment ANY child row
-    still points at an evidence id. ``AssessmentEvidenceShown`` is the row that
-    bites in practice — once the user has run an assess-all over an ingested
-    set, those audit rows exist and block the clear.
-
-    Returns the row counts removed so the UI can show a confirmation toast.
+    Extracted-text files are deleted only when no evidence row in another
+    workbook references the same cache path.
     """
+    if s.get(Workbook, workbook_id) is None:
+        raise HTTPException(status_code=404, detail="Workbook not found")
+
+    evidence_ids = list(
+        s.exec(select(Evidence.id).where(Evidence.workbook_id == workbook_id)).all()
+    )
+    evidence_count = len(evidence_ids)
+
     text_paths: list[Path] = []
     if purge_text:
-        # sqlmodel.Session.exec() on a single-column select returns scalars,
-        # not 1-tuples — iterate directly, no destructuring.
-        for p in s.exec(select(Evidence.extracted_text_path)).all():
-            if p:
-                text_paths.append(Path(p))
+        selected_paths = {
+            p
+            for p in s.exec(
+                select(Evidence.extracted_text_path).where(
+                    Evidence.workbook_id == workbook_id,
+                    Evidence.extracted_text_path.is_not(None),
+                )
+            ).all()
+            if p
+        }
+        referenced_elsewhere: set[str] = set()
+        if selected_paths:
+            referenced_elsewhere = {
+                p
+                for p in s.exec(
+                    select(Evidence.extracted_text_path).where(
+                        Evidence.extracted_text_path.in_(selected_paths),  # type: ignore[attr-defined]
+                        or_(
+                            Evidence.workbook_id != workbook_id,
+                            Evidence.workbook_id.is_(None),
+                        ),
+                    )
+                ).all()
+                if p
+            }
+        text_paths = [Path(p) for p in selected_paths - referenced_elsewhere]
 
-    # Order matters — FK constraints on EvidenceTag.evidence_id /
-    # StigFinding.evidence_id mean Evidence has to go last.
-    tag_count = len(s.exec(select(EvidenceTag.id)).all())
-    finding_count = len(s.exec(select(StigFinding.id)).all())
-    evidence_count = len(s.exec(select(Evidence.id)).all())
-
-    # Snapshot every objective that had a tag BEFORE the wipe — once the
-    # rows are gone we can't reconstruct the set, and we need to flag the
-    # downstream Assessment rows for re-review (otherwise verdicts the
-    # engine computed against the pre-wipe evidence picture silently
-    # persist). See engine/invalidation.py for the contract.
-    affected_objective_ids = set(
-        s.exec(select(EvidenceTag.objective_id).distinct()).all()
-    )
-
-    # Per-assessment evidence-shown audit rows reference evidence ids and must
-    # go before Evidence. AssessmentCitation hangs off AssessmentEvidenceShown
-    # (FK evidence_shown_id), so it has to be cleared first — otherwise the
-    # AssessmentEvidenceShown delete trips its own child FK. The parent
-    # Assessment rows are left intact and flagged for re-review below.
-    s.exec(delete(AssessmentCitation))
-    s.exec(delete(AssessmentEvidenceShown))
-
-    s.exec(delete(EvidenceTag))
-    s.exec(delete(StigFinding))
-    s.exec(delete(PoamEvidence))
-    # Scope-link M2M tables (Component / Asset / BoundarySegment) all carry an
-    # evidence_id FK with no ondelete; backfill may have populated them, so they
-    # must be cleared explicitly or the final delete(Evidence) fails under
-    # foreign_keys=ON.
-    s.exec(delete(EvidenceComponent))
-    s.exec(delete(EvidenceAsset))
-    s.exec(delete(EvidenceBoundary))
-    # Wipe sweep-token provenance too — a full evidence clear must leave no
-    # tokens behind pointing at now-deleted artifacts (see delete_one_evidence
-    # for the per-row rationale).
-    s.exec(
-        delete(BoundaryTokenSource).where(
-            BoundaryTokenSource.source_evidence_id.is_not(None)
+    affected_objective_ids: set[int] = set()
+    evidence_shown_ids: list[int] = []
+    for batch in chunked(evidence_ids):
+        affected_objective_ids.update(
+            s.exec(
+                select(EvidenceTag.objective_id)
+                .where(EvidenceTag.evidence_id.in_(batch))  # type: ignore[attr-defined]
+                .distinct()
+            ).all()
         )
+        evidence_shown_ids.extend(
+            s.exec(
+                select(AssessmentEvidenceShown.id).where(
+                    AssessmentEvidenceShown.evidence_id.in_(batch)  # type: ignore[attr-defined]
+                )
+            ).all()
+        )
+
+    for batch in chunked(evidence_shown_ids):
+        s.exec(
+            delete(AssessmentCitation).where(
+                AssessmentCitation.evidence_shown_id.in_(batch)  # type: ignore[attr-defined]
+            )
+        )
+
+    tag_count = 0
+    finding_count = 0
+    for batch in chunked(evidence_ids):
+        s.exec(
+            delete(AssessmentEvidenceShown).where(
+                AssessmentEvidenceShown.evidence_id.in_(batch)  # type: ignore[attr-defined]
+            )
+        )
+        result = s.exec(
+            delete(EvidenceTag).where(EvidenceTag.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        )
+        tag_count += getattr(result, "rowcount", 0) or 0
+        result = s.exec(
+            delete(StigFinding).where(StigFinding.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        )
+        finding_count += getattr(result, "rowcount", 0) or 0
+        s.exec(
+            delete(PoamEvidence).where(PoamEvidence.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        )
+        s.exec(
+            delete(EvidenceComponent).where(
+                EvidenceComponent.evidence_id.in_(batch)  # type: ignore[attr-defined]
+            )
+        )
+        s.exec(
+            delete(EvidenceAsset).where(EvidenceAsset.evidence_id.in_(batch))  # type: ignore[attr-defined]
+        )
+        s.exec(
+            delete(EvidenceBoundary).where(
+                EvidenceBoundary.evidence_id.in_(batch)  # type: ignore[attr-defined]
+            )
+        )
+        s.exec(
+            delete(BoundaryTokenSource).where(
+                BoundaryTokenSource.source_evidence_id.in_(batch)  # type: ignore[attr-defined]
+            )
+        )
+        s.exec(
+            Evidence.__table__.update()  # type: ignore[attr-defined]
+            .where(Evidence.superseded_by_id.in_(batch))  # type: ignore[attr-defined]
+            .values(superseded_by_id=None)
+        )
+        s.exec(delete(Evidence).where(Evidence.id.in_(batch)))  # type: ignore[attr-defined]
+
+    invalidated = invalidate_assessments_for_objectives(
+        s,
+        affected_objective_ids,
+        workbook_id=workbook_id,
     )
-    # Null the self-FK before bulk-delete so SQLite doesn't trip on the
-    # superseded_by_id chain mid-delete.
-    s.exec(
-        Evidence.__table__.update().values(superseded_by_id=None)  # type: ignore[attr-defined]
-    )
-    s.exec(delete(Evidence))
-    invalidated = invalidate_assessments_for_objectives(s, affected_objective_ids)
     s.commit()
 
     files_removed = 0
     if purge_text:
-        for p in text_paths:
+        for cached_path in text_paths:
             try:
-                if p.exists():
-                    p.unlink()
+                if cached_path.exists():
+                    cached_path.unlink()
                     files_removed += 1
             except OSError:
-                # Best-effort — locked file on Windows is a known nuisance,
-                # not worth failing the whole clear over.
                 pass
 
     return {
         "ok": True,
+        "workbook_id": workbook_id,
         "evidence_removed": evidence_count,
         "tags_removed": tag_count,
         "findings_removed": finding_count,
@@ -1124,7 +1164,9 @@ def delete_one_evidence(
         .values(superseded_by_id=None)
     )
     s.delete(ev)
-    invalidated = invalidate_assessments_for_objectives(s, affected_objective_ids)
+    invalidated = invalidate_assessments_for_objectives(
+        s, affected_objective_ids, workbook_id=ev.workbook_id
+    )
     s.commit()
 
     text_file_removed = False
@@ -1385,7 +1427,9 @@ def _retag_one(
 
     # Flag the objectives that LOST a tag. tag_evidence already flagged the
     # ones that GAINED a tag during its run.
-    invalidate_assessments_for_objectives(s, deleted_objective_ids)
+    invalidate_assessments_for_objectives(
+        s, deleted_objective_ids, workbook_id=ev.workbook_id
+    )
 
     return {
         "evidence_id": ev.id,
@@ -1639,7 +1683,9 @@ def add_manual_tag(
         )
     # The CCI's verdict was computed before this artifact landed — flag it stale
     # so the next assess sees the new evidence (mirrors tag_evidence's behavior).
-    invalidate_assessments_for_objectives(s, {body.objective_id})
+    invalidate_assessments_for_objectives(
+        s, {body.objective_id}, workbook_id=ev.workbook_id
+    )
     s.commit()
     return {"ok": True, "evidence_id": evidence_id, "objective_id": body.objective_id}
 
@@ -1656,6 +1702,9 @@ def remove_manual_tag(
     human is undoing their OWN assertion, not the automation's). Invalidates the
     CCI's assessment so the verdict re-derives without the manual evidence.
     """
+    ev = s.get(Evidence, evidence_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidence not found")
     rows = s.exec(
         select(EvidenceTag)
         .where(EvidenceTag.evidence_id == evidence_id)
@@ -1667,7 +1716,9 @@ def remove_manual_tag(
         s.delete(r)
         removed += 1
     if removed:
-        invalidate_assessments_for_objectives(s, {objective_id})
+        invalidate_assessments_for_objectives(
+            s, {objective_id}, workbook_id=ev.workbook_id
+        )
         s.commit()
     return {"ok": True, "removed": removed}
 

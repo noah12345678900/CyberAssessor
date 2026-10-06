@@ -79,6 +79,7 @@ from ..models import (
     Objective,
     OdpAssignment,
     OdpAuditLog,
+    Workbook,
 )
 from .base import BaselineApplyResult
 
@@ -94,15 +95,23 @@ class CcisWorkbookBaselineSource:
         *,
         name: str | None = None,
         system_id: int | None = None,
+        workbook_id: int | None = None,
     ) -> None:
         self.workbook_path = Path(workbook_path)
         self.name = name or self.workbook_path.stem
         self.system_id = system_id
+        self.workbook_id = workbook_id
 
     def apply(self, session: Session, *, framework_id: int) -> BaselineApplyResult:
         framework = session.get(Framework, framework_id)
         if framework is None:
             raise ValueError(f"Framework id={framework_id} does not exist")
+
+        workbook_id = self.workbook_id
+        if workbook_id is None:
+            workbook_id = session.exec(
+                select(Workbook.id).where(Workbook.path == str(self.workbook_path))
+            ).first()
 
         index = read_workbook_index(self.workbook_path)
 
@@ -312,10 +321,11 @@ class CcisWorkbookBaselineSource:
         odp_updated = 0
         if assignment_rows:
             existing_odps = {
-                (a.framework_version, a.control_id, a.odp_id, a.assigned_from): a
+                (a.control_id, a.odp_id, a.assigned_from): a
                 for a in session.exec(
                     select(OdpAssignment).where(
-                        OdpAssignment.framework_version == framework.framework_id
+                        OdpAssignment.framework_version == framework.framework_id,
+                        OdpAssignment.workbook_id == workbook_id,
                     )
                 ).all()
             }
@@ -352,7 +362,6 @@ class CcisWorkbookBaselineSource:
                 # list for this control (then render abstains on count).
                 slot_total = len(ctl_slots) if ctl_slots else None
                 key = (
-                    framework.framework_id,
                     ctl_id,
                     row.odp_id,
                     row.assigned_from,
@@ -364,6 +373,7 @@ class CcisWorkbookBaselineSource:
                         # the prev_value snapshot needs the unmodified row.
                         session.add(
                             OdpAuditLog(
+                                workbook_id=workbook_id,
                                 framework_version=framework.framework_id,
                                 control_id=ctl_id,
                                 odp_id=row.odp_id,
@@ -390,6 +400,7 @@ class CcisWorkbookBaselineSource:
                 else:
                     session.add(
                         OdpAssignment(
+                            workbook_id=workbook_id,
                             framework_version=framework.framework_id,
                             control_id=ctl_id,
                             odp_id=row.odp_id,
@@ -450,7 +461,8 @@ class CcisWorkbookBaselineSource:
             # values haven't shifted.
             all_rows = session.exec(
                 select(OdpAssignment).where(
-                    OdpAssignment.framework_version == framework.framework_id
+                    OdpAssignment.framework_version == framework.framework_id,
+                    OdpAssignment.workbook_id == workbook_id,
                 )
             ).all()
             # Group workbook-sourced rows by control_id for positional

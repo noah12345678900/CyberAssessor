@@ -858,6 +858,7 @@ def get_control(
                 c.control_id,
                 c.statement,
                 bold_format="markdown",
+                workbook_id=workbook_id,
             )
     return {
         "id": c.id,
@@ -952,7 +953,11 @@ def list_program_controls_for_control(
 
 
 @router.get("/{control_id}/odp-history")
-def get_odp_history(control_id: int, s: Session = Depends(get_session)) -> list[dict]:
+def get_odp_history(
+    control_id: int,
+    workbook_id: int | None = None,
+    s: Session = Depends(get_session),
+) -> list[dict]:
     """All :class:`OdpAuditLog` rows for this control, grouped per ODP.
 
     Empty list when no audit rows exist (typical for first-ingest
@@ -974,7 +979,9 @@ def get_odp_history(control_id: int, s: Session = Depends(get_session)) -> list[
     fw = s.get(Framework, c.framework_id) if c.framework_id else None
     if fw is None:
         return []
-    return fetch_odp_history(s, fw.framework_id, c.control_id)
+    return fetch_odp_history(
+        s, fw.framework_id, c.control_id, workbook_id=workbook_id
+    )
 
 
 @router.get("/{control_id}/assessments")

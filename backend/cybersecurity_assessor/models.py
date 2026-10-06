@@ -1276,7 +1276,7 @@ class BaselineControl(SQLModel, table=True):
 
 
 class OdpAssignment(SQLModel, table=True):
-    """Organization-Defined Parameter value, framework-scoped and provenance-tagged.
+    """Organization-Defined Parameter value, workbook-scoped and provenance-tagged.
 
     ODPs (e.g. ``{$37$}`` in Rev 4 or ``ac-02_odp.03`` in Rev 5) are stored
     as first-class rows here and resolved at *render time* — never baked
@@ -1286,11 +1286,10 @@ class OdpAssignment(SQLModel, table=True):
     migration. See ``memory/project_odp_architecture.md`` for the locked
     design and the three principles that govern this table.
 
-    **Composite PK** = ``(framework_version, control_id, odp_id, assigned_from)``.
-    Including ``assigned_from`` in the PK is deliberate: it lets multiple
-    overlays (workbook + CRM-provider + SSP-doc) coexist for the same ODP
-    without one collapsing the other. The assessor — not an inference
-    rule — chooses which row applies per SSP at render time.
+    Rows are unique on ``(workbook_id, framework_version, control_id, odp_id,
+    assigned_from)``. Including ``assigned_from`` lets multiple sources coexist
+    for the same ODP. A surrogate integer primary key keeps migrated legacy
+    ``workbook_id=NULL`` rows available as a compatibility fallback.
 
     ``framework_version`` is the canonical ``Framework.framework_id``
     string (e.g. ``"NIST-800-53r4"``) so a single column joins to both
@@ -1299,15 +1298,19 @@ class OdpAssignment(SQLModel, table=True):
     :class:`FrameworkEquivalence` work without forcing every overlay to
     materialize as a Framework row.
 
-    Indexed on ``(framework_version, control_id)`` because
-    ``resolve_odps()`` pulls every ODP for one control in a single query
-    on the hot render path.
+    Indexed on ``(workbook_id, framework_version, control_id)`` because
+    ``resolve_odps()`` pulls one workbook's ODPs for one control on the hot
+    render path.
     """
 
-    framework_version: str = Field(primary_key=True, index=True)
-    control_id: str = Field(primary_key=True, index=True)
-    odp_id: str = Field(primary_key=True)
-    assigned_from: str = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    workbook_id: int | None = Field(
+        default=None, foreign_key="workbook.id", index=True
+    )
+    framework_version: str = Field(index=True)
+    control_id: str = Field(index=True)
+    odp_id: str
+    assigned_from: str
     value: str
     # Where this row came from. One of:
     #   "CCIS-workbook" -- ingested from the Assignment Values tab
@@ -1353,6 +1356,23 @@ class OdpAssignment(SQLModel, table=True):
     # originating workbook).
     slot_total: int | None = None
 
+    __table_args__ = (
+        UniqueConstraint(
+            "workbook_id",
+            "framework_version",
+            "control_id",
+            "odp_id",
+            "assigned_from",
+            name="uq_odpassignment_workbook_key",
+        ),
+        Index(
+            "ix_odpassignment_workbook_fw_control",
+            "workbook_id",
+            "framework_version",
+            "control_id",
+        ),
+    )
+
 
 class FrameworkEquivalence(SQLModel, table=True):
     """Curated cross-framework ODP mapping (parameter-level crosswalk).
@@ -1395,6 +1415,9 @@ class OdpAuditLog(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    workbook_id: int | None = Field(
+        default=None, foreign_key="workbook.id", index=True
+    )
     framework_version: str = Field(index=True)
     control_id: str = Field(index=True)
     odp_id: str

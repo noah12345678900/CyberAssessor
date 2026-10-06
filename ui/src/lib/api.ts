@@ -4093,8 +4093,10 @@ export const api = {
    * this control, grouped per ODP id. Empty when no overwrites have
    * occurred — the UI's OdpHistoryCard hides itself in that case.
    */
-  getOdpHistory: (controlId: number) =>
-    request<OdpHistoryGroup[]>(`/api/controls/${controlId}/odp-history`),
+  getOdpHistory: (controlId: number, workbookId?: number) =>
+    request<OdpHistoryGroup[]>(
+      `/api/controls/${controlId}/odp-history${workbookId !== undefined ? `?workbook_id=${workbookId}` : ""}`,
+    ),
   listAssessments: (controlId: number, workbookId?: number) =>
     request<Assessment[]>(
       `/api/controls/${controlId}/assessments${workbookId ? `?workbook_id=${workbookId}` : ""}`,
@@ -4237,17 +4239,20 @@ export const api = {
   getActiveIngestJob: () =>
     request<IngestJob | null>("/api/evidence/ingest/jobs/active"),
   /**
-   * Wipe the entire evidence index (Evidence + EvidenceTag + StigFinding).
+   * Wipe one workbook's evidence index (Evidence + EvidenceTag + StigFinding).
    * Workbooks/assessments/catalog are NOT touched. Re-ingest to repopulate.
    */
-  clearEvidence: (purgeText = true) =>
+  clearEvidence: (workbookId: number, purgeText = true) =>
     request<{
       ok: boolean;
+      workbook_id: number;
       evidence_removed: number;
       tags_removed: number;
       findings_removed: number;
       text_files_removed: number;
-    }>(`/api/evidence?purge_text=${purgeText}`, { method: "DELETE" }),
+    }>(`/api/evidence?workbook_id=${workbookId}&purge_text=${purgeText}`, {
+      method: "DELETE",
+    }),
   /**
    * Delete one Evidence row + its dependent rows (tags / STIG findings /
    * POAM links) + the supersession back-pointer. Cached extracted text
