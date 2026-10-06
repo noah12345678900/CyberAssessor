@@ -35,7 +35,6 @@ guessing is what keeps the renderer from substituting the wrong value.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -51,6 +50,7 @@ from cybersecurity_assessor import models  # noqa: F401,E402 -- registers tables
 from cybersecurity_assessor.baselines.ccis_workbook import (  # noqa: E402
     CcisWorkbookBaselineSource,
 )
+from cybersecurity_assessor.controls.odp_render import resolve_odps  # noqa: E402
 from cybersecurity_assessor.excel.ccis_reader import _INDEX_CACHE  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
     Control,
@@ -59,6 +59,7 @@ from cybersecurity_assessor.models import (  # noqa: E402
     OdpAssignment,
     OdpAuditLog,
 )
+from cybersecurity_assessor.models import Workbook as WorkbookRecord  # noqa: E402
 
 FW_ID = "NIST-800-53r4"
 
@@ -538,3 +539,71 @@ def test_apply_without_assignment_values_tab_is_a_noop(
     assert notes["inserted"] == 0
     assert notes["updated"] == 0
     assert notes["rows_parsed"] == 0
+
+
+def test_two_workbooks_keep_distinct_odp_values(
+    tmp_path, session: Session, seeded_framework: Framework
+):
+    """Opening another system must not overwrite the first system's ODPs."""
+    parameterized = "Requires approvals by {$37$}."
+    path_a = _build_workbook(
+        tmp_path / "system-a.xlsx",
+        assignment_rows=[
+            {
+                "control_id": "AC-2",
+                "odp_id": 37,
+                "value": "System A value",
+                "assigned_from": "DoW Enterprise",
+            }
+        ],
+        parameterized=parameterized,
+    )
+    path_b = _build_workbook(
+        tmp_path / "system-b.xlsx",
+        assignment_rows=[
+            {
+                "control_id": "AC-2",
+                "odp_id": 37,
+                "value": "System B value",
+                "assigned_from": "DoW Enterprise",
+            }
+        ],
+        parameterized=parameterized,
+    )
+    workbook_a = WorkbookRecord(
+        path=str(path_a), filename=path_a.name, framework_id=seeded_framework.id
+    )
+    workbook_b = WorkbookRecord(
+        path=str(path_b), filename=path_b.name, framework_id=seeded_framework.id
+    )
+    session.add_all([workbook_a, workbook_b])
+    session.commit()
+    session.refresh(workbook_a)
+    session.refresh(workbook_b)
+
+    CcisWorkbookBaselineSource(path_a, workbook_id=workbook_a.id).apply(
+        session, framework_id=seeded_framework.id  # type: ignore[arg-type]
+    )
+    CcisWorkbookBaselineSource(path_b, workbook_id=workbook_b.id).apply(
+        session, framework_id=seeded_framework.id  # type: ignore[arg-type]
+    )
+
+    rows = session.exec(select(OdpAssignment)).all()
+    assert len(rows) == 2
+    assert {row.workbook_id for row in rows} == {workbook_a.id, workbook_b.id}
+    rendered_a, _ = resolve_odps(
+        session,
+        FW_ID,
+        "ac-2",
+        "Requires approvals by {$37$}.",
+        workbook_id=workbook_a.id,
+    )
+    rendered_b, _ = resolve_odps(
+        session,
+        FW_ID,
+        "ac-2",
+        "Requires approvals by {$37$}.",
+        workbook_id=workbook_b.id,
+    )
+    assert rendered_a == "Requires approvals by System A value."
+    assert rendered_b == "Requires approvals by System B value."

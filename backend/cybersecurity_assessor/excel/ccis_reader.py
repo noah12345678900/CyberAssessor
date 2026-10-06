@@ -63,13 +63,11 @@ _WORKING_SHEET_NAMES = [
 # from the Control statement.
 _ASSIGNMENT_VALUES_SHEET_NAMES = ["Assignment Values", "Assignment values"]
 
-# Data starts at row 7; stop after this many consecutive blank control-id
-# cells (the eMASS template pads with thousands of empty rows).
-_EMPTY_ROW_RUN_LIMIT = 5
-
-# Safety cap. Test Result Import templates are preallocated to 4,500 rows and
-# can contain well over 500 CCIs, so keep a little headroom above that shape.
-_MAX_DATA_ROW = 5000
+# Safety cap. Real eMASS templates are preallocated to 4,500 rows. We scan
+# internal blank runs instead of treating them as end-of-data, and reject a
+# worksheet whose declared range exceeds this bound rather than silently
+# truncating valid rows.
+_MAX_DATA_ROW = 50_000
 
 # Match "CCI-000015" / "CCI 15" — REQUIRES the CCI prefix.
 _CCI_PREFIXED_RE = re.compile(r"CCI[-\s]?(\d{1,7})", re.IGNORECASE)
@@ -311,6 +309,17 @@ def _coerce_date(raw: Any) -> datetime | None:
 _MAX_COL = COL_PREV_RESULTS  # furthest column we read (U = 21)
 
 
+def _bounded_max_row(sheet: Worksheet) -> int:
+    max_row = sheet.max_row or 6
+    if max_row > _MAX_DATA_ROW:
+        raise ValueError(
+            f"Worksheet {sheet.title!r} declares {max_row} rows, exceeding "
+            f"the supported safety limit of {_MAX_DATA_ROW}. Refusing to "
+            "silently truncate the workbook."
+        )
+    return max_row
+
+
 def _read_index_uncached(path: Path) -> CcisIndex:
     """The actual parse. Split out so the cached wrapper stays thin."""
     wb = load_workbook(path, read_only=True, data_only=True)
@@ -318,14 +327,14 @@ def _read_index_uncached(path: Path) -> CcisIndex:
     layout = _detect_sheet_layout(sheet)
 
     rows: list[CcisRow] = []
-    empty_run = 0
+    max_row = _bounded_max_row(sheet)
 
     # iter_rows in read-only mode streams the worksheet in a single pass.
     # Calling sheet.cell(row=R, column=C) instead is O(rows) per call because
     # openpyxl rescans XML each time — that pattern was costing ~123s on a
     # 319-row workbook. iter_rows drops it to ~1s.
     for row_idx, values in enumerate(
-        sheet.iter_rows(min_row=7, max_row=_MAX_DATA_ROW, max_col=_MAX_COL, values_only=True),
+        sheet.iter_rows(min_row=7, max_row=max_row, max_col=_MAX_COL, values_only=True),
         start=7,
     ):
         # Pad short rows so column indices below are safe.
@@ -335,11 +344,7 @@ def _read_index_uncached(path: Path) -> CcisIndex:
         control_raw = values[layout.control_col - 1]
         control_id = _normalize_control(control_raw)
         if not control_id:
-            empty_run += 1
-            if empty_run >= _EMPTY_ROW_RUN_LIMIT:
-                break
             continue
-        empty_run = 0
 
         rows.append(
             CcisRow(
@@ -597,8 +602,8 @@ def read_assignment_values(
     The parser:
       * Scans the first 10 rows for a header row containing recognizable
         column titles, then maps physical column indexes from the match.
-      * Reads data rows until ``_EMPTY_ROW_RUN_LIMIT`` blank
-        ``control_id`` cells in a row, mirroring WORKING SHEET behavior.
+      * Scans the complete bounded sheet range, allowing blank rows inside
+        the data without dropping later ODP assignments.
       * Dedups within the parsed list on
         ``(control_id, odp_id, assigned_from)`` so re-imports of an
         unchanged workbook don't fire the OdpAuditLog diff path on every
@@ -667,6 +672,7 @@ def read_assignment_values(
 
         data_start = header_row_idx + 1
         max_col = max(header_map.values())
+        max_row = _bounded_max_row(sheet)
 
         rows: list[AssignmentValueRow] = []
         seen_keys: set[tuple[str, str, str]] = set()
@@ -681,12 +687,10 @@ def read_assignment_values(
         # parameterized statement column didn't yield a slot order.
         fallback_orders: dict[str, list[str]] = {}
         fallback_seen: dict[str, set[str]] = {}
-        empty_run = 0
-
         for row_idx, values in enumerate(
             sheet.iter_rows(
                 min_row=data_start,
-                max_row=_MAX_DATA_ROW,
+                max_row=max_row,
                 max_col=max_col,
                 values_only=True,
             ),
@@ -698,11 +702,7 @@ def read_assignment_values(
             control_raw = values[header_map["control_id"] - 1]
             control_id = _normalize_control(control_raw)
             if not control_id:
-                empty_run += 1
-                if empty_run >= _EMPTY_ROW_RUN_LIMIT:
-                    break
                 continue
-            empty_run = 0
 
             # Capture the parameterized statement once per control. The
             # first row for a control wins; subsequent rows redundantly

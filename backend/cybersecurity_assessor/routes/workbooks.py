@@ -63,6 +63,8 @@ from ..models import (
     EvidenceTag,
     Framework,
     Objective,
+    OdpAssignment,
+    OdpAuditLog,
     OverrideEpoch,
     Poam,
     PoamEvidence,
@@ -158,7 +160,10 @@ def open_workbook(body: WorkbookCreate, s: Session = Depends(get_session)) -> di
                 status_code=400, detail=f"Framework id={framework_id} not loaded"
             )
         source = CcisWorkbookBaselineSource(
-            workbook_path=p, name=p.stem, system_id=wb.system_id
+            workbook_path=p,
+            name=p.stem,
+            system_id=wb.system_id,
+            workbook_id=wb.id,
         )
         result = source.apply(s, framework_id=framework_id)
         wb.framework_id = framework_id
@@ -774,6 +779,13 @@ def delete_workbook(workbook_id: int, s: Session = Depends(get_session)) -> dict
         delete(AutomationSchedule).where(AutomationSchedule.workbook_id == workbook_id)
     )
     counts["automation_schedules"] = getattr(r, "rowcount", 0) or 0
+
+    # ODP values and their overwrite history belong to this workbook. Delete
+    # them before the Workbook row so the assignment FK remains satisfied.
+    r = s.exec(delete(OdpAuditLog).where(OdpAuditLog.workbook_id == workbook_id))
+    counts["odp_audit_logs"] = getattr(r, "rowcount", 0) or 0
+    r = s.exec(delete(OdpAssignment).where(OdpAssignment.workbook_id == workbook_id))
+    counts["odp_assignments"] = getattr(r, "rowcount", 0) or 0
 
     # --- Evidence: DELETE (not unlink) ----------------------------------------
     # Evidence is 1:1 with a workbook by design — ingest ALWAYS stamps

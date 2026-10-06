@@ -346,7 +346,7 @@ export function ControlDetail() {
           sits at the top level alongside ProgramControlsCard, not inside
           the per-CCI center column. */}
       {/* id is narrowed past the early-return on control.data (line ~187); TS can't see it. */}
-      <OdpHistoryCard controlId={id!} />
+      <OdpHistoryCard controlId={id!} workbookId={workbookId} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left column: objectives list */}
@@ -2626,12 +2626,18 @@ function AuditTrailSection({ assessmentId }: { assessmentId: number | null }) {
  *   - Each ODP group shows the placeholder token as a sub-heading, then
  *     a small table: When (UTC) | Who | Was → Is, most-recent first.
  */
-function OdpHistoryCard({ controlId }: { controlId: number }) {
+function OdpHistoryCard({
+  controlId,
+  workbookId,
+}: {
+  controlId: number;
+  workbookId?: number;
+}) {
   const [open, setOpen] = useState(false);
   // Fetch eagerly so the count badge is accurate before expand — the
   // endpoint is a single indexed SELECT on (framework_version, control_id)
   // and returns [] cheaply when nothing has been overwritten.
-  const history = useOdpHistory(controlId);
+  const history = useOdpHistory(controlId, workbookId);
   const groups = history.data ?? [];
 
   // Plan: "Renders nothing when data.length === 0 — no empty card, no

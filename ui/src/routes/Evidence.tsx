@@ -338,14 +338,19 @@ export function Evidence() {
           <Button
             variant="outline"
             onClick={() => setConfirmClearOpen(true)}
-            disabled={clear.isPending || isIngesting || evidenceCount === 0}
+            disabled={
+              clear.isPending ||
+              isIngesting ||
+              activeWorkbookId === undefined ||
+              evidenceCount === 0
+            }
             className="text-destructive hover:text-destructive"
             title={
               isIngesting
                 ? "Wait for the in-flight ingest to finish — DELETE shares the same SQLite writer"
                 : evidenceCount === 0
                   ? "Nothing to clear"
-                  : `Wipe all ${evidenceCount} indexed artifacts`
+                  : `Wipe all ${evidenceCount} indexed artifacts from this workbook`
             }
           >
             {clear.isPending ? (
@@ -494,11 +499,12 @@ export function Evidence() {
       <Dialog open={confirmClearOpen} onOpenChange={setConfirmClearOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Clear all evidence?</DialogTitle>
+            <DialogTitle>Clear this workbook's evidence?</DialogTitle>
             <DialogDescription>
               Removes <strong>{evidenceCount}</strong> ingested artifact
               {evidenceCount === 1 ? "" : "s"} plus every tag and STIG finding
-              linked to them. Cached extracted text on disk is deleted too.
+              linked to them from the active workbook. Cached extracted text
+              is deleted when no other workbook references it.
               <br />
               <br />
               Workbooks, assessments, the catalog, and program-controls overlays
@@ -516,8 +522,8 @@ export function Evidence() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => clear.mutate()}
-              disabled={clear.isPending}
+              onClick={() => clear.mutate({ workbookId: activeWorkbookId! })}
+              disabled={clear.isPending || activeWorkbookId === undefined}
             >
               {clear.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

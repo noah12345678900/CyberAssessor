@@ -145,6 +145,7 @@ def resolve_odps(
     control_id: str,
     template: str,
     bold_format: BoldFormat | None = None,
+    workbook_id: int | None = None,
 ) -> tuple[str, list[str]]:
     """Substitute ODP placeholders in ``template`` with stored values.
 
@@ -189,12 +190,25 @@ def resolve_odps(
 
     # Single round-trip: pull every ODP for this (framework, control).
     # The ``ix_odpassignment_fw_control`` index covers this access path.
-    all_rows = session.exec(
-        select(OdpAssignment).where(
-            OdpAssignment.framework_version == framework_version,
-            OdpAssignment.control_id == control_id,
-        )
-    ).all()
+    base_query = select(OdpAssignment).where(
+        OdpAssignment.framework_version == framework_version,
+        OdpAssignment.control_id == control_id,
+    )
+    if workbook_id is None:
+        all_rows = session.exec(
+            base_query.where(OdpAssignment.workbook_id.is_(None))
+        ).all()
+    else:
+        all_rows = session.exec(
+            base_query.where(OdpAssignment.workbook_id == workbook_id)
+        ).all()
+        if not all_rows:
+            # Legacy rows created before v2.1.5 have no workbook owner. Use
+            # them only until this workbook is re-imported and creates scoped
+            # rows; never mix legacy values into a partially scoped control.
+            all_rows = session.exec(
+                base_query.where(OdpAssignment.workbook_id.is_(None))
+            ).all()
 
     # Group by odp_id for {$N$}/bare-Rev5 lookup, AND by oscal_param_id
     # for the OSCAL wrapper lookup. Both views built from one query.
@@ -358,6 +372,7 @@ def fetch_odp_history(
     session: Session,
     framework_version: str,
     control_id: str,
+    workbook_id: int | None = None,
 ) -> list[dict]:
     """Return every :class:`OdpAuditLog` row for one control, grouped per ODP.
 
@@ -406,12 +421,20 @@ def fetch_odp_history(
     construction. In-memory regroup matches the SAR pattern at
     ``_appendix_crm_short_circuits`` (single sort + ``defaultdict``).
     """
-    rows = session.exec(
-        select(OdpAuditLog).where(
-            OdpAuditLog.framework_version == framework_version,
-            OdpAuditLog.control_id == control_id,
-        )
-    ).all()
+    query = select(OdpAuditLog).where(
+        OdpAuditLog.framework_version == framework_version,
+        OdpAuditLog.control_id == control_id,
+    )
+    if workbook_id is None:
+        rows = session.exec(query.where(OdpAuditLog.workbook_id.is_(None))).all()
+    else:
+        rows = session.exec(
+            query.where(OdpAuditLog.workbook_id == workbook_id)
+        ).all()
+        if not rows:
+            rows = session.exec(
+                query.where(OdpAuditLog.workbook_id.is_(None))
+            ).all()
 
     if not rows:
         return []

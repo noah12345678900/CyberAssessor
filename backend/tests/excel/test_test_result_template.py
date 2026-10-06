@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from cybersecurity_assessor.excel.ccis_reader import (
@@ -115,3 +116,34 @@ def test_writer_updates_template_assessment_columns(tmp_path):
         )
     finally:
         wb.close()
+
+
+def test_reader_keeps_rows_after_internal_blank_run(tmp_path):
+    _INDEX_CACHE.clear()
+    path = _build_template(tmp_path / "gapped.xlsx", row_count=1)
+    wb = load_workbook(path)
+    ws = wb["Template"]
+    ws.cell(row=14, column=1, value="AC-2")
+    ws.cell(row=14, column=7, value="AC-2.1")
+    ws.cell(row=14, column=8, value=15)
+    wb.save(path)
+
+    index = read_workbook_index(path)
+    assert [row.excel_row for row in index.rows] == [7, 14]
+    assert index.rows[-1].cci_id == "CCI-000015"
+
+
+def test_reader_rejects_sheet_beyond_safety_limit(tmp_path, monkeypatch):
+    _INDEX_CACHE.clear()
+    monkeypatch.setattr(
+        "cybersecurity_assessor.excel.ccis_reader._MAX_DATA_ROW", 20
+    )
+    path = _build_template(tmp_path / "oversized.xlsx", row_count=1)
+    wb = load_workbook(path)
+    ws = wb["Template"]
+    ws.cell(row=21, column=1, value="AC-2")
+    ws.cell(row=21, column=8, value=15)
+    wb.save(path)
+
+    with pytest.raises(ValueError, match="Refusing to silently truncate"):
+        read_workbook_index(path)

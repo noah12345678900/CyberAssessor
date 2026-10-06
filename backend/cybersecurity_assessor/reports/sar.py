@@ -478,6 +478,7 @@ def _gather(session: Session, workbook_id: int) -> _SarData:
                         c.control_id,
                         c.statement,
                         bold_format="html",
+                        workbook_id=workbook_id,
                     )
                 except Exception:
                     # Render-time substitution is best-effort; never let a
@@ -700,16 +701,30 @@ def _gather(session: Session, workbook_id: int) -> _SarData:
     # Skipped entirely when the workbook has no framework (no point of
     # comparison) or when the audit table is empty for this framework.
     if framework is not None and framework.framework_id:
+        odp_query = select(OdpAuditLog).where(
+            OdpAuditLog.framework_version == framework.framework_id
+        )
         odp_rows = list(
             session.exec(
-                select(OdpAuditLog)
-                .where(OdpAuditLog.framework_version == framework.framework_id)
+                odp_query.where(OdpAuditLog.workbook_id == workbook_id)
                 .order_by(
                     OdpAuditLog.control_id,
                     OdpAuditLog.when.desc(),  # type: ignore[attr-defined]
                 )
             ).all()
         )
+        if not odp_rows:
+            # Preserve pre-v2.1.5 history until this workbook records its first
+            # scoped overwrite. Legacy rows cannot be safely assigned during
+            # migration because they did not retain a workbook identifier.
+            odp_rows = list(
+                session.exec(
+                    odp_query.where(OdpAuditLog.workbook_id.is_(None)).order_by(
+                        OdpAuditLog.control_id,
+                        OdpAuditLog.when.desc(),  # type: ignore[attr-defined]
+                    )
+                ).all()
+            )
         for r in odp_rows:
             data.odp_audit_events.append((
                 r.control_id,

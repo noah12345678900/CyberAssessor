@@ -162,8 +162,8 @@ export const qk = {
   // Append-only OdpAuditLog rows for one control, grouped per ODP. Shares the
   // `["control", id, ...]` prefix so a future workbook re-ingest mutation can
   // wildcard-invalidate all per-control caches in one shot.
-  odpHistory: (controlId: number) =>
-    ["control", controlId, "odp-history"] as const,
+  odpHistory: (controlId: number, workbookId?: number) =>
+    ["control", controlId, "odp-history", { workbook: workbookId ?? null }] as const,
   workbooks: ["workbooks"] as const,
   workbookSummary: (id: number) => ["workbook", id, "summary"] as const,
   workbookControlStatus: (id: number) => ["workbook", id, "control-status"] as const,
@@ -400,10 +400,15 @@ export const useProgramControlsForControl = (
  * and overlays that haven't yet been overwritten) — the consuming card hides
  * itself on empty rather than rendering a "(none)" placeholder.
  */
-export const useOdpHistory = (controlId: number | undefined) =>
+export const useOdpHistory = (
+  controlId: number | undefined,
+  workbookId?: number,
+) =>
   useQuery<OdpHistoryGroup[]>({
-    queryKey: controlId ? qk.odpHistory(controlId) : ["control", "none", "odp-history"],
-    queryFn: () => api.getOdpHistory(controlId!),
+    queryKey: controlId
+      ? qk.odpHistory(controlId, workbookId)
+      : ["control", "none", "odp-history"],
+    queryFn: () => api.getOdpHistory(controlId!, workbookId),
     enabled: !!controlId,
   });
 
@@ -1915,7 +1920,11 @@ export const useActiveIngestJob = () =>
 type ClearEvidenceResult = Awaited<ReturnType<typeof api.clearEvidence>>;
 
 export const useClearEvidence = (
-  opts?: UseMutationOptions<ClearEvidenceResult, Error, { purgeText?: boolean } | void>,
+  opts?: UseMutationOptions<
+    ClearEvidenceResult,
+    Error,
+    { workbookId: number; purgeText?: boolean }
+  >,
 ) => {
   const qc = useQueryClient();
   // Pull `onSuccess` out before spreading so the caller's handler (toast,
@@ -1925,7 +1934,7 @@ export const useClearEvidence = (
   // the Evidence table sat on stale data until the user reloaded.
   const { onSuccess: callerOnSuccess, ...restOpts } = opts ?? {};
   return useMutation({
-    mutationFn: (vars) => api.clearEvidence(vars?.purgeText ?? true),
+    mutationFn: (vars) => api.clearEvidence(vars.workbookId, vars.purgeText ?? true),
     ...restOpts,
     onSuccess: (...args) => {
       // Clear wipes Evidence + EvidenceTag + StigFinding in one shot, so every

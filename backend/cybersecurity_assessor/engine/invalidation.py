@@ -73,6 +73,7 @@ def invalidate_assessments_for_objectives(
     session: Session,
     objective_ids: Iterable[int],
     *,
+    workbook_id: int | None = None,
     reason: str = EVIDENCE_CHANGED_REASON,
 ) -> int:
     """Flag stale Assessment rows for objectives whose evidence picture changed.
@@ -107,5 +108,7 @@ def invalidate_assessments_for_objectives(
         )
         .values(needs_review=True, review_reason=reason)
     )
+    if workbook_id is not None:
+        stmt = stmt.where(Assessment.workbook_id == workbook_id)
     result = session.exec(stmt)  # type: ignore[arg-type]
     return getattr(result, "rowcount", 0) or 0

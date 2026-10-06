@@ -24,11 +24,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from cybersecurity_assessor.excel.ccis_reader import (
-    AssignmentValueRow,
     _ASSIGNMENT_VALUES_SHEET_NAMES,
+    AssignmentValueRow,
     read_assignment_values,
 )
 
@@ -351,3 +351,29 @@ def test_assignment_value_row_carries_excel_row_for_traceability(tmp_path):
     rows, _ = read_assignment_values(path)
     assert isinstance(rows[0], AssignmentValueRow)
     assert rows[0].excel_row == 2
+
+
+def test_assignment_reader_keeps_rows_after_internal_blank_run(tmp_path):
+    path = _make_av_workbook(
+        tmp_path / "gapped_assignment_values.xlsx",
+        [
+            {
+                "control_id": "AC-2",
+                "odp_id": 37,
+                "value": "ISSM",
+                "assigned_from": "DoW Enterprise",
+                "parameterized": "x {$37$} y",
+            }
+        ],
+    )
+    wb = load_workbook(path)
+    ws = wb[_ASSIGNMENT_VALUES_SHEET_NAMES[0]]
+    ws.cell(row=8, column=1, value="AC-2")
+    ws.cell(row=8, column=2, value=39)
+    ws.cell(row=8, column=3, value="24 hours")
+    ws.cell(row=8, column=4, value="DoW Enterprise")
+    wb.save(path)
+
+    rows, _ = read_assignment_values(path)
+    assert [row.excel_row for row in rows] == [2, 8]
+    assert [row.odp_id for row in rows] == ["{$37$}", "{$39$}"]
