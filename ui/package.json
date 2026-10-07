@@ -1,13 +1,13 @@
 {
   "name": "ui",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "private": true,
   "type": "module",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "dev:electron": "tsc -p electron/tsconfig.json && node scripts/launch-electron.mjs",
-    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
+    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json && node scripts/check-electron-entry.mjs",
     "preview": "vite preview",
     "package": "pnpm build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",

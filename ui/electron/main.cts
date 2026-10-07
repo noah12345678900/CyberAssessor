@@ -50,7 +50,7 @@ if (isDev) {
 }
 
 // Resolve the repo root from this file's compiled location:
-//   ui/dist-electron/main.js  ->  ../..  (two levels up to repo root)
+//   ui/dist-electron/main.cjs ->  ../..  (two levels up to repo root)
 // Off-by-one here is silent-killer territory on Windows: spawn() with a
 // non-existent cwd reports ENOENT on the *command*, not on cwd, which
 // masquerades as a "uv.exe not found" error and sends you chasing PATH bugs
@@ -356,7 +356,7 @@ async function createWindow() {
     titleBarStyle: "hidden",
     autoHideMenuBar: true, // belt-and-suspenders for Alt-key reveal
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       // Renderer sandbox ON (containment layer #8). Verified safe: preload.ts
@@ -439,6 +439,7 @@ async function createWindow() {
   } else {
     await mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
+  console.log("[main] renderer ready");
 }
 
 // IPC: preload calls this synchronously to populate window.ccis.sidecarUrl
