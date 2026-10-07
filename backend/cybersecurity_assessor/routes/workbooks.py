@@ -44,6 +44,7 @@ from ..models import (
     AutomationSchedule,
     Baseline,
     BaselineControl,
+    BaselineObjective,
     BaselineSourceType,
     BoundarySegment,
     BoundaryTokenSource,
@@ -1174,6 +1175,8 @@ def workbook_control_status(
     * ``Not Applicable`` — every assessed objective is Not Applicable
     * ``Mixed`` — assessed objectives include both Compliant and N/A,
       but no Non-Compliant
+    * ``Partially Assessed`` - one or more trusted objectives have verdicts,
+      but active objectives under the control remain unassessed
     * ``Needs Review`` — at least one objective is needs_review and there
       are no trusted Non-Compliant verdicts on the control. Surfaced so
       the operator can find pending-triage controls in the grid without
@@ -1185,18 +1188,43 @@ def workbook_control_status(
     trusted yet. They roll up into the separate ``needs_review`` count
     so the UI can render the amber-tinted control row.
     """
-    if not s.get(Workbook, workbook_id):
+    workbook = s.get(Workbook, workbook_id)
+    if not workbook:
         raise HTTPException(status_code=404, detail="Workbook not found")
 
+    # The primary baseline is the authoritative roster for this workbook.
+    # Count every active objective per control so a single deterministic
+    # assessment cannot make a multi-objective control look complete.
+    total_objectives_by_control: dict[int, int] = {}
+    if workbook.baseline_id is not None:
+        objective_totals = s.exec(
+            select(Control.id, func.count(BaselineObjective.id))
+            .join(Objective, Objective.control_id_fk == Control.id)
+            .join(
+                BaselineObjective,
+                BaselineObjective.objective_id == Objective.id,
+            )
+            .where(
+                BaselineObjective.baseline_id == workbook.baseline_id,
+                BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
+            )
+            .group_by(Control.id)
+        ).all()
+        total_objectives_by_control = {
+            control_id: int(total) for control_id, total in objective_totals
+        }
+
     # Count per (control_id, status, needs_review, rewrite_requested) in a
-    # single GROUP BY -- N+1-free. needs_review is the precision-over-recall
+    # single GROUP BY -- N+1-free. When a primary baseline is present, scope
+    # this query to the same active objective roster used for the denominator.
+    # needs_review is the precision-over-recall
     # gate: only trusted (needs_review=False) rows contribute to the verdict
     # rollup. rewrite_requested is the orthogonal citation-hygiene flag --
     # rows with rewrite_requested=True are TRUSTED verdicts that flow into
     # the compliant/non_compliant/na buckets normally; the count is exposed
     # alongside so the UI can render a "Cite refresh" pill without flipping
     # the verdict.
-    rows = s.exec(
+    assessment_stmt = (
         select(
             Control.id,
             Assessment.status,
@@ -1205,7 +1233,17 @@ def workbook_control_status(
             func.count(Assessment.id),
         )
         .join(Objective, Objective.control_id_fk == Control.id)
-        .join(Assessment, Assessment.objective_id == Objective.id)
+    )
+    if workbook.baseline_id is not None:
+        assessment_stmt = assessment_stmt.join(
+            BaselineObjective,
+            BaselineObjective.objective_id == Objective.id,
+        ).where(
+            BaselineObjective.baseline_id == workbook.baseline_id,
+            BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
+        )
+    rows = s.exec(
+        assessment_stmt.join(Assessment, Assessment.objective_id == Objective.id)
         .where(Assessment.workbook_id == workbook_id)
         .group_by(
             Control.id,
@@ -1248,12 +1286,14 @@ def workbook_control_status(
 
     out: list[dict] = []
     for ctrl_id, counts in by_control.items():
-        total = (
+        total_assessed = (
             counts["compliant"]
             + counts["non_compliant"]
             + counts["na"]
             + counts["needs_review"]
         )
+        total_objectives = total_objectives_by_control.get(ctrl_id, total_assessed)
+        unassessed = max(total_objectives - total_assessed, 0)
         if counts["non_compliant"] > 0:
             rollup = "Non-Compliant"
         elif counts["needs_review"] > 0 and (
@@ -1266,6 +1306,8 @@ def workbook_control_status(
             # the operator knows triage is outstanding before claiming
             # the whole control is Compliant or NA.
             rollup = "Needs Review"
+        elif unassessed > 0 and (counts["compliant"] + counts["na"] > 0):
+            rollup = "Partially Assessed"
         elif counts["compliant"] > 0 and counts["na"] == 0:
             rollup = "Compliant"
         elif counts["na"] > 0 and counts["compliant"] == 0:
@@ -1280,8 +1322,10 @@ def workbook_control_status(
                 "non_compliant": counts["non_compliant"],
                 "na": counts["na"],
                 "needs_review": counts["needs_review"],
+                "unassessed": unassessed,
+                "total_objectives": total_objectives,
                 "rewrites_requested": counts["rewrites_requested"],
-                "total_assessed": total,
+                "total_assessed": total_assessed,
             }
         )
     return out

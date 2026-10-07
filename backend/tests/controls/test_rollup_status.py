@@ -28,12 +28,13 @@ from cybersecurity_assessor.models import ComplianceStatus
 def _oa(
     *,
     code: str = "CCI-000001",
-    status: ComplianceStatus = ComplianceStatus.COMPLIANT,
+    status: ComplianceStatus | None = ComplianceStatus.COMPLIANT,
     narrative: str | None = None,
     needs_review: bool = False,
     inheritance_rule: str | None = None,
     crm_responsibility: str | None = None,
     crm_narrative: str | None = None,
+    has_assessment: bool = True,
 ) -> ObjectiveAssessment:
     return ObjectiveAssessment(
         objective_id=hash(code) & 0x7FFFFFFF,
@@ -44,12 +45,19 @@ def _oa(
         inheritance_rule=inheritance_rule,
         crm_responsibility=crm_responsibility,
         crm_narrative=crm_narrative,
+        has_assessment=has_assessment,
     )
 
 
 class TestRollupStatusSingleBucket:
     def test_empty_input_returns_empty_string(self):
         assert _rollup_status([]) == ""
+
+    def test_unassessed_is_not_synthesized_as_not_applicable(self):
+        out = _rollup_status([
+            _oa(code="CCI-1", status=None, has_assessment=False),
+        ])
+        assert out == "Not Assessed"
 
     def test_single_compliant_emits_just_token(self):
         """Single-bucket controls collapse to the bucket name alone so the

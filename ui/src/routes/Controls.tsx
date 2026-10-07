@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,6 +77,14 @@ import {
   useWorkbooks,
 } from "@/lib/queries";
 import { api, hasNativeBridge } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import {
+  matchesControlStatusFilter,
+  nextControlStatusFilter,
+  normalizeControlStatusFilter,
+  type RollupStatus,
+  type StatusFilter,
+} from "@/lib/controlStatusFilter";
 import type {
   Assessment,
   BaselineControlRow,
@@ -87,8 +95,6 @@ import type {
 } from "@/lib/api";
 import { useAssessBatchContext } from "@/contexts/AssessBatchContext";
 
-type RollupStatus = ControlStatusRollup["status"];
-
 interface ControlRow extends Control {
   status?: RollupStatus;
   status_counts?: {
@@ -96,6 +102,7 @@ interface ControlRow extends Control {
     non_compliant: number;
     na: number;
     needs_review: number;
+    unassessed: number;
     // v0.2 citation-hygiene: count of TRUSTED-verdict rows on this
     // control whose narrative still cites a superseded doc name. The row
     // exports normally; this count only powers a compact "Cite refresh"
@@ -155,7 +162,7 @@ export function Controls() {
   // toggled together to intersect, or independently.
   const [overlayCoveredOnly, setOverlayCoveredOnly] = useState(false);
   const [familyFilter, setFamilyFilter] = useState<string>("__all__");
-  const [statusFilter, setStatusFilter] = useState<string>("__all__");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("__all__");
   const [globalFilter, setGlobalFilter] = useState("");
   // Open when user clicks "Assess all in-scope" and there are CCIs that already
   // have a persisted Assessment row in the current scope — lets them choose
@@ -886,7 +893,10 @@ export function Controls() {
               })
             : []),
           ...overlayCells,
-          r.status ?? "",
+          r.status ??
+            (colLByControl.get(r.control_id)?.outcome === "na"
+              ? "Not Applicable"
+              : ""),
           counts.compliant,
           counts.non_compliant,
           counts.na,
@@ -1032,6 +1042,7 @@ export function Controls() {
               non_compliant: rollup.non_compliant,
               na: rollup.na,
               needs_review: rollup.needs_review,
+              unassessed: rollup.unassessed,
               rewrites_requested: rollup.rewrites_requested,
             }
           : undefined,
@@ -1045,11 +1056,13 @@ export function Controls() {
     if (overlayCoveredOnly && hasOverlays) {
       list = list.filter((c) => overlayCoveredControlIds.has(c.id));
     }
-    if (statusFilter !== "__all__") {
-      list = list.filter((c) =>
-        statusFilter === "__unassessed__" ? !c.status : c.status === statusFilter,
-      );
-    }
+    list = list.filter((c) =>
+      matchesControlStatusFilter(
+        c.status,
+        colLByControl.get(c.control_id)?.outcome === "na",
+        statusFilter,
+      ),
+    );
     return list;
   }, [
     controls.data,
@@ -1063,6 +1076,7 @@ export function Controls() {
     overlayCoveredControlIds,
     statusByControl,
     responsibilityByBaseline,
+    colLByControl,
   ]);
 
   // How many CCIs already have at least one Assessment row within the exact
@@ -1428,12 +1442,26 @@ export function Controls() {
             const flex = colLByControl.get(ctx.row.original.control_id);
             if (flex?.outcome === "na") {
               return (
-                <Badge
-                  variant="outline"
-                  title="Wholly Not Applicable per workbook Column N (rule 8b) — no assessment required"
+                <button
+                  type="button"
+                  className={cn(
+                    badgeVariants({ variant: "outline" }),
+                    "cursor-pointer aria-[pressed=true]:ring-2 aria-[pressed=true]:ring-ring aria-[pressed=true]:ring-offset-1",
+                  )}
+                  aria-label="Filter controls by Not Applicable"
+                  aria-pressed={statusFilter === "Not Applicable"}
+                  title={`Wholly Not Applicable per workbook Column N (rule 8b) - no assessment required. Click to ${
+                    statusFilter === "Not Applicable" ? "clear" : "filter by"
+                  } this status.`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setStatusFilter((current) =>
+                      nextControlStatusFilter(current, "Not Applicable"),
+                    );
+                  }}
                 >
                   Not Applicable
-                </Badge>
+                </button>
               );
             }
             return <span className="text-xs text-muted-foreground">—</span>;
@@ -1444,6 +1472,7 @@ export function Controls() {
           // count surfaces in the tooltip so reviewers can see abstain
           // pressure at a glance without expanding the row.
           const needsReview = counts?.needs_review ?? 0;
+          const unassessed = counts?.unassessed ?? 0;
           // v0.2 citation-hygiene: TRUSTED-verdict rows that still cite a
           // superseded doc name. Orthogonal to the verdict — the row
           // exports normally — but worth flagging so the next narrative
@@ -1455,6 +1484,7 @@ export function Controls() {
             : s;
           const tooltipParts = [baseTooltip];
           if (needsReview > 0) tooltipParts.push(`Needs Review ${needsReview}`);
+          if (unassessed > 0) tooltipParts.push(`Unassessed ${unassessed}`);
           if (rewritesRequested > 0)
             tooltipParts.push(`Cite refresh ${rewritesRequested}`);
           const tooltip = tooltipParts.join(" · ");
@@ -1463,14 +1493,29 @@ export function Controls() {
               ? "success"
               : s === "Non-Compliant"
                 ? "destructive"
-                : s === "Mixed" || s === "Needs Review"
+                : s === "Mixed" || s === "Needs Review" || s === "Partially Assessed"
                   ? "warning"
                   : "outline";
           return (
             <div className="flex flex-wrap items-center gap-1">
-              <Badge variant={variant} title={tooltip}>
+              <button
+                type="button"
+                className={cn(
+                  badgeVariants({ variant }),
+                  "cursor-pointer aria-[pressed=true]:ring-2 aria-[pressed=true]:ring-ring aria-[pressed=true]:ring-offset-1",
+                )}
+                aria-label={`Filter controls by ${s}`}
+                aria-pressed={statusFilter === s}
+                title={`${tooltip}. Click to ${
+                  statusFilter === s ? "clear" : "filter by"
+                } this status.`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setStatusFilter((current) => nextControlStatusFilter(current, s));
+                }}
+              >
                 {s}
-              </Badge>
+              </button>
               {rewritesRequested > 0 ? (
                 <Badge
                   variant="outline"
@@ -1495,6 +1540,7 @@ export function Controls() {
       visibleOverlays,
       crmOverlays,
       colLByControl,
+      statusFilter,
     ],
   );
 
@@ -1785,7 +1831,9 @@ export function Controls() {
               </label>
               <Select
                 value={statusFilter}
-                onValueChange={setStatusFilter}
+                onValueChange={(value) =>
+                  setStatusFilter(normalizeControlStatusFilter(value))
+                }
                 disabled={!workbookId}
               >
                 <SelectTrigger className="w-[170px]">
@@ -1797,7 +1845,8 @@ export function Controls() {
                   <SelectItem value="Non-Compliant">Non-Compliant</SelectItem>
                   <SelectItem value="Mixed">Mixed</SelectItem>
                   <SelectItem value="Needs Review">Needs Review</SelectItem>
-                  <SelectItem value="N/A">N/A</SelectItem>
+                  <SelectItem value="Partially Assessed">Partially Assessed</SelectItem>
+                  <SelectItem value="Not Applicable">N/A</SelectItem>
                   <SelectItem value="__unassessed__">Not assessed</SelectItem>
                 </SelectContent>
               </Select>
