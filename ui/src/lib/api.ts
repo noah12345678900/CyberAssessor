@@ -591,15 +591,25 @@ export interface PromotePendingResult {
  * from the trusted ``compliant`` / ``non_compliant`` / ``na`` buckets. When
  * ``needs_review > 0`` and no Non-Compliant exists, the backend rolls the
  * control up as ``"Needs Review"`` so the operator can find pending-triage
- * controls in the grid. See backend/routes/workbooks.py::workbook_control_status.
+ * controls in the grid. ``Partially Assessed`` means trusted verdicts exist
+ * but active objectives remain unassessed. See
+ * backend/routes/workbooks.py::workbook_control_status.
  */
 export interface ControlStatusRollup {
   control_id: number;
-  status: "Compliant" | "Non-Compliant" | "Not Applicable" | "Mixed" | "Needs Review";
+  status:
+    | "Compliant"
+    | "Non-Compliant"
+    | "Not Applicable"
+    | "Mixed"
+    | "Needs Review"
+    | "Partially Assessed";
   compliant: number;
   non_compliant: number;
   na: number;
   needs_review: number;
+  unassessed: number;
+  total_objectives: number;
   /**
    * v0.2 citation-hygiene count -- number of TRUSTED-verdict rows on this
    * control that carry `rewrite_requested=true`. Orthogonal to the verdict

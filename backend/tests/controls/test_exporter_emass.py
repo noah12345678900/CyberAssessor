@@ -48,6 +48,19 @@ def _make_template(path, sheet="Controls", acronyms=("AC-2", "AC-3", "AC-4", "AC
     pwb.save(str(path))
 
 
+def _write_wholly_na_source(path, control_id: str, cci_id: str) -> None:
+    workbook = PyXlWorkbook()
+    sheet = workbook.active
+    sheet.title = "WORKING SHEET"
+    sheet.cell(6, 1).value = "Required"
+    sheet.cell(6, 2).value = "Control Acronym"
+    sheet.cell(7, 1).value = "YES"
+    sheet.cell(7, 2).value = control_id
+    sheet.cell(7, 8).value = cci_id
+    sheet.cell(7, 14).value = "Not Applicable"
+    workbook.save(path)
+
+
 def _seed_assessments(assess, ctx):
     wb_id = ctx["workbook"].id
     objs = ctx["objectives"]
@@ -83,6 +96,70 @@ def _row_for(ws, acronym):
 
 
 class TestEmassExport:
+    def test_workbook_na_precedes_inherited_crm(
+        self, session, controls_catalog, tmp_path
+    ):
+        _write_wholly_na_source(
+            controls_catalog["path"], "AC-4", "CCI-001548"
+        )
+        tpl = tmp_path / "tpl_na_crm.xlsx"
+        out = tmp_path / "out_na_crm.xlsx"
+        _make_template(tpl, acronyms=("AC-4",))
+
+        export_controls_to_emass(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            template_path=str(tpl),
+            output_path=str(out),
+        )
+
+        ws = load_workbook(str(out))["Controls"]
+        status = ws.cell(_row_for(ws, "AC-4"), _status_col(ws)).value or ""
+        assert status == "Not Applicable"
+
+    def test_unassessed_objectives_are_not_synthesized_as_na(
+        self, session, controls_catalog, assess, tmp_path
+    ):
+        assess(
+            controls_catalog["workbook"].id,
+            controls_catalog["objectives"]["CCI-000015"].id,
+            ComplianceStatus.COMPLIANT,
+        )
+        tpl = tmp_path / "tpl_partial.xlsx"
+        out = tmp_path / "out_partial.xlsx"
+        _make_template(tpl, acronyms=("AC-2",))
+
+        export_controls_to_emass(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            template_path=str(tpl),
+            output_path=str(out),
+        )
+
+        ws = load_workbook(str(out))["Controls"]
+        status = ws.cell(_row_for(ws, "AC-2"), _status_col(ws)).value or ""
+        assert "Compliant:" in status
+        assert "Not Assessed:" in status
+        assert "Not Applicable" not in status
+
+    def test_fully_unassessed_control_exports_not_assessed(
+        self, session, controls_catalog, tmp_path
+    ):
+        tpl = tmp_path / "tpl_unassessed.xlsx"
+        out = tmp_path / "out_unassessed.xlsx"
+        _make_template(tpl, acronyms=("AC-2",))
+
+        export_controls_to_emass(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            template_path=str(tpl),
+            output_path=str(out),
+        )
+
+        ws = load_workbook(str(out))["Controls"]
+        status = ws.cell(_row_for(ws, "AC-2"), _status_col(ws)).value or ""
+        assert status == "Not Assessed"
+
     def test_writes_every_control_no_skip(
         self, session, controls_catalog, assess, tmp_path
     ):

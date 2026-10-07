@@ -45,6 +45,9 @@ from cybersecurity_assessor import models  # noqa: F401,E402  -- registers table
 from cybersecurity_assessor.db import get_session  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
     Assessment,
+    Baseline,
+    BaselineObjective,
+    BaselineSourceType,
     ComplianceStatus,
     Control,
     Framework,
@@ -89,8 +92,8 @@ def _assessment(
 def client(tmp_path: Path):
     """TestClient backed by an in-memory SQLite.
 
-    Seeds three Controls (AC-2, AC-3, AC-4), one Objective per Control,
-    and the Assessment fixture each scenario needs.
+    Seeds five Controls with active primary-baseline objectives and the
+    Assessment fixture each scenario needs.
     """
     engine = create_engine(
         "sqlite://",
@@ -115,7 +118,21 @@ def client(tmp_path: Path):
         s.commit()
         s.refresh(fw)
 
-        wb = Workbook(path=str(wb_path), filename=wb_path.name, framework_id=fw.id)
+        baseline = Baseline(
+            framework_id=fw.id,
+            name="Primary workbook baseline",
+            source_type=BaselineSourceType.CCIS_WORKBOOK,
+        )
+        s.add(baseline)
+        s.commit()
+        s.refresh(baseline)
+
+        wb = Workbook(
+            path=str(wb_path),
+            filename=wb_path.name,
+            framework_id=fw.id,
+            baseline_id=baseline.id,
+        )
         s.add(wb)
 
         # Each control rolls up across its OWN objectives (CCIs), one
@@ -126,8 +143,15 @@ def client(tmp_path: Path):
         # one-objective-stacked) fixture.
         controls: dict[str, Control] = {}
         objectives: dict[str, list[Objective]] = {}
-        obj_counts = {"AC-2": 3, "AC-3": 3, "AC-4": 1}
-        for cid in ("AC-2", "AC-3", "AC-4"):
+        obj_counts = {
+            "AC-2": 3,
+            "AC-3": 3,
+            "AC-4": 1,
+            "AC-5": 3,
+            "AC-6": 2,
+            "AC-7": 2,
+        }
+        for cid in ("AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7"):
             c = Control(framework_id=fw.id, control_id=cid, title=cid, family="AC")
             s.add(c)
             controls[cid] = c
@@ -149,6 +173,19 @@ def client(tmp_path: Path):
         for objs in objectives.values():
             for o in objs:
                 s.refresh(o)
+        for cid, objs in objectives.items():
+            for index, objective in enumerate(objs, start=1):
+                s.add(
+                    BaselineObjective(
+                        baseline_id=baseline.id,
+                        objective_id=objective.id,
+                        source_row=str(index),
+                        # AC-5.3 is historical and must not inflate the
+                        # active-objective denominator.
+                        is_deprecated=(cid == "AC-5" and index == 3),
+                    )
+                )
+        s.commit()
         s.refresh(wb)
         wb_id = wb.id
 
@@ -218,6 +255,46 @@ def client(tmp_path: Path):
             )
         )
 
+        # AC-5: one trusted Compliant assessment across two active objectives.
+        # The third baseline objective is deprecated and must not be counted.
+        s.add(
+            _assessment(
+                workbook_id=wb_id,
+                objective_id=objectives["AC-5"][0].id,
+                status=ComplianceStatus.COMPLIANT,
+                needs_review=False,
+            )
+        )
+
+        # AC-6: complete active coverage with one Compliant and one N/A.
+        s.add(
+            _assessment(
+                workbook_id=wb_id,
+                objective_id=objectives["AC-6"][0].id,
+                status=ComplianceStatus.COMPLIANT,
+                needs_review=False,
+            )
+        )
+        s.add(
+            _assessment(
+                workbook_id=wb_id,
+                objective_id=objectives["AC-6"][1].id,
+                status=ComplianceStatus.NOT_APPLICABLE,
+                needs_review=False,
+            )
+        )
+
+        # AC-7: complete active coverage with every objective N/A.
+        for objective in objectives["AC-7"]:
+            s.add(
+                _assessment(
+                    workbook_id=wb_id,
+                    objective_id=objective.id,
+                    status=ComplianceStatus.NOT_APPLICABLE,
+                    needs_review=False,
+                )
+            )
+
         s.commit()
 
     yield TestClient(app), wb_id
@@ -266,4 +343,51 @@ def test_rollup_clean_compliant(client) -> None:
     assert ac4["compliant"] == 1
     assert ac4["needs_review"] == 0
     assert ac4["non_compliant"] == 0
+    assert ac4["total_assessed"] == 1
+    assert ac4["total_objectives"] == 1
+    assert ac4["unassessed"] == 0
     assert ac4["status"] == "Compliant"
+
+
+def test_rollup_partial_when_active_objectives_remain_unassessed(client) -> None:
+    """One auto-Compliant-like result must not claim the whole control."""
+    tc, wb_id = client
+    r = tc.get(f"/api/workbooks/{wb_id}/control-status")
+    by_control = {row["control_id"]: row for row in r.json()}
+
+    ac5 = by_control[4]  # AC-5 -> id=4
+    assert ac5["compliant"] == 1
+    assert ac5["total_assessed"] == 1
+    assert ac5["total_objectives"] == 2
+    assert ac5["unassessed"] == 1
+    assert ac5["status"] == "Partially Assessed"
+
+
+def test_rollup_full_coverage_allows_final_mixed_status(client) -> None:
+    """Compliant/N/A can roll up to Mixed once every active CCI is covered."""
+    tc, wb_id = client
+    r = tc.get(f"/api/workbooks/{wb_id}/control-status")
+    by_control = {row["control_id"]: row for row in r.json()}
+
+    ac6 = by_control[5]  # AC-6 -> id=5
+    assert ac6["compliant"] == 1
+    assert ac6["na"] == 1
+    assert ac6["total_assessed"] == 2
+    assert ac6["total_objectives"] == 2
+    assert ac6["unassessed"] == 0
+    assert ac6["status"] == "Mixed"
+
+
+def test_rollup_full_na_coverage_is_not_applicable(client) -> None:
+    """Every active CCI being N/A produces a final Not Applicable control."""
+    tc, wb_id = client
+    r = tc.get(f"/api/workbooks/{wb_id}/control-status")
+    by_control = {row["control_id"]: row for row in r.json()}
+
+    ac7 = by_control[6]  # AC-7 -> id=6
+    assert ac7["compliant"] == 0
+    assert ac7["na"] == 2
+    assert ac7["total_assessed"] == 2
+    assert ac7["total_objectives"] == 2
+    assert ac7["unassessed"] == 0
+    assert ac7["status"] == "Not Applicable"
