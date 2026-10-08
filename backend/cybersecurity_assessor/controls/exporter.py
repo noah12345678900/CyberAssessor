@@ -41,6 +41,7 @@ from zipfile import BadZipFile
 from openpyxl.utils.exceptions import InvalidFileException
 from sqlmodel import Session, select
 
+from ..engine import rules
 from ..excel.ccis_reader import (
     _ccis_to_oscal_control_id,
     _normalize_control,
@@ -141,6 +142,15 @@ class ObjectiveAssessment:
     # separately so exports never turn ordinary unassessed rows into N/A.
     has_assessment: bool = True
     inferred_not_applicable: bool = False
+    column_d_blocks_not_applicable: bool = False
+
+
+@dataclass(frozen=True)
+class ColumnDAuthority:
+    """Authoritative applicability projection for one workbook CCI."""
+
+    not_applicable: bool
+    narrative: str | None = None
 
 
 @dataclass(frozen=True)
@@ -240,8 +250,10 @@ def _classify(oa: ObjectiveAssessment) -> tuple[str, str]:
     # Workbook scope exclusion is authoritative even when a CRM also marks
     # the control inherited/provider. Rule 8b is a statement that the control
     # does not apply to this system, not merely a missing implementation.
-    if oa.inferred_not_applicable or oa.inheritance_rule == "8b":
-        return "Not Applicable", "marked N/A in workbook Column N"
+    if oa.inferred_not_applicable or (
+        oa.inheritance_rule == "8b" and not oa.column_d_blocks_not_applicable
+    ):
+        return "Not Applicable", "marked N/A in workbook Column D"
 
     crm = (oa.crm_responsibility or "").lower() or None
     crm_op = (oa.crm_responsibility_onprem or "").lower() or None
@@ -267,7 +279,8 @@ def _classify(oa: ObjectiveAssessment) -> tuple[str, str]:
             return "Compliant", " | ".join(scope_reasons)
         if crm == "provider" or crm_op == "provider":
             return "Compliant", " | ".join(scope_reasons)
-        return "Not Applicable", " | ".join(scope_reasons) or "marked NA by CRM overlay"
+        if not oa.column_d_blocks_not_applicable:
+            return "Not Applicable", " | ".join(scope_reasons) or "marked NA by CRM overlay"
 
     if not oa.has_assessment or oa.status is None:
         return "Not Assessed", "assessment not completed"
@@ -283,6 +296,8 @@ def _classify(oa: ObjectiveAssessment) -> tuple[str, str]:
     if oa.status == ComplianceStatus.NON_COMPLIANT:
         return "Non-Compliant", _short_reason(oa.narrative_q) or "gap identified"
     if oa.status == ComplianceStatus.NOT_APPLICABLE:
+        if oa.column_d_blocks_not_applicable:
+            return "Not Assessed", "stored N/A conflicts with workbook Column D"
         return "Not Applicable", _short_reason(oa.narrative_q)
 
     return "Needs Review", "unknown status"
@@ -473,7 +488,7 @@ def _load_objectives_for_control(
     baseline: Baseline,
     control: Control,
     bc: BaselineControl,
-    inferred_not_applicable: bool = False,
+    column_d_authority: dict[str, ColumnDAuthority] | None = None,
 ) -> list[ObjectiveAssessment]:
     """Pull every objective for the control along with its latest
     Assessment for this workbook. Objectives without an assessment are
@@ -515,25 +530,51 @@ def _load_objectives_for_control(
             assessments_by_obj[a.objective_id] = a
 
     out: list[ObjectiveAssessment] = []
-    infer_missing_as_na = inferred_not_applicable and not assessments_by_obj
+    authority = column_d_authority or {}
     for obj, _bo in obj_rows:
         a = assessments_by_obj.get(obj.id)
+        column_d = authority.get(obj.objective_id)
+        is_column_d_na = bool(column_d and column_d.not_applicable)
+        column_d_blocks_na = bool(column_d and not column_d.not_applicable)
+        authoritative_narrative = column_d.narrative if column_d else None
+        stale_na = bool(
+            column_d_blocks_na
+            and a is not None
+            and a.status == ComplianceStatus.NOT_APPLICABLE
+        )
         out.append(
             ObjectiveAssessment(
                 objective_id=obj.id,
                 objective_code=obj.objective_id,
-                status=a.status if a else None,
-                narrative_q=a.narrative_q if a else None,
-                narrative_on_prem=a.narrative_on_prem if a else None,
-                narrative_cloud=a.narrative_cloud if a else None,
-                needs_review=bool(a.needs_review) if a else False,
-                inheritance_rule=a.inheritance_rule if a else None,
+                status=(
+                    ComplianceStatus.NOT_APPLICABLE
+                    if is_column_d_na
+                    else None if stale_na else a.status if a else None
+                ),
+                narrative_q=(
+                    authoritative_narrative
+                    if is_column_d_na
+                    else None if stale_na else a.narrative_q if a else None
+                ),
+                narrative_on_prem=(
+                    None if is_column_d_na or stale_na else a.narrative_on_prem if a else None
+                ),
+                narrative_cloud=(
+                    None if is_column_d_na or stale_na else a.narrative_cloud if a else None
+                ),
+                needs_review=(
+                    False if is_column_d_na or stale_na else bool(a.needs_review) if a else False
+                ),
+                inheritance_rule=(
+                    "8b" if is_column_d_na else None if column_d_blocks_na else a.inheritance_rule if a else None
+                ),
                 crm_responsibility=bc.responsibility,
                 crm_narrative=bc.responsibility_narrative,
                 crm_responsibility_onprem=bc.responsibility_onprem,
                 crm_narrative_onprem=bc.responsibility_onprem_narrative,
-                has_assessment=a is not None,
-                inferred_not_applicable=infer_missing_as_na and a is None,
+                has_assessment=is_column_d_na or (a is not None and not stale_na),
+                inferred_not_applicable=is_column_d_na,
+                column_d_blocks_not_applicable=column_d_blocks_na,
             )
         )
     # Stable order — eMASS reviewers expect CCI ids ascending.
@@ -621,7 +662,7 @@ def export_controls_to_emass(
         shutil.copyfile(src, dst)
 
     pairs = _load_in_scope_controls(session, baseline)
-    wholly_na_controls = _workbook_wholly_na_controls(wb.path)
+    column_d_na_by_control = _workbook_column_d_na_objectives(wb.path)
 
     rows_written = 0
     skipped: list[tuple[str, str]] = []
@@ -680,7 +721,10 @@ def export_controls_to_emass(
             baseline,
             control,
             bc,
-            inferred_not_applicable=canonical_control_id in wholly_na_controls,
+            column_d_authority=column_d_na_by_control.get(
+                canonical_control_id,
+                set(),
+            ),
         )
         key = _ccis_to_oscal_control_id(control.control_id)
         target_row = row_by_control.get(key)
@@ -867,33 +911,40 @@ def _working_control_matches_status(
     return rollup == status_filter
 
 
-def _workbook_wholly_na_controls(workbook_path: str | Path) -> set[str]:
-    """Return controls whose every workbook CCI is Column-N N/A.
+def _workbook_column_d_na_objectives(
+    workbook_path: str | Path,
+) -> dict[str, dict[str, ColumnDAuthority]]:
+    """Return Column-D applicability grouped by canonical control and CCI.
 
-    This mirrors the Controls page's ``col-l-status`` inference. A malformed or
-    unavailable source workbook must not block a working export; those controls
-    remain unassessed, matching the UI when its inference endpoint is empty.
+    This mirrors the Controls page's ``col-l-status`` inference. Export fails
+    closed when the source workbook is unavailable because otherwise a stale
+    persisted status could bypass the authoritative Column-D decision.
     """
     try:
         index = read_workbook_index(workbook_path)
-    except (BadZipFile, FileNotFoundError, InvalidFileException, OSError, ValueError):
-        return set()
+    except (BadZipFile, FileNotFoundError, InvalidFileException, OSError, ValueError) as exc:
+        raise ValueError(
+            f"Source workbook could not be read: {workbook_path}"
+        ) from exc
 
-    all_na: dict[str, bool] = {}
+    by_control: dict[str, dict[str, ColumnDAuthority]] = {}
     for row in index.by_cci().values():
         normalized = _normalize_control(row.control_id)
         if not normalized:
             continue
         control_id = _ccis_to_oscal_control_id(normalized)
-        is_na = (row.status or "").strip().casefold() in {
-            "not applicable",
-            "n/a",
-            "na",
-        }
-        all_na[control_id] = is_na if control_id not in all_na else (
-            all_na[control_id] and is_na
-        )
-    return {control_id for control_id, wholly_na in all_na.items() if wholly_na}
+        if row.cci_id:
+            is_na = rules.is_column_d_not_applicable(row)
+            decision = rules.classify_row(row) if is_na else None
+            by_control.setdefault(control_id, {})[row.cci_id] = ColumnDAuthority(
+                not_applicable=is_na,
+                narrative=(
+                    decision.narrative or "Not applicable - Column D."
+                    if decision is not None
+                    else None
+                ),
+            )
+    return by_control
 
 
 def export_controls_working_view(
@@ -925,7 +976,7 @@ def export_controls_working_view(
     fs = filter_state or ControlsFilterState()
     status_filter = _normalize_working_status_filter(fs.status)
     pairs = _load_in_scope_controls(session, baseline, family_filter=fs.family)
-    wholly_na_controls = _workbook_wholly_na_controls(wb.path)
+    column_d_na_by_control = _workbook_column_d_na_objectives(wb.path)
 
     if fs.search:
         needle = fs.search.lower()
@@ -976,7 +1027,10 @@ def export_controls_working_view(
             baseline,
             control,
             bc,
-            inferred_not_applicable=canonical_control_id in wholly_na_controls,
+            column_d_authority=column_d_na_by_control.get(
+                canonical_control_id,
+                set(),
+            ),
         )
         if not _working_control_matches_status(objectives, status_filter):
             continue

@@ -39,7 +39,7 @@ import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlmodel import Session, select
 
@@ -54,6 +54,9 @@ from ..models import (
     NarrativeClass,
 )
 from .crm_context import CrmContext
+
+if TYPE_CHECKING:
+    from .assessor import Decision
 
 # ---------------------------------------------------------------------------
 # Invalidation knobs

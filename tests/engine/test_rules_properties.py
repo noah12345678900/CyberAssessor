@@ -1,7 +1,7 @@
 """Property-based tests for the rules engine (SKILL.md Rule #8).
 
 These tests fill the gaps left by ``test_properties.py``, which already
-covers the rule-8a/8b/8c routing happy-paths and 8b-over-8a precedence.
+covers the rule-8a/8b/8c routing happy paths and Column-D precedence.
 
 Invariants pinned here:
 
@@ -28,11 +28,8 @@ Invariants pinned here:
   MUST NOT fire structural 8a — "Local" is the assertion that the org
   owns the implementation, which is the opposite of inheritance.
 
-* **8b in K/J beats structural 8a in L.** Even if col L names a clean
-  internal source, an 8b trigger in K or J must still route the row to
-  NOT_APPLICABLE_8B. The 8b-first ordering protects against the
-  historical LLM failure of writing Compliant against a CSP-implemented
-  row.
+* **Narrative text cannot create N/A.** Legacy scope-exclusion phrases in
+  Q/U do not override a structural inheritance result.
 
 * **Empty/None row text never raises.** Any combination of None and
   empty strings across guidance/procedures/inherited must produce a
@@ -45,20 +42,17 @@ import pytest
 
 hypothesis = pytest.importorskip("hypothesis")
 
-from hypothesis import assume, given  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
-
 from cybersecurity_assessor.engine.rules import (  # noqa: E402
     _COL_L_EXTERNAL_HINTS,
     _R8A_INHERITANCE_INTERNAL,
     _R8A_TRIGGERS,
-    _R8B_NA_SCOPE_PHRASES,
     AutoStatusVerdict,
     classify_row,
 )
 from cybersecurity_assessor.excel.ccis_reader import CcisRow  # noqa: E402
 from cybersecurity_assessor.models import ComplianceStatus  # noqa: E402
-
+from hypothesis import given  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Row builder — matches test_properties.py so test surface is consistent
@@ -68,6 +62,12 @@ _NEUTRAL_GUIDANCE = (
     "Automated mechanisms support the management of information system accounts."
 )
 _NEUTRAL_PROCEDURES = "Examine account management documentation; verify automation."
+_LEGACY_NA_NARRATIVE_PHRASES = (
+    "not required for goco",
+    "control does not apply",
+    "outside the authorization boundary",
+    "system has no wireless capability",
+)
 
 
 def _row(**overrides) -> CcisRow:
@@ -325,38 +325,31 @@ def test_col_l_yes_flag_without_source_is_unclear_8c(yes_flag: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8b in col Q/U beats structural 8a in L
+# Narrative-only scope language cannot override structural 8a
 # ---------------------------------------------------------------------------
 
 
 @given(
-    r8b=st.sampled_from(_R8B_NA_SCOPE_PHRASES),
+    na_phrase=st.sampled_from(_LEGACY_NA_NARRATIVE_PHRASES),
     col_l_source=st.sampled_from(
         ["DoW Enterprise", "Parent System", "DoD-level"]
     ),
 )
-def test_8b_in_qu_beats_structural_8a_in_l(r8b: str, col_l_source: str) -> None:
-    """NA scope-exclusion in col Q beats a clean internal-source col L.
-
-    v0.11.0 step order: the Q/U scope-exclusion recognizer (step 3a) runs
-    before the structural col-L branch (step 4). So a documented "not
-    applicable" in the human-authored rationale must flip the row to NA
-    even when col L names a clean internal inheritance source that would
-    otherwise fire structural 8a. This protects against the failure mode
-    where an inherited-from-parent col L silently overrides a reviewer's
-    explicit scope-out.
-    """
+def test_na_language_in_q_does_not_override_structural_8a(
+    na_phrase: str, col_l_source: str
+) -> None:
     row = _row(
         guidance=_NEUTRAL_GUIDANCE,
         procedures=_NEUTRAL_PROCEDURES,
-        results=f"{r8b}",
-        inherited=col_l_source,
+        results=na_phrase,
+        inherited="Remote",
+        remote_inheritance=col_l_source,
     )
     result = classify_row(row)
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.rule == "8b"
-    assert result.status is ComplianceStatus.NOT_APPLICABLE
-    assert result.trigger_column == "Q"
+    assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
+    assert result.rule == "8a"
+    assert result.status is ComplianceStatus.COMPLIANT
+    assert result.trigger_column == "M"
 
 
 # ---------------------------------------------------------------------------

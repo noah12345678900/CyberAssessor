@@ -33,7 +33,7 @@ def _write_wholly_na_ccis(path, control_id: str, cci_ids: list[str]) -> None:
         sheet.cell(offset, 1).value = "YES"
         sheet.cell(offset, 2).value = control_id
         sheet.cell(offset, 8).value = cci_id
-        sheet.cell(offset, 14).value = "Not Applicable"
+        sheet.cell(offset, 4).value = "Not Applicable"
     workbook.save(path)
 
 
@@ -246,6 +246,11 @@ class TestFilters:
         seeded["ac3_second"].status = ComplianceStatus.NOT_APPLICABLE
         session.add(seeded["ac3_second"])
         session.commit()
+        _write_wholly_na_ccis(
+            controls_catalog["path"],
+            "AC-3",
+            ["CCI-000214"],
+        )
         out_path = tmp_path / "status_mixed.xlsx"
 
         result = export_controls_working_view(
@@ -337,6 +342,11 @@ class TestFilters:
             seeded[key].status = ComplianceStatus.NOT_APPLICABLE
             session.add(seeded[key])
         session.commit()
+        _write_wholly_na_ccis(
+            controls_catalog["path"],
+            "AC-2",
+            ["CCI-000015", "CCI-000016"],
+        )
 
         for token in ("Not Applicable", "N/A", " n/a "):
             out_path = tmp_path / f"status_na_{token.strip().replace('/', '-')}.xlsx"
@@ -384,7 +394,7 @@ class TestFilters:
         )
         assert unassessed_result.rows_written == 0
 
-    def test_persisted_status_disables_column_n_inference_for_missing_objectives(
+    def test_column_d_na_overrides_stale_persisted_statuses_in_export(
         self, session, controls_catalog, assess, tmp_path
     ):
         _write_wholly_na_ccis(
@@ -403,16 +413,48 @@ class TestFilters:
             session=session,
             workbook_id=controls_catalog["workbook"].id,
             output_path=str(out_path),
-            filter_state=ControlsFilterState(status="Partially Assessed"),
+            filter_state=ControlsFilterState(status="Not Applicable"),
         )
 
         assert result.rows_written == 2
         ws = load_workbook(str(out_path)).active
         headers = [cell.value for cell in ws[1]]
         status_idx = headers.index("Status")
+        narrative_idx = headers.index("Narrative")
         data_rows = list(ws.iter_rows(min_row=2, values_only=True))
         assert {row[0] for row in data_rows} == {"AC-2"}
-        assert {row[status_idx] for row in data_rows} == {"Compliant", None}
+        assert {row[status_idx] for row in data_rows} == {"Not Applicable"}
+        assert all("Column D" in row[narrative_idx] for row in data_rows)
+        assert all("Stale Compliant" not in row[narrative_idx] for row in data_rows)
+
+    def test_non_na_column_d_suppresses_stale_persisted_na(
+        self, session, controls_catalog, assess, tmp_path
+    ):
+        assess(
+            controls_catalog["workbook"].id,
+            controls_catalog["objectives"]["CCI-001548"].id,
+            ComplianceStatus.NOT_APPLICABLE,
+            narrative="Stale N/A from a prior release.",
+        )
+
+        out_path = tmp_path / "stale-na-working.xlsx"
+        result = export_controls_working_view(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            output_path=str(out_path),
+        )
+
+        assert result.rows_written == 6
+        ws = load_workbook(str(out_path)).active
+        headers = [cell.value for cell in ws[1]]
+        status_idx = headers.index("Status")
+        ac4_rows = [
+            row
+            for row in ws.iter_rows(min_row=2, values_only=True)
+            if row[0] == "AC-4"
+        ]
+        assert len(ac4_rows) == 1
+        assert ac4_rows[0][status_idx] in (None, "")
 
 
 class TestPscColumn:

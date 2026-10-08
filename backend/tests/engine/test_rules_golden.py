@@ -59,6 +59,7 @@ from cybersecurity_assessor.models import ComplianceStatus  # noqa: E402
 
 def _row(
     *,
+    implementation_status: str | None = None,
     guidance: str | None = None,
     procedures: str | None = None,
     inherited: str | None = None,
@@ -83,7 +84,7 @@ def _row(
         control_id=control_id,
         ap_acronym=f"{control_id}.1",
         cci_id=cci_id,
-        implementation_status=None,
+        implementation_status=implementation_status,
         designation=None,
         narrative=narrative,
         definition=None,
@@ -103,29 +104,17 @@ def _row(
 
 
 # ---------------------------------------------------------------------------
-# Rule 8b (documented scope exclusion in col Q / U → Not Applicable)
+# Narrative text alone must not create Not Applicable
 # ---------------------------------------------------------------------------
 
 
-def test_8b_scope_exclusion_in_col_q():
-    """Col Q documents an explicit scope exclusion → NOT_APPLICABLE_8B, rule='8b'.
-
-    NA is recovered from the assessor's own rationale in col Q, NOT the DISA
-    template text in K/J. A CSP phrase in K/J is inert by design (see the
-    inheritance-Compliant tests below).
-    """
+def test_scope_exclusion_in_col_q_does_not_create_na():
     row = _row(results="Not required for GOCO; this CCI is out of the assessed boundary.")
 
     result = classify_row(row)
 
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.status is ComplianceStatus.NOT_APPLICABLE
-    assert result.rule == "8b"
-    assert result.trigger_column == "Q"
-    assert result.trigger_phrase == "not required for goco"
-    # Narrative is NA-class for the validator and names the source column.
-    assert "Not applicable —" in result.narrative
-    assert "Assessment Results (col Q)" in result.narrative
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
 @pytest.mark.parametrize(
@@ -137,56 +126,32 @@ def test_8b_scope_exclusion_in_col_q():
         "Not applicable because there are no removable media devices.",
     ],
 )
-def test_8b_broadened_scope_exclusion_phrases_fire(rationale):
-    """Backstop scope-exclusion phrasings in col Q → NA (col-N blank).
-
-    These catch the AC-18-style case where the assessor documented the
-    exclusion in col Q/U but left col N blank, so tier 2.5 cannot fire. The
-    phrases are high-precision (each asserts the control is out of boundary,
-    not merely unimplemented) and remain subject to the compliance guard.
-    """
+def test_scope_exclusion_phrases_in_col_q_do_not_create_na(rationale):
     row = _row(results=rationale)
     result = classify_row(row)
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.status is ComplianceStatus.NOT_APPLICABLE
-    assert result.rule == "8b"
-    assert result.trigger_column == "Q"
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
-def test_8b_broadened_phrase_still_suppressed_by_compliance_guard():
-    """A broadened NA phrase + a compliance claim in the same rationale → not NA.
-
-    Precision guard: if the assessor wrote 'control does not apply' AND
-    'is compliant' in the same cell, the compliance guard wins and the NA
-    lane stays inert (the row is not auto-NA'd).
-    """
+def test_scope_exclusion_plus_compliance_claim_does_not_create_na():
     row = _row(
         results="This control does not apply at the host layer; the enclave is compliant.",
     )
     result = classify_row(row)
-    assert result.verdict is not AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
-def test_8b_scope_exclusion_in_col_u_falls_through_from_q():
-    """Col Q empty but col U carries the scope rationale → 8b, trigger_column='U'."""
+def test_scope_exclusion_in_col_u_does_not_create_na():
     row = _row(previous_results="Per system scoping, this CCI is not applicable to the enclave.")
 
     result = classify_row(row)
 
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.rule == "8b"
-    assert result.trigger_column == "U"
-    assert result.trigger_phrase == "per system scoping, this cci is not applicable"
-    assert "Previous Results (col U)" in result.narrative
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
-def test_8b_scope_exclusion_suppressed_by_compliance_guard():
-    """A compliance claim in the SAME rationale blocks the NA lane (Compliant wins).
-
-    Guards row-261-class gold: the human wrote a scope phrase AND an explicit
-    compliance claim; the verdict is Compliant, so the deterministic layer must
-    NOT flip it to NA. With no other trigger the row falls through to the LLM.
-    """
+def test_scope_exclusion_with_compliance_language_stays_on_normal_path():
     row = _row(
         results=(
             "Not required per SSAA for the legacy segment, however compliance is satisfied "
@@ -333,6 +298,42 @@ def test_8c_bare_inherited_from_no_source():
 # ---------------------------------------------------------------------------
 
 
+def test_col_d_na_beats_col_k_auto_compliant():
+    """The eMASS applicability decision in Column D is authoritative."""
+    row = _row(
+        implementation_status="Not Applicable",
+        procedures="This CCI is automatically compliant; covered at the DoD level.",
+        previous_results="Not required for GMI CUI DIT Environment.",
+    )
+
+    result = classify_row(row)
+
+    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.status is ComplianceStatus.NOT_APPLICABLE
+    assert result.rule == "8b"
+    assert result.trigger_column == "D"
+    assert "Not required for GMI CUI DIT Environment" in result.narrative
+
+
+@pytest.mark.parametrize("raw", ["Not Applicable", "n/a", "NA", "  not applicable  "])
+def test_col_d_na_accepts_common_spellings(raw):
+    result = classify_row(_row(implementation_status=raw))
+    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
+    assert result.trigger_column == "D"
+
+
+@pytest.mark.parametrize("raw", [None, "Planned", "Implemented", "Inherited"])
+def test_non_na_column_d_values_leave_normal_rule_path_unchanged(raw):
+    row = _row(
+        implementation_status=raw,
+        procedures="Examine documented procedures and interview personnel.",
+        inherited="Local",
+    )
+    result = classify_row(row)
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
+
+
 def test_check_order_col_k_8a_beats_col_q_na():
     """Col K = DoD-auto Compliant AND col Q = scope-exclusion; col K wins.
 
@@ -355,20 +356,11 @@ def test_check_order_col_k_8a_beats_col_q_na():
 
 
 # ---------------------------------------------------------------------------
-# Tier 2.5 — pre-filled human "Not Applicable" in col N (authoritative)
+# Column N is historical output, not an applicability authority
 # ---------------------------------------------------------------------------
 
 
-def test_prefilled_col_n_na_short_circuits_to_not_applicable():
-    """Col N already carries a human 'Not Applicable' → NOT_APPLICABLE_8B.
-
-    The ONLY reliable NA signal is the workbook's own context. When the
-    assessor scoped a control out and recorded "Not Applicable" in col N
-    (Compliance Status, current cycle), the deterministic layer must respect
-    it verbatim rather than re-deriving and risking a false NC — the AC-18
-    failure mode (documented no-wireless scope exclusion the col-Q phrase
-    table missed). trigger_column='N' marks where the signal came from.
-    """
+def test_prefilled_col_n_na_does_not_create_na():
     row = _row(
         status="Not Applicable",
         results="System has no wireless capability; AC-18 is out of scope.",
@@ -377,41 +369,26 @@ def test_prefilled_col_n_na_short_circuits_to_not_applicable():
 
     result = classify_row(row)
 
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.status is ComplianceStatus.NOT_APPLICABLE
-    assert result.rule == "8b"
-    assert result.trigger_column == "N"
-    # Narrative leads with the validator's NA-class phrase and cites the col-Q
-    # rationale so the verdict is defensible.
-    assert result.narrative.startswith("Not applicable —")
-    assert "no wireless capability" in result.narrative
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
 @pytest.mark.parametrize("raw", ["Not Applicable", "n/a", "NA", "  not applicable  "])
-def test_prefilled_col_n_na_accepts_common_spellings(raw):
-    """'N/A', 'NA', 'Not Applicable' (any case / surrounding space) all fire."""
+def test_prefilled_col_n_na_spellings_do_not_create_na(raw):
     row = _row(status=raw)
     result = classify_row(row)
-    assert result.verdict is AutoStatusVerdict.NOT_APPLICABLE_8B
-    assert result.trigger_column == "N"
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
-def test_prefilled_col_n_na_falls_back_when_no_rationale():
-    """Col N = NA but no col Q/U rationale → generic boundary-exclusion narrative."""
+def test_prefilled_col_n_na_without_rationale_does_not_create_na():
     row = _row(status="Not Applicable")
     result = classify_row(row)
-    assert result.status is ComplianceStatus.NOT_APPLICABLE
-    assert result.narrative.startswith("Not applicable —")
-    assert "authorization boundary" in result.narrative
+    assert result.verdict is AutoStatusVerdict.NO_AUTO_RULE
+    assert result.status is None
 
 
-def test_col_k_8a_beats_prefilled_col_n_na():
-    """Col K DoD-auto Compliant outranks a stale col-N 'Not Applicable'.
-
-    Tier 2.5 is placed AFTER rule 8a so an "automatically compliant at the
-    DoD level" in col K still wins over a pre-filled NA — a stale NA must not
-    suppress the authoritative col-K verdict (feedback_colk_authoritative).
-    """
+def test_col_k_8a_is_unaffected_by_prefilled_col_n_na():
     row = _row(
         status="Not Applicable",
         procedures="This CCI is automatically compliant; covered at the DoD level.",

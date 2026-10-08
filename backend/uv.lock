@@ -617,7 +617,7 @@ wheels = [
 
 [[package]]
 name = "cybersecurity-assessor"
-version = "2.1.7"
+version = "2.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

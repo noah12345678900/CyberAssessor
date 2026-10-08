@@ -35,8 +35,6 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -67,6 +65,7 @@ from cybersecurity_assessor.models import (  # noqa: E402
     Framework,
     NarrativeClass,
     Objective,
+    VerdictSource,
     Workbook,
     WorkbookOverlay,
 )
@@ -281,6 +280,8 @@ def _make_row(
     cci_id: str | None = "CCI-000015",
     inherited: str | None = None,
     remote_inheritance: str | None = None,
+    implementation_status: str | None = None,
+    previous_results: str | None = None,
 ) -> CcisRow:
     """Minimal CcisRow — only fields the backfill touches need values.
 
@@ -297,7 +298,7 @@ def _make_row(
         control_id=control_id,
         ap_acronym=None,
         cci_id=cci_id,
-        implementation_status=None,
+        implementation_status=implementation_status,
         designation=None,
         narrative=None,
         definition=None,
@@ -312,7 +313,7 @@ def _make_row(
         previous_status=None,
         previous_date=None,
         previous_tester=None,
-        previous_results=None,
+        previous_results=previous_results,
     )
 
 
@@ -676,7 +677,7 @@ def test_skipped_existing_assessment_is_not_stomped(
     result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
 
     assert result.applied == 0
-    assert result.skipped_existing == 1
+    assert result.skipped_non_deterministic == 1
     # Original narrative still there, exactly one Assessment row.
     rows = session.exec(select(Assessment)).all()
     assert len(rows) == 1
@@ -735,7 +736,15 @@ def test_happy_path_writes_assessment_with_responsibility_mapping(
         responsibility=responsibility,
         narrative=f"CRM narrative for {responsibility}",
     )
-    _install_fake_reader(monkeypatch, [_make_row(excel_row=42)])
+    implementation_status = (
+        "Not Applicable"
+        if expected_status == ComplianceStatus.NOT_APPLICABLE
+        else "Planned"
+    )
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(excel_row=42, implementation_status=implementation_status)],
+    )
 
     result = backfill_workbook_crm(
         workbook_id=workbook.id, session=session, tester="unit-test"
@@ -759,6 +768,42 @@ def test_happy_path_writes_assessment_with_responsibility_mapping(
     assert a.tester == "unit-test"
     # CRM narrative passes through (no supersession map hits on this text).
     assert f"CRM narrative for {responsibility}" in a.narrative_q
+
+
+def test_explicit_planned_column_d_defers_crm_na_backfill(
+    session,
+    workbook,
+    framework,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+        excel_row=42,
+    )
+    _attach_crm(
+        session,
+        framework_id=framework.id,
+        workbook_id=workbook.id,
+        control_id_int=control_ac2.id,
+        responsibility="not_applicable",
+        narrative="CRM marks this scope not applicable.",
+    )
+    _install_fake_reader(
+        monkeypatch,
+        [_make_row(excel_row=42, implementation_status="Planned")],
+    )
+
+    result = backfill_workbook_crm(workbook_id=workbook.id, session=session)
+
+    assert result.applied == 0
+    assert result.skipped_non_deterministic == 1
+    assert session.exec(select(Assessment)).all() == []
 
 
 # ---------------------------------------------------------------------------
@@ -1431,11 +1476,11 @@ def test_self_heal_never_stomps_user_edited_row(
 
 
 # ---------------------------------------------------------------------------
-# Deterministic-RULE backfill (AC-18 col-N Not Applicable)
+# Deterministic-RULE backfill (Column D Not Applicable)
 # ---------------------------------------------------------------------------
 
 
-def test_rule_backfill_writes_col_n_not_applicable(
+def test_rule_backfill_ignores_col_n_not_applicable(
     session,
     workbook,
     framework,
@@ -1444,13 +1489,7 @@ def test_rule_backfill_writes_col_n_not_applicable(
     objective_ac2,
     monkeypatch,
 ):
-    """A workbook col-N 'Not Applicable' row surfaces via rule backfill.
-
-    The AC-18 bug: a control marked Not Applicable in the workbook had no
-    auto-writer (only CRM controls were backfilled), so it showed a blank chip.
-    backfill_workbook_rules classifies the row (rule_8b) and writes a parent
-    NOT_APPLICABLE assessment with no per-scope impl rows.
-    """
+    """Column N alone cannot create a Rule-8b assessment."""
     _attach_in_scope(
         session,
         baseline_id=primary_baseline.id,
@@ -1465,18 +1504,56 @@ def test_rule_backfill_writes_col_n_not_applicable(
     result = backfill_workbook_rules(workbook_id=workbook.id, session=session)
     session.commit()
 
-    assert result.applied == 1, f"expected one rule backfill; got {result.as_dict()}"
-    rows = session.exec(select(Assessment)).all()
-    assert len(rows) == 1
-    assert rows[0].status is ComplianceStatus.NOT_APPLICABLE
-    assert rows[0].inheritance_rule == "8b"
-    # No CRM slices → parent-only row.
-    assert session.exec(select(AssessmentImplementation)).all() == []
+    assert result.applied == 0
+    assert result.skipped_no_rule == 1
+    assert session.exec(select(Assessment)).all() == []
 
-    # Idempotent: re-run writes nothing.
-    again = backfill_workbook_rules(workbook_id=workbook.id, session=session)
-    assert again.applied == 0
-    assert again.skipped_existing == 1
+
+def test_rule_backfill_column_d_na_replaces_conflicting_existing_verdict(
+    session,
+    workbook,
+    primary_baseline,
+    control_ac2,
+    objective_ac2,
+    monkeypatch,
+):
+    """Column D is authoritative even over an older persisted Compliant row."""
+    _attach_in_scope(
+        session,
+        baseline_id=primary_baseline.id,
+        control_id_int=control_ac2.id,
+        objective_id_int=objective_ac2.id,
+    )
+    row = _make_row(
+        implementation_status="Not Applicable",
+        previous_results="Not required for GMI CUI DIT Environment.",
+    )
+    _install_fake_reader(monkeypatch, [row])
+    prior = Assessment(
+        workbook_id=workbook.id,
+        objective_id=objective_ac2.id,
+        excel_row=100,
+        status=ComplianceStatus.COMPLIANT,
+        tester="Prior Assessor",
+        narrative_q="Prior Compliant decision.",
+        narrative_class=NarrativeClass.COMPLIANCE_AFFIRMING,
+        verdict_source=VerdictSource.LLM_ACCEPT,
+        date_tested=datetime(2026, 1, 1, 9, 0, 0),
+    )
+    session.add(prior)
+    session.commit()
+
+    result = backfill_workbook_rules(workbook_id=workbook.id, session=session)
+    session.commit()
+
+    refreshed = session.exec(select(Assessment)).one()
+    assert result.applied == 1
+    assert result.overridden_by_column_d == 1
+    assert refreshed.status is ComplianceStatus.NOT_APPLICABLE
+    assert refreshed.inheritance_rule == "8b"
+    assert refreshed.verdict_source is VerdictSource.RULE_8B
+    assert refreshed.tester == "system"
+    assert "Not required for GMI CUI DIT Environment" in refreshed.narrative_q
 
 
 def test_rule_backfill_skips_no_auto_rule_rows(

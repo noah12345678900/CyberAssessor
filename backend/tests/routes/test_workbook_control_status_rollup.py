@@ -43,6 +43,7 @@ if str(_BACKEND) not in sys.path:
 
 from cybersecurity_assessor import models  # noqa: F401,E402  -- registers tables
 from cybersecurity_assessor.db import get_session  # noqa: E402
+from cybersecurity_assessor.excel.ccis_reader import CcisIndex, CcisRow  # noqa: E402
 from cybersecurity_assessor.models import (  # noqa: E402
     Assessment,
     Baseline,
@@ -56,6 +57,7 @@ from cybersecurity_assessor.models import (  # noqa: E402
     Workbook,
 )
 from cybersecurity_assessor.server import create_app  # noqa: E402
+from cybersecurity_assessor.routes import workbooks as workbooks_route  # noqa: E402
 
 
 def _utc() -> datetime:
@@ -89,7 +91,7 @@ def _assessment(
 
 
 @pytest.fixture
-def client(tmp_path: Path):
+def client(tmp_path: Path, monkeypatch):
     """TestClient backed by an in-memory SQLite.
 
     Seeds five Controls with active primary-baseline objectives and the
@@ -296,6 +298,49 @@ def client(tmp_path: Path):
             )
 
         s.commit()
+        objective_codes = {
+            control_id: [objective.objective_id for objective in control_objectives]
+            for control_id, control_objectives in objectives.items()
+        }
+
+    source_rows: list[CcisRow] = []
+    for control_id, control_objective_codes in objective_codes.items():
+        for index, objective_code in enumerate(control_objective_codes, start=1):
+            column_d = (
+                "Not Applicable"
+                if (control_id == "AC-6" and index == 2) or control_id == "AC-7"
+                else "Planned"
+            )
+            source_rows.append(
+                CcisRow(
+                    excel_row=index,
+                    required=True,
+                    control_id=control_id,
+                    ap_acronym=objective_code,
+                    cci_id=objective_code,
+                    implementation_status=column_d,
+                    designation=None,
+                    narrative=None,
+                    definition=None,
+                    guidance=None,
+                    procedures=None,
+                    inherited="Local",
+                    remote_inheritance=None,
+                    status=None,
+                    date_tested=None,
+                    tester=None,
+                    results=None,
+                    previous_status=None,
+                    previous_date=None,
+                    previous_tester=None,
+                    previous_results=None,
+                )
+            )
+    monkeypatch.setattr(
+        workbooks_route,
+        "read_workbook_index",
+        lambda path: CcisIndex(path, "WORKING SHEET", source_rows),
+    )
 
     yield TestClient(app), wb_id
     app.dependency_overrides.clear()
@@ -391,3 +436,63 @@ def test_rollup_full_na_coverage_is_not_applicable(client) -> None:
     assert ac7["total_objectives"] == 2
     assert ac7["unassessed"] == 0
     assert ac7["status"] == "Not Applicable"
+
+
+def test_column_d_na_overrides_stale_persisted_compliant_rollup(
+    client, monkeypatch
+) -> None:
+    """The grid projects Column D immediately, even before reopen repair."""
+    tc, wb_id = client
+    row = CcisRow(
+        excel_row=7,
+        required=True,
+        control_id="AC-4",
+        ap_acronym="AC-4.1",
+        cci_id="AC-4.1",
+        implementation_status="Not Applicable",
+        designation=None,
+        narrative=None,
+        definition=None,
+        guidance=None,
+        procedures="This CCI is automatically compliant.",
+        inherited="Local",
+        remote_inheritance=None,
+        status=None,
+        date_tested=None,
+        tester=None,
+        results=None,
+        previous_status=None,
+        previous_date=None,
+        previous_tester=None,
+        previous_results="Not required for this eMASS package.",
+    )
+    monkeypatch.setattr(
+        workbooks_route,
+        "read_workbook_index",
+        lambda path: CcisIndex(path, "WORKING SHEET", [row]),
+    )
+
+    response = tc.get(f"/api/workbooks/{wb_id}/control-status")
+    assert response.status_code == 200
+    by_control = {item["control_id"]: item for item in response.json()}
+
+    ac4 = by_control[3]
+    assert ac4["compliant"] == 0
+    assert ac4["na"] == 1
+    assert ac4["unassessed"] == 0
+    assert ac4["status"] == "Not Applicable"
+
+
+def test_control_status_fails_closed_when_source_workbook_is_missing(
+    client, monkeypatch
+) -> None:
+    tc, wb_id = client
+
+    def _missing(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(workbooks_route, "read_workbook_index", _missing)
+
+    response = tc.get(f"/api/workbooks/{wb_id}/control-status")
+    assert response.status_code == 410
+    assert "Source workbook not found" in response.json()["detail"]

@@ -876,7 +876,7 @@ def plan_implementations(
             # defends against exists *only* when the control verdict is
             # COMPLIANT — that is the one case where an evidenced cloud could
             # rubber-stamp an unassessed on-prem footprint. For a control the
-            # owner attested NOT_APPLICABLE (col-N / rule 8b) or that came back
+            # owner attested NOT_APPLICABLE (col-D/N / rule 8b) or that came back
             # NON_COMPLIANT, the synthesized on-prem slice must MIRROR that
             # verdict (NA stays NA, NC stays NC) — falling through to the
             # status=decision.status path below. Before this gate the guard
@@ -1358,6 +1358,7 @@ class Assessor:
         force_llm: bool = False,
     ) -> Decision:
         cci = row.cci_id or row.control_id
+        column_d_blocks_na = rules.column_d_blocks_not_applicable(row)
 
         # Resolve the per-scope CRM slices up front — needed BOTH for the
         # rule-8a scope-down gate below and for the Step 1.5 CRM logic. A
@@ -1524,8 +1525,8 @@ class Assessor:
                 and evidence_block.has_artifacts
             )
             would_auto_na = "inherited" not in specified
-            suppress_na_short_circuit = (
-                all_inheritable and would_auto_na and evidence_present
+            suppress_na_short_circuit = all_inheritable and would_auto_na and (
+                evidence_present or column_d_blocks_na
             )
             # Bug(a) — cloud inheritance must NOT serve as on-prem
             # implementation proof. User directive: "CRM can be referenced
@@ -1792,11 +1793,20 @@ class Assessor:
             # hit — never a correctness issue.
             cached = decision_cache.lookup(worker_cache_session, cache_fp)
             if cached is not None:
-                decision_cache.bump_hit(worker_cache_session, cached)
                 replayed = decision_cache.replay(cached)
-                if outcome is not None:
-                    outcome.cache_hit = True
-                return replayed
+                if (
+                    column_d_blocks_na
+                    and replayed.status is ComplianceStatus.NOT_APPLICABLE
+                ):
+                    # Evict only a legacy cache entry that contradicts the
+                    # workbook's explicit applicability decision.
+                    worker_cache_session.delete(cached)
+                    worker_cache_session.commit()
+                else:
+                    decision_cache.bump_hit(worker_cache_session, cached)
+                    if outcome is not None:
+                        outcome.cache_hit = True
+                    return replayed
 
         # ---- Step 2: LLM (with corrective context if UNCLEAR_8C) -------
         if self._llm is None:
@@ -2169,17 +2179,30 @@ class Assessor:
             # is correct — needs_review beats a confidently-wrong NA.
             if (
                 proposal.status == ComplianceStatus.NOT_APPLICABLE
-                and evidence_block is not None
-                and evidence_block.text is not None
-                and evidence_block.has_artifacts
-            ):
-                na_msg = (
-                    "Status Not Applicable is invalid here: the evidence bundle "
-                    "carries implementation artifacts, so this control is IN "
-                    "SCOPE and must be assessed as Compliant or Non-Compliant. "
-                    "N/A is reserved for controls whose applicability makes no "
-                    "sense in any boundary. Re-decide on the tagged evidence."
+                and (
+                    column_d_blocks_na
+                    or (
+                        evidence_block is not None
+                        and evidence_block.text is not None
+                        and evidence_block.has_artifacts
+                    )
                 )
+            ):
+                if column_d_blocks_na:
+                    na_msg = (
+                        "Status Not Applicable is invalid here: the eMASS "
+                        "workbook's authoritative Column D (Control "
+                        "Implementation Status) keeps this CCI in scope. "
+                        "Assess it as Compliant or Non-Compliant."
+                    )
+                else:
+                    na_msg = (
+                        "Status Not Applicable is invalid here: the evidence bundle "
+                        "carries implementation artifacts, so this control is IN "
+                        "SCOPE and must be assessed as Compliant or Non-Compliant. "
+                        "N/A is reserved for controls whose applicability makes no "
+                        "sense in any boundary. Re-decide on the tagged evidence."
+                    )
                 corrective_context = self._build_corrective_context(
                     row=row,
                     auto=auto,
@@ -2711,10 +2734,9 @@ class Assessor:
                 outcome.rejections.append(rej)
 
         accepted = result.ok
-        # Rule #8b is a DETERMINISTIC, human-authored N/A: col N already says
-        # "Not Applicable" and the formatter leads with the validator's NA
-        # phrase. But _format_prefilled_na_narrative inlines the assessor's
-        # own col-Q/U rationale excerpt, and if that borrowed text happens to
+        # Rule #8b is a deterministic N/A: Column D says "Not Applicable" and
+        # the formatter leads with the validator's N/A phrase. The formatter
+        # may include the assessor's col-Q/U rationale, and if that text happens to
         # carry a gap or strong-affirming phrase the rule-#11 multi-class
         # guard flips classified_as to AMBIGUOUS → ok=False → the N/A drops to
         # unresolved and vanishes from the "accepted" count (user's 11/13).

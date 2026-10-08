@@ -136,11 +136,10 @@ def test_rule_8a_bypasses_llm_entirely(make_row):
 
 
 def test_rule_8b_bypasses_llm_entirely(make_row):
-    # v0.11.0: NA (8b) fires only from an explicit scope-exclusion phrase in
-    # the human-authored rationale (col Q/U), never from CSP attribution in
-    # the DISA template text. A documented "not applicable per SDA control"
-    # in results is the canonical 8b shape.
-    row = make_row(results="Not applicable per SDA control.")
+    row = make_row(
+        implementation_status="Not Applicable",
+        results="Not applicable per SDA control.",
+    )
     llm = StubLlm(proposals=[])
     assessor = Assessor(llm=llm)
 
@@ -173,7 +172,7 @@ def test_decision_is_returned_for_every_row_shape(make_row):
     """Smoke test: assessor never raises on any of the four rule outcomes."""
     rows = [
         make_row(procedures="Automatically compliant per inheritance."),  # 8a
-        make_row(results="Not applicable per SDA control."),  # 8b (col Q)
+        make_row(implementation_status="Not Applicable"),  # 8b (Column D)
         make_row(procedures="Inherited from upstream.", inherited="Local"),  # 8c
         make_row(procedures="Examine docs.", inherited="Local"),  # no auto
     ]

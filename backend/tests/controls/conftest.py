@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook as OpenPyxlWorkbook
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -71,7 +72,6 @@ def controls_catalog(session, tmp_path):
     Returns a dict with workbook + framework + baseline + objective lookups.
     """
     p = tmp_path / "ctrls-test.xlsx"
-    p.write_bytes(b"fake-ccis-bytes")
 
     fw = Framework(name="NIST SP 800-53", version="Rev 5")
     session.add(fw)
@@ -96,6 +96,21 @@ def controls_catalog(session, tmp_path):
         ("AC-4", "AC", ["CCI-001548"]),
         ("AC-5", "AC", ["CCI-000038"]),
     ]
+    source_workbook = OpenPyxlWorkbook()
+    source_sheet = source_workbook.active
+    source_sheet.title = "WORKING SHEET"
+    source_sheet.cell(6, 1).value = "Required"
+    source_sheet.cell(6, 2).value = "Control Acronym"
+    source_row = 7
+    for control_id, _family, ccis in catalog_layout:
+        for cci in ccis:
+            source_sheet.cell(source_row, 1).value = "YES"
+            source_sheet.cell(source_row, 2).value = control_id
+            source_sheet.cell(source_row, 4).value = "Planned"
+            source_sheet.cell(source_row, 8).value = cci
+            source_sheet.cell(source_row, 12).value = "Local"
+            source_row += 1
+    source_workbook.save(p)
     controls: dict[str, Control] = {}
     objectives: dict[str, Objective] = {}
     for ctl_id, family, ccis in catalog_layout:

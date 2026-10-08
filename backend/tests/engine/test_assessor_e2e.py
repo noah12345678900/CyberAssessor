@@ -157,6 +157,7 @@ _PLACEHOLDER_EVIDENCE = (
 
 def _row(
     *,
+    implementation_status: str | None = None,
     procedures: str | None = None,
     guidance: str | None = None,
     inherited: str | None = None,
@@ -175,7 +176,7 @@ def _row(
         control_id=control_id,
         ap_acronym=f"{control_id}.1",
         cci_id=cci_id,
-        implementation_status=None,
+        implementation_status=implementation_status,
         designation=None,
         narrative=None,
         definition=definition,
@@ -227,37 +228,19 @@ def test_rule_8a_short_circuits_llm_not_called():
     assert stub.calls == []  # LLM never consulted
 
 
-def test_rule_8b_short_circuits_llm_not_called():
-    """Col Q scope-exclusion trigger → source='rule_8b', stub.calls == [].
-
-    Post-v0.11.0, rule_8b NA fires from a documented scope exclusion in the
-    assessor's own col Q/U rationale — NOT from CSP/provider language in the
-    DISA template text of col K/J (that path is inert by design; CSP
-    inheritance now maps to Compliant via rule_8a). See
-    test_rules_golden.py::test_8b_scope_exclusion_in_col_q.
-    """
+def test_col_q_scope_exclusion_does_not_bypass_normal_no_evidence_rule():
     row = _row(results="Not required for GOCO; this CCI is out of the assessed boundary.")
     stub = StubLlmClient([])
     assessor = Assessor(llm=stub)
 
     decision = assessor.assess(row)
 
-    assert decision.source == "rule_8b"
-    assert decision.rule == "8b"
-    assert decision.accepted is True
-    assert decision.status is ComplianceStatus.NOT_APPLICABLE
+    assert decision.source == "rule_no_evidence"
+    assert decision.status is ComplianceStatus.NON_COMPLIANT
     assert stub.calls == []
 
 
-def test_prefilled_col_n_na_short_circuits_to_not_applicable():
-    """Pre-filled human 'Not Applicable' in col N → rule_8b NA, no LLM call.
-
-    The AC-18 end-to-end pin: a control the assessor scoped out and recorded
-    as Not Applicable in col N must surface as NOT_APPLICABLE through the
-    deterministic layer, never reaching the LLM. This is the col-N tier 2.5
-    (test_rules_golden.py::test_prefilled_col_n_na_*) carried through the
-    orchestrator to a Decision.
-    """
+def test_prefilled_col_n_na_does_not_bypass_normal_no_evidence_rule():
     row = _row(
         control_id="AC-18",
         status="Not Applicable",
@@ -268,23 +251,114 @@ def test_prefilled_col_n_na_short_circuits_to_not_applicable():
 
     decision = assessor.assess(row)
 
-    assert decision.source == "rule_8b"
-    assert decision.rule == "8b"
-    assert decision.accepted is True
-    assert decision.status is ComplianceStatus.NOT_APPLICABLE
-    assert decision.narrative.startswith("Not applicable —")
+    assert decision.source == "rule_no_evidence"
+    assert decision.status is ComplianceStatus.NON_COMPLIANT
     assert stub.calls == []
 
 
-def test_prefilled_col_n_na_beats_no_evidence_non_compliant():
-    """N/A precedence: a col-N 'Not Applicable' wins even with an empty bundle.
+def test_column_d_na_short_circuits_before_rule_8a_and_llm():
+    row = _row(
+        implementation_status="Not Applicable",
+        procedures="This CCI is automatically compliant at the DoD level.",
+        previous_results="Not required for GMI CUI DIT Environment.",
+    )
+    stub = StubLlmClient([])
 
-    Owner decision (2026-06-17): "N/A takes precedence over NC with no
-    evidence; if N/A isn't applicable the next tier is NC." Here the row has
-    NO tagged evidence — the no-evidence short-circuit would mint a
-    deterministic Non-Compliant — but the pre-filled col-N NA fires FIRST
-    (rule #8 runs before Step 1.65), so the verdict is Not Applicable.
-    """
+    decision = Assessor(llm=stub).assess(row)
+
+    assert decision.source == "rule_8b"
+    assert decision.status is ComplianceStatus.NOT_APPLICABLE
+    assert decision.accepted is True
+    assert stub.calls == []
+
+
+def test_planned_column_d_still_reaches_llm_with_same_row():
+    proposal = LlmProposal(
+        status=ComplianceStatus.COMPLIANT,
+        narrative=(
+            "Examined USD00050010; confirmed via the account management plan "
+            "that required account controls are implemented."
+        ),
+        confidence=0.95,
+    )
+    row = _row(implementation_status="Planned")
+    stub = StubLlmClient([proposal])
+
+    decision = Assessor(llm=stub).assess(
+        row,
+        tagged_evidence=_PLACEHOLDER_EVIDENCE,
+    )
+
+    assert decision.source == "llm"
+    assert decision.status is ComplianceStatus.COMPLIANT
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["row"] is row
+    assert stub.calls[0]["row"].implementation_status == "Planned"
+
+
+def test_planned_column_d_rejects_llm_na_and_retries():
+    row = _row(implementation_status="Planned")
+    stub = StubLlmClient(
+        [
+            LlmProposal(
+                status=ComplianceStatus.NOT_APPLICABLE,
+                narrative="Not applicable because this is handled externally.",
+                confidence=0.95,
+            ),
+            LlmProposal(
+                status=ComplianceStatus.COMPLIANT,
+                narrative=(
+                    "Examined USD00050010; confirmed via the account management "
+                    "plan that required account controls are implemented."
+                ),
+                confidence=0.95,
+            ),
+        ]
+    )
+
+    decision = Assessor(llm=stub).assess(
+        row,
+        tagged_evidence=_PLACEHOLDER_EVIDENCE,
+    )
+
+    assert decision.source == "llm_after_retry"
+    assert decision.status is ComplianceStatus.COMPLIANT
+    assert len(stub.calls) == 2
+
+
+def test_planned_column_d_suppresses_crm_na_short_circuit():
+    row = _row(implementation_status="Planned", control_id="AC-2")
+    crm = CrmContext(
+        by_control={
+            "ac-2": CrmEntry(
+                control_id="ac-2",
+                responsibility="not_applicable",
+                narrative=None,
+                source_baseline_id=1,
+            )
+        }
+    )
+    stub = StubLlmClient(
+        [
+            LlmProposal(
+                status=ComplianceStatus.NON_COMPLIANT,
+                narrative=(
+                    "No artifact found substantiating the in-scope customer "
+                    "implementation; POA&M opened."
+                ),
+                confidence=0.95,
+            )
+        ]
+    )
+
+    decision = Assessor(llm=stub).assess(row, crm_context=crm)
+
+    assert decision.source == "llm"
+    assert decision.status is ComplianceStatus.NON_COMPLIANT
+    assert len(stub.calls) == 1
+
+
+def test_prefilled_col_n_na_still_uses_no_evidence_rule():
     row = _row(
         control_id="AC-18",
         status="Not Applicable",
@@ -295,9 +369,8 @@ def test_prefilled_col_n_na_beats_no_evidence_non_compliant():
 
     decision = assessor.assess(row)  # no tagged_evidence at all
 
-    assert decision.source == "rule_8b"
-    assert decision.status is ComplianceStatus.NOT_APPLICABLE
-    assert decision.source != "rule_no_evidence"
+    assert decision.source == "rule_no_evidence"
+    assert decision.status is ComplianceStatus.NON_COMPLIANT
     assert stub.calls == []
 
 
@@ -306,8 +379,7 @@ def test_prefilled_col_n_na_beats_no_evidence_non_compliant():
 # ---------------------------------------------------------------------------
 
 
-def test_crm_provider_short_circuits():
-    """CRM responsibility=provider → source='crm_provider', NA, stub.calls == []."""
+def test_blank_column_d_suppresses_crm_provider_na():
     row = _row(control_id="AC-2")
     crm = CrmContext(
         by_control={
@@ -319,15 +391,23 @@ def test_crm_provider_short_circuits():
             )
         }
     )
-    stub = StubLlmClient([])
+    stub = StubLlmClient(
+        [
+            LlmProposal(
+                status=ComplianceStatus.NON_COMPLIANT,
+                narrative="No artifact found for the in-scope CCI; POA&M opened.",
+                confidence=0.95,
+            )
+        ]
+    )
     assessor = Assessor(llm=stub)
 
     decision = assessor.assess(row, crm_context=crm)
 
-    assert decision.source == "crm_provider"
+    assert decision.source == "llm"
     assert decision.accepted is True
-    assert decision.status is ComplianceStatus.NOT_APPLICABLE
-    assert stub.calls == []
+    assert decision.status is ComplianceStatus.NON_COMPLIANT
+    assert len(stub.calls) == 1
 
 
 def test_crm_inherited_short_circuits():
@@ -411,8 +491,8 @@ def test_crm_hybrid_prepends_responsibility_split_block():
 
 
 def test_crm_not_applicable_short_circuits():
-    """CRM responsibility=not_applicable → source='crm_not_applicable', NA, no LLM."""
-    row = _row(control_id="AC-2")
+    """Column D N/A wins before a matching CRM N/A shortcut."""
+    row = _row(control_id="AC-2", implementation_status="Not Applicable")
     crm = CrmContext(
         by_control={
             "ac-2": CrmEntry(
@@ -428,7 +508,7 @@ def test_crm_not_applicable_short_circuits():
 
     decision = assessor.assess(row, crm_context=crm)
 
-    assert decision.source == "crm_not_applicable"
+    assert decision.source == "rule_8b"
     assert decision.status is ComplianceStatus.NOT_APPLICABLE
     assert stub.calls == []
 

@@ -9,15 +9,18 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from zipfile import BadZipFile
 
 from fastapi import APIRouter, Depends, HTTPException
+from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, delete, select
 
 from ..config import load_config
+from ..controls.odp_render import fetch_odp_history, resolve_odps
 from ..db import get_session
-from . import _batch_progress
+from ..engine import rules
 from ..engine import validator as v
 from ..engine.assessor import (
     Assessor,
@@ -33,9 +36,7 @@ from ..engine.impl_persistence import (
     persist_assessment_with_impls,
     preview_rolled_narrative,
 )
-from ..system_context import build_boundary_brief
 from ..engine.inputs import (
-    _is_coverage_control,
     build_evidence_block as _build_evidence_block,
 )
 from ..engine.measurement import CciOutcome, RunRecorder
@@ -50,12 +51,11 @@ from ..llm.client import (
     make_client,
 )
 from ..llm.pricing import compute_cost
-from ..controls.odp_render import fetch_odp_history, resolve_odps
 from ..models import (
     Assessment,
-    AssessmentImplementation,
     AssessmentCitation,
     AssessmentEvidenceShown,
+    AssessmentImplementation,
     AssessmentTrace,
     Baseline,
     BaselineControl,
@@ -72,14 +72,19 @@ from ..models import (
     PoamEvidence,
     PoamMilestone,
     PoamObjective,
+    PoamRiskHistory,
     PromptSnapshot,
     RequirementMap,
     RequirementSource,
+    ResidualSuggestionCache,
     VerdictSource,
     Workbook,
     _utcnow,
     iso_utc,
 )
+from ..system_context import build_boundary_brief
+from . import _batch_progress
+
 # Placeholder narrative for a hard abstain (status=None, narrative=None).
 # Schema requires narrative_q NOT NULL (models.py:752), so the write site
 # coerces blank narratives to this constant. Reviewer queue surfaces the
@@ -636,6 +641,12 @@ def _sync_poams_for_objective(
         # Empty POAM — clear children, then the row itself.
         s.exec(delete(PoamMilestone).where(PoamMilestone.poam_id == pid))
         s.exec(delete(PoamEvidence).where(PoamEvidence.poam_id == pid))
+        s.exec(delete(PoamRiskHistory).where(PoamRiskHistory.poam_id == pid))
+        s.exec(
+            delete(ResidualSuggestionCache).where(
+                ResidualSuggestionCache.poam_id == pid
+            )
+        )
         p = s.get(Poam, pid)
         if p is not None:
             s.delete(p)
@@ -780,6 +791,38 @@ def _resolve_excel_row(
     return int(bo.source_row)
 
 
+def _source_workbook_row(
+    *, workbook_id: int, objective_id: int, s: Session
+):
+    """Read the source CCI row used for authoritative applicability checks."""
+    wb = s.get(Workbook, workbook_id)
+    obj = s.get(Objective, objective_id)
+    if wb is None:
+        raise HTTPException(status_code=404, detail="Workbook not found")
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Objective not found")
+    # Non-CCIS/manual framework tests and engagement-like workbooks do not
+    # have a materialized baseline, so Column-D authority is not applicable.
+    if wb.baseline_id is None:
+        return None
+    path = Path(wb.path)
+    if not path.exists():
+        raise HTTPException(status_code=410, detail=f"Source workbook not found: {path}")
+    try:
+        row = read_workbook_index(path).by_cci().get(obj.objective_id)
+    except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Source workbook could not be read: {path}",
+        ) from exc
+    if row is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Source workbook row not found for objective {obj.objective_id}.",
+        )
+    return row
+
+
 @router.get("/{control_id}")
 def get_control(
     control_id: int,
@@ -806,6 +849,7 @@ def get_control(
     # build a CCI → inherited map. Best-effort: any read failure / missing row
     # leaves the value None and the UI simply omits the chip.
     inherited_by_cci: dict[str, str | None] = {}
+    implementation_status_by_cci: dict[str, str | None] = {}
     # Column M (Remote Inheritance Instance) — the inheritance SOURCE name. The
     # flex chip needs both: col L is the flag, col M is the source.
     remote_by_cci: dict[str, str | None] = {}
@@ -835,10 +879,19 @@ def get_control(
                     if _r is not None:
                         inherited_by_cci[o.objective_id] = _r.inherited
                         remote_by_cci[o.objective_id] = _r.remote_inheritance
-            except (ValueError, FileNotFoundError, OSError):
-                # Workbook moved / unreadable — skip the chip, don't 500 the page.
-                inherited_by_cci = {}
-                remote_by_cci = {}
+                        implementation_status_by_cci[o.objective_id] = (
+                            _r.implementation_status
+                        )
+            except FileNotFoundError as exc:
+                raise HTTPException(
+                    status_code=410,
+                    detail=f"Source workbook not found: {wb.path}",
+                ) from exc
+            except (BadZipFile, InvalidFileException, ValueError, OSError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Source workbook could not be read: {wb.path}",
+                ) from exc
     # Resolve ODP placeholders ({$37$}, ac-02_odp.03, etc.) against the
     # framework-scoped odp_assignment table at render time. Templates
     # never carry program-specific values in the catalog — see
@@ -882,6 +935,9 @@ def get_control(
                 # when no workbook is in play or the row couldn't be re-read.
                 "inherited": inherited_by_cci.get(o.objective_id),
                 "remote_inheritance": remote_by_cci.get(o.objective_id),
+                "implementation_status": implementation_status_by_cci.get(
+                    o.objective_id
+                ),
             }
             for o in objs
         ],
@@ -1067,10 +1123,51 @@ def upsert_assessment(
     s: Session = Depends(get_session),
 ) -> dict:
     """Validate (rule #11) then upsert. Pass ``?force=true`` to bypass."""
-    result = v.validate(
-        proposed_status=body.status,
-        proposed_narrative=body.narrative_q,
+    source_row = _source_workbook_row(
+        workbook_id=body.workbook_id,
+        objective_id=body.objective_id,
+        s=s,
     )
+    column_d_na = bool(
+        source_row is not None and rules.is_column_d_not_applicable(source_row)
+    )
+    requested_na = body.status == ComplianceStatus.NOT_APPLICABLE or any(
+        implementation.status == ComplianceStatus.NOT_APPLICABLE
+        for implementation in (body.implementations or [])
+    )
+    if column_d_na and (
+        body.status != ComplianceStatus.NOT_APPLICABLE or body.implementations
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This CCI is Not Applicable in the source workbook's Control "
+                "Implementation Status (Column D). Correct the eMASS workbook "
+                "scope before assigning a different status."
+            ),
+        )
+    if source_row is not None and not column_d_na and requested_na:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Not Applicable can only be assigned when the source "
+                "workbook's Control Implementation Status (Column D) is "
+                "Not Applicable."
+            ),
+        )
+    if column_d_na:
+        authoritative = rules.classify_row(source_row)
+        authoritative_narrative = authoritative.narrative or "Not applicable - Column D."
+        result = v.validate(
+            proposed_status=ComplianceStatus.NOT_APPLICABLE,
+            proposed_narrative=authoritative_narrative,
+        )
+    else:
+        authoritative_narrative = None
+        result = v.validate(
+            proposed_status=body.status,
+            proposed_narrative=body.narrative_q,
+        )
     if not result.ok and not force:
         raise HTTPException(
             status_code=422,
@@ -1108,9 +1205,11 @@ def upsert_assessment(
     # column Q still carries the coerced "[Needs review — …]" marker; strip it
     # so the now-trusted narrative doesn't write that stale header into the
     # workbook. No-op for narratives that never had the marker.
-    narrative_q = _strip_abstain_prefix(body.narrative_q)
+    narrative_q = authoritative_narrative or _strip_abstain_prefix(body.narrative_q)
     if existing:
-        existing.status = body.status
+        existing.status = (
+            ComplianceStatus.NOT_APPLICABLE if column_d_na else body.status
+        )
         existing.tester = body.tester
         existing.narrative_q = narrative_q
         # Only overwrite dual-narrative fields when the request explicitly
@@ -1120,8 +1219,21 @@ def upsert_assessment(
             existing.narrative_on_prem = body.narrative_on_prem
         if body.narrative_cloud is not None:
             existing.narrative_cloud = body.narrative_cloud
-        existing.narrative_class = body.narrative_class
-        existing.inheritance_rule = body.inheritance_rule
+        if column_d_na:
+            existing.narrative_on_prem = narrative_q
+            existing.narrative_cloud = None
+        existing.narrative_class = (
+            NarrativeClass.NA_JUSTIFYING if column_d_na else body.narrative_class
+        )
+        existing.inheritance_rule = "8b" if column_d_na else body.inheritance_rule
+        if column_d_na:
+            existing.verdict_source = VerdictSource.RULE_8B
+            existing.confidence = None
+            existing.rewrite_requested = False
+            existing.rewrite_requested_refs = None
+            existing.dual_narrative_flagged = False
+            existing.dual_narrative_flag_reasons = None
+            existing.run_id = None
         existing.excel_row = excel_row
         existing.date_tested = when
         # v0.2: a manual upsert is the user explicitly trusting this
@@ -1137,13 +1249,16 @@ def upsert_assessment(
             workbook_id=body.workbook_id,
             objective_id=body.objective_id,
             excel_row=excel_row,
-            status=body.status,
+            status=ComplianceStatus.NOT_APPLICABLE if column_d_na else body.status,
             tester=body.tester,
             narrative_q=narrative_q,
-            narrative_on_prem=body.narrative_on_prem,
-            narrative_cloud=body.narrative_cloud,
-            narrative_class=body.narrative_class,
-            inheritance_rule=body.inheritance_rule,
+            narrative_on_prem=narrative_q if column_d_na else body.narrative_on_prem,
+            narrative_cloud=None if column_d_na else body.narrative_cloud,
+            narrative_class=(
+                NarrativeClass.NA_JUSTIFYING if column_d_na else body.narrative_class
+            ),
+            inheritance_rule="8b" if column_d_na else body.inheritance_rule,
+            verdict_source=VerdictSource.RULE_8B if column_d_na else None,
             date_tested=when,
             # New manual rows are user-trusted by definition.
             needs_review=False,
@@ -1158,7 +1273,30 @@ def upsert_assessment(
     # field) and the stale top-textarea narrative_q persisted — the AC-17
     # "Azure inherited overwrites the AWS customer scope" bug. We flush first
     # so a brand-new Assessment row has its PK for the impl FK lookup.
-    if body.implementations:
+    if column_d_na:
+        s.flush()
+        if a.id is not None:
+            s.exec(
+                delete(AssessmentImplementation).where(
+                    AssessmentImplementation.assessment_id == a.id
+                )
+            )
+            s.exec(
+                delete(AssessmentCitation).where(
+                    AssessmentCitation.assessment_id == a.id
+                )
+            )
+            s.exec(
+                delete(AssessmentTrace).where(
+                    AssessmentTrace.assessment_id == a.id
+                )
+            )
+            s.exec(
+                delete(AssessmentEvidenceShown).where(
+                    AssessmentEvidenceShown.assessment_id == a.id
+                )
+            )
+    elif body.implementations:
         s.flush()
         edits_by_id = {e.id: e for e in body.implementations}
         impl_rows = s.exec(
@@ -1218,7 +1356,12 @@ def upsert_assessment(
     # Keep POAMs honest: a Compliant or NA assessment has nothing to remediate,
     # so prune any POAM links pointing at this objective. Empty POAMs are
     # deleted (re-runnable via /api/poams/generate).
-    _sync_poams_for_objective(body.workbook_id, body.objective_id, body.status, s)
+    _sync_poams_for_objective(
+        body.workbook_id,
+        body.objective_id,
+        ComplianceStatus.NOT_APPLICABLE if column_d_na else body.status,
+        s,
+    )
     s.commit()
     s.refresh(a)
     return {
@@ -2577,6 +2720,23 @@ def apply_assessment_to_workbook(
     wb = s.get(Workbook, a.workbook_id)
     if wb is None:
         raise HTTPException(status_code=404, detail="Workbook not found")
+    source_row = _source_workbook_row(
+        workbook_id=wb.id,
+        objective_id=a.objective_id,
+        s=s,
+    )
+    column_d_na = bool(
+        source_row is not None and rules.is_column_d_not_applicable(source_row)
+    )
+    authoritative_narrative = (
+        rules.classify_row(source_row).narrative if column_d_na else None
+    )
+    if column_d_na:
+        from ..engine.crm_backfill import backfill_workbook_rules
+
+        backfill_workbook_rules(wb.id, s)
+        s.commit()
+        s.refresh(a)
 
     # Direct writes to the user's original .xlsx are deliberately impossible
     # here -- we redirect to a "<stem>_edited<ext>" working copy under the
@@ -2595,10 +2755,14 @@ def apply_assessment_to_workbook(
             excel_row=a.excel_row,
             # Blank col-N for an unconfirmed (needs_review) row; otherwise the
             # assessed status. Narrative/date/tester always write.
-            status=None if apply_blank_status else a.status,
+            status=(
+                ComplianceStatus.NOT_APPLICABLE
+                if column_d_na
+                else None if apply_blank_status else a.status
+            ),
             date_tested=a.date_tested,
             tester=a.tester,
-            results=a.narrative_q,
+            results=authoritative_narrative or a.narrative_q,
             rewrite_requested=getattr(a, "rewrite_requested", False),
             rewrite_requested_refs=getattr(a, "rewrite_requested_refs", None),
             save=True,
@@ -2686,6 +2850,23 @@ def apply_assessments_batch_to_workbook(
     wb = s.get(Workbook, body.workbook_id)
     if wb is None:
         raise HTTPException(status_code=404, detail="Workbook not found")
+    if wb.baseline_id is not None:
+        from ..engine.crm_backfill import backfill_workbook_rules
+
+        backfill_workbook_rules(wb.id, s)
+        s.commit()
+    source_index = None
+    if wb.baseline_id is not None:
+        path = Path(wb.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail=f"Source workbook not found: {path}")
+        try:
+            source_index = read_workbook_index(path)
+        except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Source workbook could not be read: {path}",
+            ) from exc
 
     # Build the candidate set — workbook scope is mandatory, family /
     # assessment_ids are optional narrowing filters that mirror the
@@ -2702,6 +2883,15 @@ def apply_assessments_batch_to_workbook(
         )
 
     candidates: list[Assessment] = list(s.exec(stmt))
+    objective_codes = {
+        objective.id: objective.objective_id
+        for objective in s.exec(
+            select(Objective).where(
+                Objective.id.in_([a.objective_id for a in candidates])  # type: ignore[attr-defined]
+            )
+        ).all()
+    } if candidates else {}
+    source_rows = source_index.by_cci() if source_index is not None else {}
 
     # Partition into write / skip buckets. UNCONDITIONAL-WRITE posture (owner
     # directive 2026-06-21): the button must produce the xlsx with EVERY row
@@ -2760,10 +2950,22 @@ def apply_assessments_batch_to_workbook(
             excel_row=a.excel_row,  # type: ignore[arg-type]  -- partitioned above
             # needs_review rows get a BLANK status (None) so no unconfirmed
             # verdict lands in col N; their narrative/date/tester still write.
-            status=None if a.needs_review else a.status,
+            status=(
+                ComplianceStatus.NOT_APPLICABLE
+                if (
+                    (source_row := source_rows.get(objective_codes.get(a.objective_id, "")))
+                    is not None
+                    and rules.is_column_d_not_applicable(source_row)
+                )
+                else None if a.needs_review else a.status
+            ),
             date_tested=a.date_tested,
             tester=a.tester,
-            results=a.narrative_q,
+            results=(
+                rules.classify_row(source_row).narrative
+                if source_row is not None and rules.is_column_d_not_applicable(source_row)
+                else a.narrative_q
+            ),
             # Pass needs_review=False so the writer's defensive inner skip
             # (ccis_writer._build_row_cells) does NOT blank the whole row — the
             # blank-status handling above is the intended behavior for these.
@@ -2953,6 +3155,7 @@ class NarrativeImportResultDto(BaseModel):
     unmatched: list[str]
     skipped_no_status: list[str]
     skipped_no_narrative: list[str]
+    overridden_by_column_d: int
 
 
 class _ControlsImportNarrativesBody(BaseModel):
@@ -2998,6 +3201,7 @@ def import_controls_narratives(
         unmatched=result.unmatched,
         skipped_no_status=result.skipped_no_status,
         skipped_no_narrative=result.skipped_no_narrative,
+        overridden_by_column_d=result.overridden_by_column_d,
     )
 
 

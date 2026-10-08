@@ -5,6 +5,7 @@
     "control_id": "AC-19",
     "ap_acronym": "AC-19.1",
     "cci_id": "CCI-000082",
+    "implementation_status": "Not Applicable",
     "guidance": "The organization establishes usage restrictions and implementation guidance for organization-controlled mobile devices.",
     "procedures": "Examine mobile device usage policy; confirm restrictions and implementation guidance are defined for organization-controlled mobile devices.",
     "inherited": null,
@@ -23,9 +24,8 @@
   "llm_stub_proposals": [],
   "expected": {
     "status": "Not Applicable",
-    "source_in": ["crm_not_applicable"],
+    "source_in": ["rule_8b"],
     "needs_review": false,
-    "llm_calls": 0,
-    "narrative_contains_regex": "closed-rack server enclave with no wireless interfaces"
+    "llm_calls": 0
   }
 }

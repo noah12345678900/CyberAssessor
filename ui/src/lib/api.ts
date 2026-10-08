@@ -238,6 +238,8 @@ export interface Objective {
    * col M → inherited; Remote/Yes + blank col M → escalate.
    */
   remote_inheritance?: string | null;
+  /** Workbook Column D. Not Applicable is the authoritative scope decision. */
+  implementation_status?: string | null;
 }
 
 export interface RequirementMapping {
@@ -3412,6 +3414,7 @@ export interface NarrativeImportResultDto {
   unmatched: string[];
   skipped_no_status: string[];
   skipped_no_narrative: string[];
+  overridden_by_column_d: number;
 }
 
 export interface ImportControlsNarrativesRequest {

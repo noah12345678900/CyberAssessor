@@ -5,6 +5,7 @@
     "control_id": "SC-7",
     "ap_acronym": "SC-7.1",
     "cci_id": "CCI-001097",
+    "implementation_status": "Not Applicable",
     "guidance": "The information system monitors and controls communications at the external boundary of the system and at key internal boundaries within the system.",
     "procedures": "Examine boundary protection devices and configurations; confirm monitoring of communications at external and key internal boundaries.",
     "inherited": null,
@@ -23,9 +24,8 @@
   "llm_stub_proposals": [],
   "expected": {
     "status": "Not Applicable",
-    "source_in": ["crm_provider"],
+    "source_in": ["rule_8b"],
     "needs_review": false,
-    "llm_calls": 0,
-    "narrative_contains_regex": "FedRAMP-authorized AWS GovCloud provider"
+    "llm_calls": 0
   }
 }

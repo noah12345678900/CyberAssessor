@@ -1,15 +1,15 @@
-"""Regression: a wholly-Column-N N/A control that is ALSO CRM-covered still
+"""Regression: a wholly-Column-D N/A control that is ALSO CRM-covered still
 gets a real rule-8b NOT_APPLICABLE Assessment persisted at workbook-open time.
 
 THE BUG (PE-10, user-found). PE-10 is attested Not Applicable in workbook
-Column N (rule 8b) AND is covered by both demo CRMs (clouds N/A). The grid
+Column D (rule 8b) AND is covered by both demo CRMs (clouds N/A). The grid
 showed a synthetic "Not Applicable" Status chip (derived live from the col-N
 signal) but the batch "already assessed" preflight counted only 2 — because no
 real Assessment row was ever persisted for PE-10, so the count and the grid
 disagreed (3 chips, 2 counted).
 
 ``backfill_workbook_rules`` front-loads deterministic rule verdicts at
-workbook-open so col-N N/A controls surface as REAL rows without a manual
+workbook-open so Column-D N/A controls surface as REAL rows without a manual
 Assess. AC-18 (no CRM) already worked; the open question was whether a
 CRM-covered control like PE-10 is also written, or wrongly skipped. The
 production loop has no CRM-skip — this test pins that contract.
@@ -19,7 +19,7 @@ single control and asserted a row was written — but ``backfill_workbook_rules`
 never reads CRM overlays, so those attachments were inert and the test would
 pass even if a (wrong) CRM-skip were added. To actually catch that regression
 class, this test runs BOTH backfills in the real open order
-(CRM-backfill THEN rule-backfill) over TWO col-N-NA controls in one workbook:
+(CRM-backfill THEN rule-backfill) over TWO Column-D-N/A controls in one workbook:
 PE-10 (CRM-covered) and AC-18 (no CRM). It asserts BOTH end up with a real
 rule-8b NA Assessment. A wrongful CRM-skip in the rule backfill would drop
 PE-10's row while leaving AC-18's — failing the PE-10 assertion specifically.
@@ -73,22 +73,22 @@ def session() -> Session:
 
 
 def _na_row(*, control_id: str, cci_id: str, excel_row: int) -> CcisRow:
-    """A col-N 'Not Applicable' / col-L 'No' row → classify_row → 8b."""
+    """A Column-D 'Not Applicable' / col-L 'No' row -> rule 8b."""
     return CcisRow(
         excel_row=excel_row,
         required=True,
         control_id=control_id,
         ap_acronym=None,
         cci_id=cci_id,
-        implementation_status=None,
+        implementation_status="Not Applicable",
         designation=None,
         narrative=None,
         definition=f"{control_id} definition.",
         guidance=None,
         procedures=None,
-        inherited="No",  # Column L = ASSESS (but col N wins → 8b)
+        inherited="No",  # Column L = ASSESS (but Column D wins -> 8b)
         remote_inheritance=None,
-        status="Not Applicable",  # Column N → rule 8b
+        status=None,
         date_tested=None,
         tester=None,
         results="Out of scope for this system.",
@@ -123,9 +123,9 @@ def _in_scope(session: Session, baseline_id: int, ctrl: Control, obj: Objective,
     session.commit()
 
 
-def test_crm_covered_and_uncovered_col_n_na_both_get_real_rows(session, monkeypatch):
+def test_crm_covered_and_uncovered_column_d_na_both_get_real_rows(session, monkeypatch):
     """Open-order regression: CRM-backfill THEN rule-backfill must leave BOTH a
-    CRM-covered col-N-NA control (PE-10) and a non-CRM one (AC-18) with a real
+    CRM-covered Column-D-N/A control (PE-10) and a non-CRM one (AC-18) with a real
     rule-8b NOT_APPLICABLE Assessment.
 
     This is the PE-10 fix: the grid's synthetic N/A chip must be backed by a
@@ -206,7 +206,7 @@ def test_crm_covered_and_uncovered_col_n_na_both_get_real_rows(session, monkeypa
 
         # Real open order: CRM-backfill first (it owns CRM-deterministic
         # controls), then rule-backfill (owns workbook-intrinsic rule verdicts).
-        # PE-10's clouds are both NA AND col N is NA — whichever backfill writes
+        # PE-10's clouds and Column D are both N/A; whichever backfill writes
         # it, the persisted verdict must be NOT_APPLICABLE.
         backfill_workbook_crm(workbook_id=wb.id, session=session)
         session.commit()
@@ -282,7 +282,7 @@ def test_rule8a_stale_compliant_healed_when_crm_makes_control_hybrid(
     assessment, so the whole-control Compliant is stale and masks them. The CRM
     self-heal must DELETE it (healed_deleted), and a subsequent RE-OPEN
     rule-backfill must NOT resurrect it (the control is now CRM-hybrid-covered).
-    A col-N rule_8b NA control in the same workbook must be unaffected (PE-10
+    A Column-D rule_8b NA control in the same workbook must be unaffected (PE-10
     guard still holds).
     """
     fw = Framework(name="NIST SP 800-53", version="Rev 5")

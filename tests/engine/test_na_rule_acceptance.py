@@ -1,16 +1,15 @@
 """Regression: a deterministic N/A (rule #8b) counts as accepted.
 
 User bug: "N/A controls aren't counting in 'accepted' — 11/13 when I
-accepted all besides AC-7." A control whose col N already says "Not
-Applicable" is finalized by rule #8b. The formatter
-(_format_prefilled_na_narrative) inlines the assessor's own col-Q/U rationale
+accepted all besides AC-7." A control whose Column D says "Not Applicable"
+is finalized by rule #8b. The formatter inlines the assessor's col-Q/U rationale
 excerpt. When that borrowed human prose contains a gap or strong-affirming
 phrase, the validator's multi-class ambiguity guard (classes_hit >= 2)
 flips the narrative to AMBIGUOUS → result.ok=False → accepted=False, so the
 N/A drops into the unresolved bucket and vanishes from the accepted count.
 
-The fix: a rule #8b N/A verdict is authoritative (a human wrote it in col
-N), so accept it even when the ONLY validator rejection is the ambiguity
+The fix: a rule #8b N/A verdict is authoritative (Column D scopes it out),
+so accept it even when the ONLY validator rejection is the ambiguity
 status/narrative mismatch. Real formatter defects still reject.
 """
 
@@ -29,7 +28,7 @@ def _na_row(rationale: str) -> CcisRow:
         control_id="AC-18",
         ap_acronym="AC-18.1",
         cci_id="CCI-001438",
-        implementation_status=None,
+        implementation_status="Not Applicable",
         designation=None,
         narrative=None,
         definition="Wireless access controls.",
@@ -37,7 +36,7 @@ def _na_row(rationale: str) -> CcisRow:
         procedures=None,
         inherited=None,
         remote_inheritance=None,
-        status="Not Applicable",  # col N
+        status=None,
         date_tested=None,
         tester=None,
         results=rationale,  # col Q rationale, inlined by the NA formatter

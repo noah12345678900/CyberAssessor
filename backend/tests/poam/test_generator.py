@@ -26,7 +26,9 @@ from cybersecurity_assessor.models import (
     Poam,
     PoamMilestone,
     PoamObjective,
+    PoamRiskHistory,
     PoamStatus,
+    ResidualSuggestionCache,
     RiskLevel,
     StigFinding,
 )
@@ -308,7 +310,24 @@ class TestPruneStalePoamLinks:
         a = assess(wb.id, ac2.id, ComplianceStatus.NON_COMPLIANT)
         generate_for_workbook(wb.id, session)
         session.commit()
-        assert session.exec(select(Poam)).first() is not None
+        poam = session.exec(select(Poam)).one()
+        session.add(
+            PoamRiskHistory(
+                poam_id=poam.id,
+                field="impact",
+                new_value="Moderate",
+            )
+        )
+        session.add(
+            ResidualSuggestionCache(
+                fingerprint="stale-poam-cache",
+                advisor_version="test",
+                prompt_sha="test",
+                poam_id=poam.id,
+                payload_json="{}",
+            )
+        )
+        session.commit()
 
         # Reassess: Compliant.
         a.status = ComplianceStatus.COMPLIANT
@@ -321,6 +340,8 @@ class TestPruneStalePoamLinks:
         assert session.exec(select(Poam)).all() == []
         assert session.exec(select(PoamObjective)).all() == []
         assert session.exec(select(PoamMilestone)).all() == []
+        assert session.exec(select(PoamRiskHistory)).all() == []
+        assert session.exec(select(ResidualSuggestionCache)).all() == []
 
     def test_keeps_poam_when_one_of_many_links_becomes_compliant(
         self, session, poam_catalog, assess

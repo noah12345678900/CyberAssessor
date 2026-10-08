@@ -5,6 +5,7 @@
     "control_id": "CM-7",
     "ap_acronym": "CM-7.1",
     "cci_id": "CCI-000381",
+    "implementation_status": "Not Applicable",
     "guidance": "The organization configures the information system to provide only essential capabilities.",
     "procedures": "Examine configuration baselines; confirm only essential capabilities are enabled.",
     "inherited": null,
@@ -25,9 +26,8 @@
   "llm_stub_proposals": [],
   "expected": {
     "status": "Not Applicable",
-    "source_in": ["crm_provider+onprem_not_applicable"],
+    "source_in": ["rule_8b"],
     "needs_review": false,
-    "llm_calls": 0,
-    "narrative_contains_regex": "Cloud: .*FedRAMP-authorized AWS GovCloud.*\\nOn-prem: .*single-purpose appliance build"
+    "llm_calls": 0
   }
 }

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from zipfile import BadZipFile
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,12 +28,13 @@ from sqlmodel import Session, select
 
 from ..baselines import CcisWorkbookBaselineSource
 from ..db import chunked, get_session
+from ..engine import rules
 from ..engine.crm_backfill import (
     backfill_workbook_crm,
     backfill_workbook_rules,
     purge_baseline_contribution,
 )
-from ..excel.ccis_reader import read_workbook_summary
+from ..excel.ccis_reader import read_workbook_index, read_workbook_summary
 from ..models import (
     Assessment,
     AssessmentCitation,
@@ -1196,6 +1198,7 @@ def workbook_control_status(
     # Count every active objective per control so a single deterministic
     # assessment cannot make a multi-objective control look complete.
     total_objectives_by_control: dict[int, int] = {}
+    column_d_na_objective_ids: set[int] = set()
     if workbook.baseline_id is not None:
         objective_totals = s.exec(
             select(Control.id, func.count(BaselineObjective.id))
@@ -1213,6 +1216,76 @@ def workbook_control_status(
         total_objectives_by_control = {
             control_id: int(total) for control_id, total in objective_totals
         }
+
+        # Project authoritative Column-D N/A rows into the rollup immediately.
+        # This keeps an already-open workbook correct before the reopen
+        # backfill has had a chance to repair older persisted verdicts.
+        try:
+            source_index = read_workbook_index(Path(workbook.path))
+            column_d_na_ccis = {
+                row.cci_id
+                for row in source_index.rows
+                if row.cci_id and rules.is_column_d_not_applicable(row)
+            }
+            column_d_blocked_ccis = {
+                row.cci_id
+                for row in source_index.rows
+                if row.cci_id and rules.column_d_blocks_not_applicable(row)
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=410,
+                detail=f"Source workbook not found: {workbook.path}",
+            ) from exc
+        except (BadZipFile, ValueError, OSError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Source workbook could not be read: {workbook.path}",
+            ) from exc
+        if column_d_na_ccis:
+            authoritative_rows = s.exec(
+                select(Control.id, Objective.id)
+                .join(Objective, Objective.control_id_fk == Control.id)
+                .join(
+                    BaselineObjective,
+                    BaselineObjective.objective_id == Objective.id,
+                )
+                .where(
+                    BaselineObjective.baseline_id == workbook.baseline_id,
+                    BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
+                    Objective.objective_id.in_(column_d_na_ccis),  # type: ignore[attr-defined]
+                )
+            ).all()
+            column_d_na_objective_ids = {
+                objective_id for _, objective_id in authoritative_rows
+            }
+            column_d_na_by_control: dict[int, int] = {}
+            for control_id, _ in authoritative_rows:
+                column_d_na_by_control[control_id] = (
+                    column_d_na_by_control.get(control_id, 0) + 1
+                )
+        else:
+            column_d_na_by_control = {}
+        if column_d_blocked_ccis:
+            column_d_blocked_objective_ids = set(
+                s.exec(
+                    select(Objective.id)
+                    .join(
+                        BaselineObjective,
+                        BaselineObjective.objective_id == Objective.id,
+                    )
+                    .where(
+                        BaselineObjective.baseline_id == workbook.baseline_id,
+                        BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
+                        Objective.objective_id.in_(column_d_blocked_ccis),  # type: ignore[attr-defined]
+                    )
+                ).all()
+            )
+        else:
+            column_d_blocked_objective_ids = set()
+    else:
+        column_d_na_by_control = {}
+        column_d_blocked_objective_ids = set()
 
     # Count per (control_id, status, needs_review, rewrite_requested) in a
     # single GROUP BY -- N+1-free. When a primary baseline is present, scope
@@ -1242,6 +1315,17 @@ def workbook_control_status(
             BaselineObjective.baseline_id == workbook.baseline_id,
             BaselineObjective.is_deprecated.is_(False),  # type: ignore[union-attr]
         )
+    if column_d_na_objective_ids:
+        assessment_stmt = assessment_stmt.where(
+            ~Assessment.objective_id.in_(column_d_na_objective_ids)  # type: ignore[attr-defined]
+        )
+    if column_d_blocked_objective_ids:
+        assessment_stmt = assessment_stmt.where(
+            ~(
+                Assessment.objective_id.in_(column_d_blocked_objective_ids)  # type: ignore[attr-defined]
+                & (Assessment.status == ComplianceStatus.NOT_APPLICABLE)
+            )
+        )
     rows = s.exec(
         assessment_stmt.join(Assessment, Assessment.objective_id == Objective.id)
         .where(Assessment.workbook_id == workbook_id)
@@ -1253,7 +1337,16 @@ def workbook_control_status(
         )
     ).all()
 
-    by_control: dict[int, dict[str, int]] = {}
+    by_control: dict[int, dict[str, int]] = {
+        control_id: {
+            "compliant": 0,
+            "non_compliant": 0,
+            "na": na_count,
+            "needs_review": 0,
+            "rewrites_requested": 0,
+        }
+        for control_id, na_count in column_d_na_by_control.items()
+    }
     for ctrl_id, status, needs_review, rewrite_requested, n in rows:
         d = by_control.setdefault(
             ctrl_id,
@@ -1358,7 +1451,6 @@ def workbook_col_l_status(
                         rollup), for the chip tooltip/label.
     Empty list when the workbook can't be read (chip simply omitted).
     """
-    from ..engine import rules
     from ..excel.ccis_reader import (
         _ccis_to_oscal_control_id,
         _normalize_control,
@@ -1383,24 +1475,24 @@ def workbook_col_l_status(
     }
     # control_id -> (rank, outcome_value, representative_raw_value). outcome_value
     # is a plain string so we can emit the synthetic "na" outcome (not a
-    # ColLFlexOutcome member) when the workbook's Column N already marks the
+    # ColLFlexOutcome member) when the workbook's Column D already marks the
     # control Not Applicable.
     agg: dict[str, tuple[int, str, str]] = {}
-    # Track whether EVERY CCI of a control is column-N Not Applicable: a wholly
+    # Track whether EVERY CCI of a control is column-D Not Applicable: a wholly
     # N/A control (rule 8b) has no real flex assessment to do, so the chip
     # should read "N/A". One non-NA CCI voids the N/A (mirrors
     # compute_rollup_status's "N/A only if ALL are N/A"). This is ALSO the
     # signal that earns a no-CRM control a chip at all (case 2 above).
-    col_n_na_all: dict[str, bool] = {}
+    col_d_na_all: dict[str, bool] = {}
     for cci_row in index.by_cci().values():
         if not cci_row.control_id:
             continue
         oscal = _ccis_to_oscal_control_id(_normalize_control(cci_row.control_id))
-        is_na = (cci_row.status or "").strip().lower() in (
+        is_na = (cci_row.implementation_status or "").strip().casefold() in (
             "not applicable", "n/a", "na",
         )
-        col_n_na_all[oscal] = is_na if oscal not in col_n_na_all else (
-            col_n_na_all[oscal] and is_na
+        col_d_na_all[oscal] = is_na if oscal not in col_d_na_all else (
+            col_d_na_all[oscal] and is_na
         )
         outcome = rules.resolve_col_l_flex_status(
             cci_row.inherited, cci_row.remote_inheritance
@@ -1412,9 +1504,9 @@ def workbook_col_l_status(
 
     out: list[dict] = []
     for oscal, (_rank, outcome_value, value) in agg.items():
-        # Column-N Not Applicable wins: a wholly-N/A control (rule 8b) has no
+        # Column-D Not Applicable wins: a wholly-N/A control (rule 8b) has no
         # real flex assessment to do, so show "na" not the raw col-L outcome.
-        wholly_na = col_n_na_all.get(oscal, False)
+        wholly_na = col_d_na_all.get(oscal, False)
         if wholly_na:
             out.append({"control_id": oscal, "outcome": "na", "value": value})
         else:
