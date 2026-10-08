@@ -51,7 +51,7 @@ try {
         throw 'Packaged Electron smoke could not parse the sidecar URL.'
     }
     $health = Invoke-RestMethod -Uri ($match.Groups[1].Value + '/healthz') -TimeoutSec 10
-    if ($health.status -ne 'ok' -or $health.version -ne '2.1.8') {
+    if ($health.status -ne 'ok' -or $health.version -ne '2.1.9') {
         throw "Unexpected packaged health response: $($health | ConvertTo-Json -Compress)"
     }
 

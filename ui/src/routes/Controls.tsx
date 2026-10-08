@@ -79,6 +79,10 @@ import {
 import { api, hasNativeBridge } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
+  responsibilityDescription,
+  responsibilityLabel,
+} from "@/lib/responsibilityPresentation";
+import {
   matchesControlStatusFilter,
   nextControlStatusFilter,
   normalizeControlStatusFilter,
@@ -563,8 +567,8 @@ export function Controls() {
     return m;
   }, [baselineControls.data]);
 
-  // OSCAL control_id (e.g. "ac-2.1") -> Column-L flex rollup. Drives the
-  // "On-Prem (Col L)" grid column. Keyed on the same control_id the Control
+  // OSCAL control_id (e.g. "ac-2.1") -> workbook responsibility rollup. Drives
+  // the Responsibility grid column. Keyed on the same control_id the Control
   // rows carry; absent controls render "—".
   const colLByControl = useMemo(() => {
     const m = new Map<string, ColLStatusRollup>();
@@ -1332,8 +1336,8 @@ export function Controls() {
                     );
                   return (
                     <Badge
-                      variant="outline"
-                      className={chipClass(v)}
+                      variant={v === "not_applicable" ? "na" : "outline"}
+                      className={v === "not_applicable" ? undefined : chipClass(v)}
                       title={
                         tooltipParts.join("\n\n") ||
                         `${ov.label}: ${labelMap[v] ?? v}`
@@ -1389,47 +1393,47 @@ export function Controls() {
             } as ColumnDef<ControlRow>,
           ]
         : []),
-      // Flex (On-Premises / workbook) slice status from the eMASS workbook's
-      // Column L — the pie-slice authority for that slice. Per-CCI col L is
-      // aggregated worst-of to the control (assess > escalate > inherited).
-      // Shown only when a workbook is open.
+      // Workbook responsibility derived from Columns L/M. Per-CCI values are
+      // aggregated worst-of to the control (local > source missing > inherited).
       ...(workbookId
         ? [
             {
               id: "col_l_flex",
-              header: "On-Prem (Col L)",
+              header: "Responsibility",
               cell: (ctx) => {
                 const r = colLByControl.get(ctx.row.original.control_id);
                 if (!r)
                   return (
                     <span className="text-xs text-muted-foreground">—</span>
                   );
-                const labelMap: Record<string, string> = {
-                  inherited: "Inherited",
-                  assess: "Assess",
-                  escalate: "Escalate",
-                  na: "N/A",
-                };
+                if (r.outcome === "na") {
+                  return (
+                    <span
+                      className="text-xs text-muted-foreground"
+                      title={responsibilityDescription("na")}
+                    >
+                      —
+                    </span>
+                  );
+                }
                 const chipClass =
                   r.outcome === "inherited"
                     ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                     : r.outcome === "escalate"
                       ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                      : r.outcome === "na"
-                        ? "border-muted bg-muted text-muted-foreground"
-                        : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
+                      : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
                 const raw = r.value.trim() === "" ? "(blank)" : r.value.trim();
-                const title =
-                  r.outcome === "na"
-                    ? `Control is Not Applicable (workbook Column D) — flex slice N/A`
-                    : `Workbook Column L: ${raw} — flex slice ${labelMap[r.outcome] ?? r.outcome}`;
+                const trace = r.source
+                  ? `Column L: ${raw}; Column M: ${r.source}`
+                  : `Column L: ${raw}`;
+                const title = `${responsibilityDescription(r.outcome, r.source)} ${trace}.`;
                 return (
                   <Badge
                     variant="outline"
-                    className={chipClass}
+                    className={`${chipClass} max-w-[220px] truncate`}
                     title={title}
                   >
-                    {labelMap[r.outcome] ?? r.outcome}
+                    {responsibilityLabel(r.outcome, r.source)}
                   </Badge>
                 );
               },
@@ -1447,8 +1451,7 @@ export function Controls() {
             // verdict before any kernel run: N/A. The col-L endpoint already
             // computes this (outcome === "na"), so surface "Not Applicable"
             // here instead of "—" rather than waiting for an Assess pass. This
-            // mirrors the live On-Prem (Col L) chip, which already reads N/A
-            // for the same control. Any non-NA control with no persisted
+            // mirrors the live Responsibility projection. Any non-NA control with no persisted
             // assessment still shows "—" (genuinely unassessed).
             const flex = colLByControl.get(ctx.row.original.control_id);
             if (flex?.outcome === "na") {
@@ -1456,7 +1459,7 @@ export function Controls() {
                 <button
                   type="button"
                   className={cn(
-                    badgeVariants({ variant: "outline" }),
+                    badgeVariants({ variant: "na" }),
                     "cursor-pointer aria-[pressed=true]:ring-2 aria-[pressed=true]:ring-ring aria-[pressed=true]:ring-offset-1",
                   )}
                   aria-label="Filter controls by Not Applicable"
@@ -1499,14 +1502,16 @@ export function Controls() {
           if (rewritesRequested > 0)
             tooltipParts.push(`Cite refresh ${rewritesRequested}`);
           const tooltip = tooltipParts.join(" · ");
-          const variant: "success" | "destructive" | "outline" | "warning" =
+          const variant: "success" | "destructive" | "outline" | "warning" | "na" =
             s === "Compliant"
               ? "success"
               : s === "Non-Compliant"
                 ? "destructive"
                 : s === "Mixed" || s === "Needs Review" || s === "Partially Assessed"
                   ? "warning"
-                  : "outline";
+                  : s === "Not Applicable"
+                    ? "na"
+                    : "outline";
           return (
             <div className="flex flex-wrap items-center gap-1">
               <button

@@ -2,7 +2,7 @@
 
 Standalone desktop app for assessing NIST SP 800-53 controls from eMASS CCIS workbooks.
 
-**Status:** v2.1.8 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
+**Status:** v2.1.9 — wired end-to-end, packaged as a Windows installer (NSIS). Electron front-end spawns a PyInstaller-bundled Python sidecar; no separate runtime install required.
 
 ## Stack
 
@@ -22,7 +22,7 @@ tests/      Pytest fixtures + tests
 
 ## Install (end users)
 
-Download **Cybersecurity Assessor Setup 2.1.8.exe** from the [latest release](https://github.com/noah12345678900/CyberAssessor/releases/latest) and run it. The installer is self-contained — it bundles the Python sidecar, so no separate Python/Node install is needed. On first run, open Settings and configure an approved Anthropic or OpenAI-compatible endpoint.
+Download **Cybersecurity Assessor Setup 2.1.9.exe** from the [latest release](https://github.com/noah12345678900/CyberAssessor/releases/latest) and run it. The installer is self-contained — it bundles the Python sidecar, so no separate Python/Node install is needed. On first run, open Settings and configure an approved Anthropic or OpenAI-compatible endpoint.
 
 ## Dev setup
 

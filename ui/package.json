@@ -1,6 +1,6 @@
 {
   "name": "ui",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -12,6 +12,7 @@
     "package": "pnpm build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test:status-filter": "node --test --test-isolation=none tests/control-status-filter.test.ts",
+    "test:responsibility": "node --test --test-isolation=none tests/responsibility-presentation.test.ts",
     "typecheck": "tsc -b --pretty"
   },
   "dependencies": {
