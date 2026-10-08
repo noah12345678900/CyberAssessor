@@ -492,8 +492,7 @@ export const useAttachOverlay = () => {
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(vars.workbookId),
       });
-      // Attach can flip a control's flex-slice picture (col-L chip), same as
-      // detach — keep the On-Prem (Col L) column fresh.
+      // Attach can flip the workbook responsibility picture, same as detach.
       qc.invalidateQueries({
         queryKey: qk.workbookColLStatus(vars.workbookId),
       });
@@ -2077,9 +2076,7 @@ export const useUpsertAssessment = (
         qc.invalidateQueries({
           queryKey: qk.workbookControlStatus(vars.body.workbook_id),
         });
-        // The On-Prem (Col L) grid column derives its "N/A" outcome from the
-        // workbook's Column-N status, which this save just changed — refresh it
-        // so the chip doesn't show stale until a manual refetch.
+        // Responsibility derives its N/A projection from authoritative Column D.
         qc.invalidateQueries({
           queryKey: qk.workbookColLStatus(vars.body.workbook_id),
         });
@@ -2135,7 +2132,7 @@ export const useAssessObjective = (
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(vars.workbookId),
       });
-      // Col-L "N/A" chip derives from Column-N status this assess may change.
+      // Refresh workbook responsibility after assessment.
       qc.invalidateQueries({
         queryKey: qk.workbookColLStatus(vars.workbookId),
       });
@@ -2297,10 +2294,10 @@ return useMutation({
     ...restOpts,
     onSuccess: (...args) => {
       qc.invalidateQueries({ queryKey: ["assessments"] });
-      // Applying a row writes Column N, which the Controls grid status pill and
-      // the On-Prem (Col L) "N/A" chip both derive from. The single-apply
+      // Applying a row writes Column N, which changes the Controls status pill.
+      // The single-apply
       // result carries only assessment_id (no workbook_id), so invalidate the
-      // ["workbook"] prefix — covers control-status + col-l-status for the
+      // ["workbook"] prefix — covers control-status and responsibility for the
       // active workbook. (The bulk apply below targets by id; this one can't.)
       qc.invalidateQueries({ queryKey: ["workbook"] });
       callerOnSuccess?.(...args);
@@ -2348,7 +2345,7 @@ export const useApplyAllToWorkbook = (
       qc.invalidateQueries({
         queryKey: qk.workbookControlStatus(result.workbook_id),
       });
-      // Col-L "N/A" chip derives from Column-N status the bulk apply writes.
+      // Refresh workbook responsibility after bulk apply.
       qc.invalidateQueries({
         queryKey: qk.workbookColLStatus(result.workbook_id),
       });

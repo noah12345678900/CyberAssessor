@@ -31,6 +31,11 @@ import {
 import { toast } from "@/components/ui/toaster";
 import { humanize } from "@/lib/errors";
 import {
+  isNotApplicableImplementationStatus,
+  responsibilityDescription,
+  responsibilityLabel,
+} from "@/lib/responsibilityPresentation";
+import {
   useApplyToWorkbook,
   useAddManualTag,
   useAssessmentAudit,
@@ -333,6 +338,7 @@ export function ControlDetail() {
         workbookSelected={workbookId !== undefined}
         colLInherited={colLInherited}
         colMRemote={colMRemote}
+        implementationStatus={selectedObjective?.implementation_status ?? null}
       />
 
       <ProgramControlsCard
@@ -557,6 +563,7 @@ function ContextCard({
   workbookSelected,
   colLInherited,
   colMRemote,
+  implementationStatus,
 }: {
   controlId: string;
   family: string;
@@ -582,6 +589,8 @@ function ContextCard({
   // Workbook Column M (Remote Inheritance Instance) — the source name; pairs
   // with col L so the chip resolves Remote/Yes correctly.
   colMRemote: string | null;
+  // Workbook Column D for the selected CCI. N/A makes responsibility irrelevant.
+  implementationStatus: string | null;
 }) {
   // Tally CCI statuses for this control in the selected workbook so the
   // tester can see "5/8 CCIs assessed — 3C / 1NC / 1NA" at a glance,
@@ -683,8 +692,13 @@ function ContextCard({
           />
         )}
 
-        {colLInherited !== null && (
-          <FlexInheritanceChip colL={colLInherited} colM={colMRemote} />
+        {(colLInherited !== null ||
+          isNotApplicableImplementationStatus(implementationStatus)) && (
+          <FlexInheritanceChip
+            colL={colLInherited ?? ""}
+            colM={colMRemote}
+            implementationStatus={implementationStatus}
+          />
         )}
 
         {odpEntries.length > 0 && (
@@ -720,7 +734,7 @@ function ContextCard({
                 <Badge variant="destructive" className="text-[10px]">
                   {progress.nc} NC
                 </Badge>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="na" className="text-[10px]">
                   {progress.na} N/A
                 </Badge>
                 {progress.review > 0 && (
@@ -874,7 +888,7 @@ function ProgramControlsGroup({ group }: { group: ProgramControlSourceGroup }) {
  * can predict what an assessment will do without reading the prompt:
  *   - provider / inherited (brand-blue) — engine auto-finalizes; tester
  *     normally won't run the LLM at all.
- *   - not_applicable (outline-grey) — engine auto-finalizes to N/A.
+ *   - not_applicable (white) — engine auto-finalizes to N/A.
  *   - hybrid (amber) — engine injects the customer narrative into the
  *     prompt so the LLM only assesses the customer-side share.
  *   - customer (subtle-neutral) — full local assessment, no short-circuit.
@@ -885,7 +899,7 @@ function ProgramControlsGroup({ group }: { group: ProgramControlSourceGroup }) {
  */
 function responsibilityMeta(responsibility: string): {
   label: string;
-  variant: "brand" | "warning" | "outline" | "subtle";
+  variant: "brand" | "warning" | "outline" | "subtle" | "na";
   blurb: string;
 } {
   const r = responsibility.trim().toLowerCase();
@@ -911,7 +925,7 @@ function responsibilityMeta(responsibility: string): {
   if (r === "not_applicable" || r === "not applicable" || r === "na")
     return {
       label: "Not Applicable",
-      variant: "outline",
+      variant: "na",
       blurb: "Excluded by the CRM — engine auto-marks N/A.",
     };
   return {
@@ -1050,23 +1064,21 @@ function flexInheritanceMeta(
     // Inherited flag — the source must be named in Column M.
     if (m)
       return {
-        label: "Inherited",
+        label: responsibilityLabel("inherited", m),
         variant: "brand",
-        blurb: `Inherited per the workbook (source: ${m}) — flex slice is Compliant-by-inheritance.`,
+        blurb: responsibilityDescription("inherited", m),
       };
     return {
-      label: "Escalate",
+      label: responsibilityLabel("escalate"),
       variant: "warning",
-      blurb:
-        "Column L marks this inherited but Column M names no source — escalated for reviewer (8c).",
+      blurb: responsibilityDescription("escalate"),
     };
   }
   // Local / No / blank → locally owned → assess.
   return {
-    label: "Assess (local)",
+    label: responsibilityLabel("assess"),
     variant: "subtle",
-    blurb:
-      "Workbook Column L says locally owned — flex slice is assessed (Non-Compliant if no evidence).",
+    blurb: responsibilityDescription("assess"),
   };
 }
 
@@ -1079,28 +1091,41 @@ function flexInheritanceMeta(
 function FlexInheritanceChip({
   colL,
   colM,
+  implementationStatus,
 }: {
   colL: string;
   colM?: string | null;
+  implementationStatus?: string | null;
 }) {
   const meta = flexInheritanceMeta(colL, colM);
   const shown = colL.trim() === "" ? "(blank)" : colL.trim();
+  const source = (colM ?? "").trim();
+  const trace = source
+    ? `Column L: ${shown}; Column M: ${source}`
+    : `Column L: ${shown}`;
+  const notApplicable = isNotApplicableImplementationStatus(implementationStatus);
   return (
-    <div className="rounded-md bg-muted/40 p-2 text-xs space-y-1.5">
-      <div className="text-muted-foreground">
-        Inheritance (Workbook Col L)
-      </div>
+    <div
+      className="rounded-md bg-muted/40 p-2 text-xs space-y-1.5"
+      title={notApplicable ? "Column D: Not Applicable" : trace}
+    >
+      <div className="text-muted-foreground">Responsibility</div>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-muted-foreground" aria-label="On-premises / workbook scope">
-          Flex:
-        </span>
-        <Badge variant={meta.variant} className="text-[10px]">
-          {meta.label}
-        </Badge>
-        <span className="font-mono text-[10px] text-muted-foreground">
-          {shown}
-        </span>
-        <span className="text-muted-foreground">{meta.blurb}</span>
+        {notApplicable ? (
+          <>
+            <span className="text-muted-foreground" aria-hidden="true">—</span>
+            <span className="text-muted-foreground">
+              {responsibilityDescription("na")}
+            </span>
+          </>
+        ) : (
+          <>
+            <Badge variant={meta.variant} className="max-w-full text-[10px]">
+              <span className="truncate">{meta.label}</span>
+            </Badge>
+            <span className="text-muted-foreground">{meta.blurb}</span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1142,7 +1167,7 @@ function StatusPill({
       ? "success"
       : status === "Non-Compliant"
         ? "destructive"
-        : "warning";
+        : "na";
   const label =
     status === "Compliant"
       ? "Compliant"
