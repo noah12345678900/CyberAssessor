@@ -74,36 +74,6 @@ _R8A_INHERITANCE_INTERNAL: tuple[str, ...] = (
     "inherited from the parent system",
 )
 
-# Rule 8b — Not Applicable via EXPLICIT scope exclusion documented by the
-# assessor in col Q (results) / col U (previous_results). The generic DISA
-# template text in K/J never carries these; the human-authored rationale in
-# Q/U does. NA is reserved for genuine non-applicability — a documented
-# scope/SSAA/SDA decision that the control does not apply.
-_R8B_NA_SCOPE_PHRASES: tuple[str, ...] = (
-    "not applicable per sda control",
-    "per system scoping, this cci is not applicable",
-    "per system scoping this cci is not applicable",
-    "not required per ssaa",
-    "per ssaa scope",
-    "not required for goco",
-    "n/a in cloud environment",
-    # Backstop scope-exclusion phrasings (2026-06-17). High-precision: each
-    # asserts the control is outside the assessed boundary, not merely
-    # unimplemented. COMPLIANCE_GUARD still suppresses these if the same
-    # rationale claims compliance. The col-N tier (2.5) is the primary NA
-    # recovery; these catch the case where col N is blank but the assessor
-    # documented the exclusion in col Q/U (the AC-18 wireless pattern).
-    "control does not apply",
-    "this control does not apply",
-    "does not apply to this system",
-    "out of the assessed boundary",
-    "outside the assessment boundary",
-    "outside the authorization boundary",
-    "no wireless capability",
-    "system has no wireless",
-    "not applicable because",
-)
-
 # Rule 8a (CSP/external-inheritance lane) — these phrases in col Q/U mean the
 # control IS implemented, just by a provider we inherit from. Per doctrine,
 # inherited/CSP-provided controls are COMPLIANT, NOT Not Applicable.
@@ -119,13 +89,6 @@ _R8A_CSP_INHERIT_PHRASES: tuple[str, ...] = (
     "provided by gcp",
     "inherited from the csp",
     "inherited from the cloud service provider",
-)
-
-# Negative guard for the NA lane: an explicit compliance claim in the same
-# Q/U rationale means the human ruled it Compliant (program/contract level),
-# not NA. If this fires, the scope-exclusion NA phrases are suppressed.
-_COMPLIANCE_GUARD = re.compile(
-    r"compliance is satisfied|is compliant|are compliant", re.IGNORECASE
 )
 
 # Bare "inherited from" — ambiguous; needs source classification before
@@ -177,6 +140,17 @@ class ColLFlexOutcome(str, Enum):
 # blank mean locally owned. Kept distinct from the CSP-external hints — an
 # inherited control's source is named in M, not inferred from L.
 _COL_L_REMOTE_TOKENS: frozenset[str] = frozenset({"remote", "yes", "y", "true", "inherited"})
+_NA_STATUS_VALUES: frozenset[str] = frozenset({"not applicable", "n/a", "na"})
+
+
+def is_column_d_not_applicable(row: CcisRow) -> bool:
+    """Return whether eMASS Column D authoritatively scopes the CCI out."""
+    return (row.implementation_status or "").strip().casefold() in _NA_STATUS_VALUES
+
+
+def column_d_blocks_not_applicable(row: CcisRow) -> bool:
+    """Return whether Column D does not authoritatively scope the CCI out."""
+    return not is_column_d_not_applicable(row)
 
 
 def resolve_col_l_flex_status(
@@ -240,7 +214,7 @@ class AutoStatusResult:
     narrative: str | None
     rule: str | None  # "8a" / "8b" / "8c" / None
     trigger_phrase: str | None  # the verbatim phrase that fired the rule
-    trigger_column: str | None  # "J", "K", "L", "Q", or "U"
+    trigger_column: str | None  # "D", "J", "K", "L", "M", "N", "Q", or "U"
     reason: str | None = None  # human-readable note (e.g. for UNCLEAR_8C)
 
 
@@ -253,17 +227,28 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
     """Apply rule #8 to a single CCI row. Pure function, no DB, no LLM.
 
     Order of checks:
+        0. Col D Not Applicable (authoritative workbook scope; always wins).
         1. Rule 8a explicit phrases in cols K then J (Compliant). Runs FIRST
            so col-K-authoritative DoD-auto rows are claimed Compliant before
            any NA recognizer can see them.
         2. Rule 8a qualified "inherited from <internal source>" in cols K/J.
-        3. Col Q/U documented-rationale recognizer:
-             3a. explicit scope-exclusion phrases (COMPLIANCE_GUARD-gated) → NA.
-             3b. CSP / external-inheritance phrases → Compliant.
+        3. Col Q/U CSP / external-inheritance phrases → Compliant.
         4. Rule 8a structural — col L non-empty, not "Local", not naming a CSP.
         5. Rule 8c — bare "inherited from" with no qualifier (UNCLEAR).
         6. NO_AUTO_RULE — row goes to normal assessment.
     """
+
+    # Column D is the eMASS tailoring decision and is authoritative. Check it
+    # before inheritance text, CRM handling, cache lookup, or the LLM.
+    if is_column_d_not_applicable(row):
+        return AutoStatusResult(
+            verdict=AutoStatusVerdict.NOT_APPLICABLE_8B,
+            status=ComplianceStatus.NOT_APPLICABLE,
+            narrative=_format_column_d_na_narrative(row),
+            rule="8b",
+            trigger_phrase=str(row.implementation_status),
+            trigger_column="D",
+        )
 
     # --- 1. Rule 8a explicit phrases (col-K authoritative; runs first) ---
     for col_name, text in (("K", row.procedures), ("J", row.guidance)):
@@ -291,58 +276,11 @@ def classify_row(row: CcisRow) -> AutoStatusResult:
                 trigger_column=col_name,
             )
 
-    # --- 2.5 Pre-filled human Not Applicable in col N (authoritative) ----
-    # The ONLY reliable signal that a control is Not Applicable is the
-    # workbook's own context — an assessor who scoped it out and recorded
-    # that decision. When col N (Compliance Status, current cycle) already
-    # carries a human "Not Applicable", respect it verbatim rather than
-    # re-deriving and risking a false Non-Compliant (the failure mode that
-    # marked AC-18 — a documented no-wireless scope exclusion — as NC because
-    # the col-Q phrasing didn't match the 8b table).
-    #
-    # Scoped to Not Applicable ONLY (owner decision: "N/A takes precedence;
-    # if N/A isn't applicable the next tier is NC"). We do NOT respect a
-    # pre-filled "Compliant" — that would rubber-stamp last cycle's verdict
-    # against this cycle's evidence; a pre-filled "Non-Compliant" reaches NC
-    # via the normal path anyway. Placed AFTER rule 8a so a col-K
-    # "automatically compliant at the DoD level" still wins over a stale NA
-    # (feedback_colk_authoritative), and BEFORE the col-Q/U recognizer so a
-    # clean human NA short-circuits without needing a phrase-table match.
-    status_n = (row.status or "").strip().lower()
-    if status_n in ("not applicable", "n/a", "na"):
-        return AutoStatusResult(
-            verdict=AutoStatusVerdict.NOT_APPLICABLE_8B,
-            status=ComplianceStatus.NOT_APPLICABLE,
-            narrative=_format_prefilled_na_narrative(row),
-            rule="8b",
-            trigger_phrase=str(row.status),
-            trigger_column="N",
-        )
-
-    # --- 3. Col Q / U documented-rationale recognizer -------------------
-    # The assessor's scope-exclusion and CSP-attribution rationale lives here,
-    # NOT in the generic DISA template text of K/J. This is the mechanism that
-    # recovers the human-reviewed NA verdicts.
+    # --- 3. Col Q / U provider-attribution recognizer --------------------
+    # Narrative text may still establish provider inheritance (Compliant), but
+    # it cannot create an N/A verdict. Applicability comes only from Column D.
     q_text, u_text = row.results, row.previous_results
-    blob = f"{q_text or ''}\n{u_text or ''}"
-    compliance_claimed = bool(_COMPLIANCE_GUARD.search(blob))
-
-    # 3a. explicit scope exclusion → Not Applicable (unless compliance claimed
-    #     in the same rationale, which means the human ruled it Compliant).
-    if not compliance_claimed:
-        for col_name, text in (("Q", q_text), ("U", u_text)):
-            hit = _find_first_trigger(text, _R8B_NA_SCOPE_PHRASES)
-            if hit is not None:
-                return AutoStatusResult(
-                    verdict=AutoStatusVerdict.NOT_APPLICABLE_8B,
-                    status=ComplianceStatus.NOT_APPLICABLE,
-                    narrative=_format_na_scope_narrative(hit, col_name, text),
-                    rule="8b",
-                    trigger_phrase=hit,
-                    trigger_column=col_name,
-                )
-
-    # 3b. CSP / external-provider inheritance → Compliant (inherited != NA).
+    # CSP / external-provider inheritance → Compliant (inherited != N/A).
     for col_name, text in (("Q", q_text), ("U", u_text)):
         hit = _find_first_trigger(text, _R8A_CSP_INHERIT_PHRASES)
         if hit is not None:
@@ -467,44 +405,19 @@ def _format_8a_structural_narrative(source: str) -> str:
     )
 
 
-def _format_na_scope_narrative(
-    trigger: str, col_name: str, source_text: str | None = None
-) -> str:
-    col_label = {
-        "Q": "Assessment Results (col Q)",
-        "U": "Previous Results (col U)",
-    }.get(col_name, f"col {col_name}")
-    quoted = _original_case(source_text, trigger)
-    return (
-        f"Not applicable — {col_label} documents an explicit scope exclusion: "
-        f'"{quoted}".'
-    )
-
-
-def _format_prefilled_na_narrative(row: "CcisRow") -> str:
-    """NA narrative for a control whose col N already carries a human 'Not
-    Applicable'. Leads with the validator's NA-class phrase ("Not applicable
-    —") and cites the assessor's documented rationale from col Q (current) or
-    col U (previous) when present, so the verdict is defensible to a reviewer.
-    """
+def _format_column_d_na_narrative(row: "CcisRow") -> str:
+    """NA narrative for authoritative Control Implementation Status."""
     rationale = (row.results or row.previous_results or "").strip()
     if rationale:
-        # Use the first line of the assessor's rationale verbatim. We take only
-        # the first line (so a multi-paragraph col-Q/col-U entry doesn't bloat
-        # the NA narrative) but DO NOT character-truncate it — a hard [:240]
-        # cap clipped real rationales mid-word (e.g. "...PE-10 does ") in the
-        # official record. The full first line is the assessor's own words and
-        # belongs in the deliverable intact.
         excerpt = rationale.split("\n", 1)[0].strip()
         return (
-            "Not applicable — the assessor recorded a Not Applicable verdict "
-            "for this control in the workbook (Compliance Status, col N); "
+            "Not applicable - the eMASS workbook declares this control Not "
+            "Applicable in Column D (Control Implementation Status); "
             f'documented rationale: "{excerpt}".'
         )
     return (
-        "Not applicable — the assessor recorded a Not Applicable verdict for "
-        "this control in the workbook (Compliance Status, col N). The control "
-        "does not apply within the system's authorization boundary."
+        "Not applicable - the eMASS workbook declares this control Not "
+        "Applicable in Column D (Control Implementation Status)."
     )
 
 

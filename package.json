@@ -1,6 +1,6 @@
 {
   "name": "cybersecurity-assessor",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "private": true,
   "description": "Standalone NIST SP 800-53 control assessor for eMASS CCIS workbooks. Electron + React UI, Python FastAPI sidecar.",
   "author": "Noah Jaskolski <noah@nuon.ai>",

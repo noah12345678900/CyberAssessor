@@ -134,13 +134,14 @@ def test_recorder_records_accepted_for_rule_8b_short_circuit(session, workbook):
     ``_run`` is per-verdict; a regression that broke only 8b's outcome would
     pass the 8a test alone.
 
-    Post-v0.11.0 the 8b NA trigger is a documented scope exclusion in col Q/U
-    (the assessor's own rationale), not CSP language in col K/J — so this row
-    carries the exclusion in col Q. See
-    test_rules_golden.py::test_8b_scope_exclusion_in_col_q.
+    Column D is the authoritative 8b N/A trigger; narrative text only supplies
+    supporting context.
     """
     recorder = RunRecorder.start(session, workbook_id=workbook.id)
-    row = _row(results="Not required for GOCO; this CCI is out of the assessed boundary.")
+    row = _row(
+        implementation_status="Not Applicable",
+        results="Not required for GOCO; this CCI is out of the assessed boundary.",
+    )
     stub = StubLlmClient([])
     assessor = Assessor(llm=stub)
 
@@ -224,7 +225,7 @@ def test_recorder_records_abstain_when_retries_exhausted(session, workbook):
 
 
 def test_recorder_records_accepted_for_crm_short_circuit(session, workbook):
-    """CRM provider/inherited/NA with recorder → ccis_accepted=1.
+    """CRM inherited with recorder -> ccis_accepted=1.
 
     Pins assessor.py:535-537. The CRM short-circuit has its OWN
     outcome-write block (separate from the rule-#8 and LLM paths); a
@@ -237,7 +238,7 @@ def test_recorder_records_accepted_for_crm_short_circuit(session, workbook):
         by_control={
             "ac-2": CrmEntry(
                 control_id="ac-2",
-                responsibility="provider",
+                responsibility="inherited",
                 narrative=None,  # use default template — no supersession to interfere
                 source_baseline_id=1,
             )
@@ -247,7 +248,7 @@ def test_recorder_records_accepted_for_crm_short_circuit(session, workbook):
     assessor = Assessor(llm=stub)
 
     decision = assessor.assess(row, crm_context=crm, recorder=recorder)
-    assert decision.source == "crm_provider"
+    assert decision.source == "crm_inherited"
     assert decision.accepted is True
 
     run = recorder.finish()

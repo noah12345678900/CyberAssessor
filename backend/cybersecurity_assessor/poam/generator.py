@@ -37,17 +37,16 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlmodel import Session, select
-
-from sqlmodel import delete
+from sqlmodel import Session, delete, select
 
 from ..engine.crm_context import CrmContext, CrmEntry, build_crm_context
 from ..engine.finding_corroboration import (
-    _SEVERITY_RANK,
     _severity_sort_key,
-    affected_hosts as _shared_affected_hosts,
-    corroborating_findings as _shared_corroborating_findings,
     format_finding_citation,
+)
+from ..engine.finding_corroboration import affected_hosts as _shared_affected_hosts
+from ..engine.finding_corroboration import (
+    corroborating_findings as _shared_corroborating_findings,
 )
 from ..excel.ccis_reader import _ccis_to_oscal_control_id, _normalize_control
 from ..models import (
@@ -60,7 +59,9 @@ from ..models import (
     PoamEvidence,
     PoamMilestone,
     PoamObjective,
+    PoamRiskHistory,
     PoamStatus,
+    ResidualSuggestionCache,
     RiskLevel,
     StigFinding,
 )
@@ -805,9 +806,60 @@ def _prune_stale_poam_links(workbook_id: int, s: Session) -> int:
             continue
         s.exec(delete(PoamMilestone).where(PoamMilestone.poam_id == pid))
         s.exec(delete(PoamEvidence).where(PoamEvidence.poam_id == pid))
+        s.exec(delete(PoamRiskHistory).where(PoamRiskHistory.poam_id == pid))
+        s.exec(
+            delete(ResidualSuggestionCache).where(
+                ResidualSuggestionCache.poam_id == pid
+            )
+        )
         p = s.get(Poam, pid)
         if p is not None:
             s.delete(p)
+            deleted += 1
+    return deleted
+
+
+def prune_poam_links_for_objectives(
+    workbook_id: int,
+    objective_ids: set[int],
+    s: Session,
+) -> int:
+    """Remove POAM links only for the specified now-non-NC objectives."""
+    if not objective_ids:
+        return 0
+    links = s.exec(
+        select(PoamObjective)
+        .join(Poam, Poam.id == PoamObjective.poam_id)
+        .where(
+            Poam.workbook_id == workbook_id,
+            PoamObjective.objective_id.in_(objective_ids),  # type: ignore[attr-defined]
+        )
+    ).all()
+    affected_poams = {link.poam_id for link in links}
+    for link in links:
+        s.delete(link)
+    s.flush()
+
+    deleted = 0
+    for poam_id in affected_poams:
+        remaining = s.exec(
+            select(PoamObjective).where(PoamObjective.poam_id == poam_id)
+        ).first()
+        if remaining is not None:
+            continue
+        s.exec(delete(PoamMilestone).where(PoamMilestone.poam_id == poam_id))
+        s.exec(delete(PoamEvidence).where(PoamEvidence.poam_id == poam_id))
+        s.exec(
+            delete(PoamRiskHistory).where(PoamRiskHistory.poam_id == poam_id)
+        )
+        s.exec(
+            delete(ResidualSuggestionCache).where(
+                ResidualSuggestionCache.poam_id == poam_id
+            )
+        )
+        poam = s.get(Poam, poam_id)
+        if poam is not None:
+            s.delete(poam)
             deleted += 1
     return deleted
 

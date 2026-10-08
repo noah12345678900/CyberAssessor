@@ -5,6 +5,7 @@
     "control_id": "PE-3",
     "ap_acronym": "PE-3.1",
     "cci_id": "CCI-000913",
+    "implementation_status": "Not Applicable",
     "guidance": "The organization enforces physical access authorizations at entry/exit points to the facility where the information system resides.",
     "procedures": "Enforce physical access authorizations at entry/exit points to the facility where the information system resides.",
     "inherited": null,
@@ -21,10 +22,9 @@
   ],
   "expected": {
     "status": "Not Applicable",
-    "source_in": ["llm", "llm_after_retry"],
+    "source_in": ["rule_8b"],
     "needs_review": false,
     "accepted": true,
-    "llm_calls": 1,
-    "narrative_contains_regex": "On-prem:[\\s\\S]*Cloud:"
+    "llm_calls": 0
   }
 }

@@ -25,7 +25,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from cybersecurity_assessor import models  # noqa: F401 -- register tables
 from cybersecurity_assessor.db import get_session
+from cybersecurity_assessor.routes.controls import _sync_poams_for_objective
 from cybersecurity_assessor.models import (
+    ComplianceStatus,
     Evidence,
     EvidenceKind,
     EvidenceTag,
@@ -34,7 +36,9 @@ from cybersecurity_assessor.models import (
     Control,
     Poam,
     PoamMilestone,
+    PoamObjective,
     PoamRiskHistory,
+    ResidualSuggestionCache,
     RiskLevel,
     SystemContext,
     Workbook,
@@ -111,6 +115,76 @@ def test_delete_poam_with_risk_history_does_not_500(client_engine):
         assert s.get(Poam, poam_id) is None
         assert s.exec(select(PoamRiskHistory)).all() == []
         assert s.exec(select(PoamMilestone)).all() == []
+
+
+def test_manual_status_sync_deletes_all_empty_poam_children(client_engine):
+    """Manual NC-to-Compliant saves must not fail on POAM child FKs."""
+    _tc, engine = client_engine
+    with Session(engine) as s:
+        fw = Framework(name="NIST SP 800-53", version="Rev 5")
+        s.add(fw)
+        s.commit()
+        s.refresh(fw)
+        control = Control(
+            framework_id=fw.id,
+            control_id="ac-2",
+            title="AC-2",
+            family="AC",
+        )
+        s.add(control)
+        s.commit()
+        s.refresh(control)
+        objective = Objective(
+            control_id_fk=control.id,
+            objective_id="CCI-000015",
+            source="CCI",
+            text="Account management.",
+        )
+        workbook = Workbook(path="x.xlsx", filename="x.xlsx")
+        s.add(objective)
+        s.add(workbook)
+        s.commit()
+        s.refresh(objective)
+        s.refresh(workbook)
+        poam = Poam(
+            workbook_id=workbook.id,
+            control_cluster="AC-2",
+            vulnerability_description="Account management gap.",
+        )
+        s.add(poam)
+        s.commit()
+        s.refresh(poam)
+        s.add(PoamObjective(poam_id=poam.id, objective_id=objective.id))
+        s.add(
+            PoamRiskHistory(
+                poam_id=poam.id,
+                field="impact",
+                new_value=RiskLevel.MODERATE.value,
+            )
+        )
+        s.add(
+            ResidualSuggestionCache(
+                fingerprint="manual-sync-cache",
+                advisor_version="test",
+                prompt_sha="test",
+                poam_id=poam.id,
+                payload_json="{}",
+            )
+        )
+        s.commit()
+
+        deleted = _sync_poams_for_objective(
+            workbook.id,
+            objective.id,
+            ComplianceStatus.COMPLIANT,
+            s,
+        )
+        s.commit()
+
+        assert deleted == 1
+        assert s.exec(select(Poam)).all() == []
+        assert s.exec(select(PoamRiskHistory)).all() == []
+        assert s.exec(select(ResidualSuggestionCache)).all() == []
 
 
 def test_reset_pending_context_with_boundary_doc_children_does_not_500(client_engine):

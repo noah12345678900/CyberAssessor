@@ -13,9 +13,7 @@ Invariants proven here:
   narrative into GAP_DESCRIBING (or AMBIGUOUS when combined with an
   affirming phrase) — either way, status COMPLIANT can never validate.
 * Rules: the rule-8a phrase ``automatically compliant`` is invariant
-  under surrounding noise. Whatever the operator (or prior assessor)
-  wrapped the phrase in, the row routes to rule_8a — provided no 8b
-  trigger is also present (8b runs first and would short-circuit to NA).
+  under surrounding noise. Narrative-only scope language cannot create N/A.
 
 Hypothesis is in the dev extras; the entire module imports it lazily
 through ``pytest.importorskip`` so a user running ``pytest`` without the
@@ -27,12 +25,8 @@ from __future__ import annotations
 import pytest
 
 hypothesis = pytest.importorskip("hypothesis")
-from hypothesis import assume, given, settings  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
-
 from cybersecurity_assessor.engine.rules import (  # noqa: E402
     _R8A_TRIGGERS,
-    _R8B_NA_SCOPE_PHRASES,
     AutoStatusVerdict,
     classify_row,
 )
@@ -45,7 +39,8 @@ from cybersecurity_assessor.engine.validator import (  # noqa: E402
 )
 from cybersecurity_assessor.excel.ccis_reader import CcisRow  # noqa: E402
 from cybersecurity_assessor.models import ComplianceStatus  # noqa: E402
-
+from hypothesis import assume, given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Local row builder (avoids depending on the make_row pytest fixture, which
@@ -59,6 +54,12 @@ _NEUTRAL_GUIDANCE = (
     "Automated mechanisms support the management of information system accounts."
 )
 _NEUTRAL_PROCEDURES = "Examine account management documentation; verify automation."
+_LEGACY_NA_NARRATIVE_PHRASES = (
+    "not required for goco",
+    "control does not apply",
+    "outside the authorization boundary",
+    "system has no wireless capability",
+)
 
 
 def _row(**overrides) -> CcisRow:
@@ -152,20 +153,12 @@ def test_rule_8a_phrase_invariant(prefix: str, suffix: str) -> None:
 
 @given(
     r8a=st.sampled_from(_R8A_TRIGGERS),
-    r8b=st.sampled_from(_R8B_NA_SCOPE_PHRASES),
+    na_phrase=st.sampled_from(_LEGACY_NA_NARRATIVE_PHRASES),
 )
-def test_col_k_8a_explicit_precedes_qu_na_recognizer(r8a: str, r8b: str) -> None:
-    """An 8a explicit phrase in col K beats an NA scope-exclusion in col Q.
-
-    v0.11.0 order of checks (rules.py): step 1 (8a explicit phrases in
-    col K/J) runs before step 3 (the col Q/U documented-rationale
-    recognizer). So a row that is BOTH auto-compliant per its
-    assessment procedures AND carries a scope-exclusion phrase in the
-    human-authored results must resolve to COMPLIANT_8A — the col-K
-    statement is authoritative. A refactor that reordered the recognizer
-    ahead of the explicit-phrase pass would silently flip these to NA.
-    """
-    row = _row(procedures=f"This control is {r8a}.", results=f"{r8b}")
+def test_col_k_8a_is_unchanged_by_na_language_in_q(
+    r8a: str, na_phrase: str
+) -> None:
+    row = _row(procedures=f"This control is {r8a}.", results=na_phrase)
     result = classify_row(row)
     assert result.verdict is AutoStatusVerdict.COMPLIANT_8A
     assert result.rule == "8a"

@@ -170,6 +170,7 @@ def _make_row(
     excel_row: int,
     control_id: str,
     cci_id: str,
+    implementation_status: str | None = None,
 ) -> CcisRow:
     """Minimal CcisRow — only fields backfill touches."""
     return CcisRow(
@@ -178,7 +179,7 @@ def _make_row(
         control_id=control_id,
         ap_acronym=None,
         cci_id=cci_id,
-        implementation_status=None,
+        implementation_status=implementation_status,
         designation=None,
         narrative=None,
         definition=None,
@@ -325,7 +326,16 @@ def _setup_corpus(
             session.commit()
 
         rows.append(
-            _make_row(excel_row=excel_row, control_id=cid_text.upper(), cci_id=cci_text)
+            _make_row(
+                excel_row=excel_row,
+                control_id=cid_text.upper(),
+                cci_id=cci_text,
+                implementation_status=(
+                    "Not Applicable"
+                    if resp in {"provider", "not_applicable"}
+                    else "Planned"
+                ),
+            )
         )
 
     fake_index = CcisIndex(

@@ -55,17 +55,20 @@ def test_csp_phrase_in_procedures_does_not_fire(make_row):
 
 
 # ---------------------------------------------------------------------------
-# Rule 8b — Not Applicable via documented scope exclusion in col Q/U
+# Rule 8b — Not Applicable via authoritative Column D
 # ---------------------------------------------------------------------------
 
 
-def test_8b_fires_on_scope_exclusion_in_results(make_row):
-    row = make_row(results="Not applicable per SDA control.")
+def test_8b_fires_on_column_d_not_applicable(make_row):
+    row = make_row(
+        implementation_status="Not Applicable",
+        results="Not applicable per SDA control.",
+    )
     result = rules.classify_row(row)
     assert result.verdict == rules.AutoStatusVerdict.NOT_APPLICABLE_8B
     assert result.status == ComplianceStatus.NOT_APPLICABLE
     assert result.rule == "8b"
-    assert result.trigger_column == "Q"
+    assert result.trigger_column == "D"
 
 
 def test_8a_explicit_phrase_precedes_q_u_recognizer(make_row):

@@ -57,7 +57,7 @@ def _write_wholly_na_source(path, control_id: str, cci_id: str) -> None:
     sheet.cell(7, 1).value = "YES"
     sheet.cell(7, 2).value = control_id
     sheet.cell(7, 8).value = cci_id
-    sheet.cell(7, 14).value = "Not Applicable"
+    sheet.cell(7, 4).value = "Not Applicable"
     workbook.save(path)
 
 
@@ -116,6 +116,57 @@ class TestEmassExport:
         ws = load_workbook(str(out))["Controls"]
         status = ws.cell(_row_for(ws, "AC-4"), _status_col(ws)).value or ""
         assert status == "Not Applicable"
+
+    def test_workbook_na_precedes_stale_compliant_assessment(
+        self, session, controls_catalog, assess, tmp_path
+    ):
+        _write_wholly_na_source(
+            controls_catalog["path"], "AC-4", "CCI-001548"
+        )
+        assess(
+            controls_catalog["workbook"].id,
+            controls_catalog["objectives"]["CCI-001548"].id,
+            ComplianceStatus.COMPLIANT,
+            narrative="Stale Compliant result.",
+        )
+        tpl = tmp_path / "tpl_na_stale.xlsx"
+        out = tmp_path / "out_na_stale.xlsx"
+        _make_template(tpl, acronyms=("AC-4",))
+
+        export_controls_to_emass(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            template_path=str(tpl),
+            output_path=str(out),
+        )
+
+        ws = load_workbook(str(out))["Controls"]
+        status = ws.cell(_row_for(ws, "AC-4"), _status_col(ws)).value or ""
+        assert status == "Not Applicable"
+
+    def test_non_na_column_d_suppresses_stale_persisted_na(
+        self, session, controls_catalog, assess, tmp_path
+    ):
+        assess(
+            controls_catalog["workbook"].id,
+            controls_catalog["objectives"]["CCI-001548"].id,
+            ComplianceStatus.NOT_APPLICABLE,
+            narrative="Stale N/A from a prior release.",
+        )
+        tpl = tmp_path / "tpl_stale_na.xlsx"
+        out = tmp_path / "out_stale_na.xlsx"
+        _make_template(tpl, acronyms=("AC-4",))
+
+        export_controls_to_emass(
+            session=session,
+            workbook_id=controls_catalog["workbook"].id,
+            template_path=str(tpl),
+            output_path=str(out),
+        )
+
+        ws = load_workbook(str(out))["Controls"]
+        status = ws.cell(_row_for(ws, "AC-4"), _status_col(ws)).value or ""
+        assert status != "Not Applicable"
 
     def test_unassessed_objectives_are_not_synthesized_as_na(
         self, session, controls_catalog, assess, tmp_path

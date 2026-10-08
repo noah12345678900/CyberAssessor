@@ -22,13 +22,19 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from zipfile import BadZipFile
 
+from openpyxl.utils.exceptions import InvalidFileException
 from sqlmodel import Session, delete, select
 
 from ..config import load_config
+from ..engine import rules
 from ..models import (
     Assessment,
+    AssessmentCitation,
+    AssessmentEvidenceShown,
     AssessmentImplementation,
+    AssessmentTrace,
     Baseline,
     BaselineControl,
     BaselineObjective,
@@ -87,6 +93,7 @@ class NarrativeImportResult:
     # In-scope CCIs with a status but an empty column Q narrative — a row
     # with no narrative can't seed a POAM, so we skip rather than write "".
     skipped_no_narrative: list[str] = field(default_factory=list)
+    overridden_by_column_d: int = 0
 
 
 def _normalize_status(raw: str | None) -> ComplianceStatus | None:
@@ -131,16 +138,15 @@ def import_narratives(
     # points at the program workbook's own row (what eMASS export writes
     # back to), not the import file's row. Best-effort: a missing workbook
     # file just leaves excel_row null.
-    wb_by_cci: dict[str, int] = {}
+    wb_rows_by_cci = {}
     wb_path = Path(wb.path)
-    if wb_path.exists():
-        try:
-            wb_index = read_workbook_index(wb_path)
-            wb_by_cci = {
-                cci: row.excel_row for cci, row in wb_index.by_cci().items()
-            }
-        except (ValueError, FileNotFoundError):
-            wb_by_cci = {}
+    if not wb_path.exists():
+        raise FileNotFoundError(f"Source workbook not found at {wb_path}")
+    try:
+        wb_index = read_workbook_index(wb_path)
+        wb_rows_by_cci = wb_index.by_cci()
+    except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
+        raise ValueError(f"Source workbook could not be read: {wb_path}") from exc
 
     # In-scope objective set: a CCI is in-scope iff its parent Control is.
     # Mirrors the authoritative join in routes/controls.py assess batch.
@@ -175,6 +181,7 @@ def import_narratives(
     )
     now = datetime.now(timezone.utc)
     cfg = load_config()
+    authoritative_objective_ids: set[int] = set()
 
     for cci, row in import_by_cci.items():
         obj = objective_by_cci.get(cci)
@@ -182,20 +189,46 @@ def import_narratives(
             result.unmatched.append(cci)
             continue
 
+        program_row = wb_rows_by_cci.get(cci)
+        if program_row is None:
+            raise ValueError(
+                f"Source workbook row not found for in-scope objective {cci}."
+            )
         status = _normalize_status(row.status)
+        column_d_na = bool(
+            program_row is not None
+            and rules.is_column_d_not_applicable(program_row)
+        )
+        if column_d_na:
+            if status != ComplianceStatus.NOT_APPLICABLE:
+                result.overridden_by_column_d += 1
+            status = ComplianceStatus.NOT_APPLICABLE
+            authoritative_objective_ids.add(obj.id)
+        elif status == ComplianceStatus.NOT_APPLICABLE:
+            raise ValueError(
+                f"Imported N/A conflicts with source workbook Column D for {cci}."
+            )
         if status is None:
             result.skipped_no_status.append(cci)
             continue
 
-        narrative = (row.results or "").strip()
+        if column_d_na:
+            narrative = (rules.classify_row(program_row).narrative or "").strip()
+        else:
+            # Preserve pre-v2.1.8 behavior for every non-N/A import: an import
+            # row without its own narrative is skipped rather than borrowing
+            # possibly contradictory text from the program workbook.
+            narrative = (row.results or "").strip()
         if not narrative:
             result.skipped_no_narrative.append(cci)
             continue
 
         tester = (row.tester or cfg.default_tester or "Unknown").strip() or "Unknown"
         date_tested = row.date_tested or now
-        excel_row = wb_by_cci.get(cci, row.excel_row)
+        excel_row = program_row.excel_row if program_row is not None else row.excel_row
         narrative_class = _CLASS_FOR_STATUS[status]
+        inheritance_rule = "8b" if column_d_na else None
+        verdict_source = VerdictSource.RULE_8B if column_d_na else VerdictSource.IMPORTED
 
         existing = existing_by_obj.get(obj.id)
         if existing is not None:
@@ -208,6 +241,21 @@ def import_narratives(
                     AssessmentImplementation.assessment_id == existing.id
                 )
             )
+            session.exec(
+                delete(AssessmentCitation).where(
+                    AssessmentCitation.assessment_id == existing.id
+                )
+            )
+            session.exec(
+                delete(AssessmentTrace).where(
+                    AssessmentTrace.assessment_id == existing.id
+                )
+            )
+            session.exec(
+                delete(AssessmentEvidenceShown).where(
+                    AssessmentEvidenceShown.assessment_id == existing.id
+                )
+            )
             existing.status = status
             existing.tester = tester
             existing.date_tested = date_tested
@@ -215,15 +263,16 @@ def import_narratives(
             existing.narrative_on_prem = None
             existing.narrative_cloud = None
             existing.narrative_class = narrative_class
-            existing.inheritance_rule = None
+            existing.inheritance_rule = inheritance_rule
             existing.needs_review = False
             existing.review_reason = None
             existing.confidence = None
             existing.rewrite_requested = False
             existing.rewrite_requested_refs = None
-            existing.verdict_source = VerdictSource.IMPORTED
+            existing.verdict_source = verdict_source
             existing.dual_narrative_flagged = False
             existing.dual_narrative_flag_reasons = None
+            existing.run_id = None
             existing.excel_row = excel_row
             session.add(existing)
             result.updated += 1
@@ -239,11 +288,19 @@ def import_narratives(
                     narrative_q=narrative,
                     narrative_class=narrative_class,
                     needs_review=False,
-                    verdict_source=VerdictSource.IMPORTED,
+                    inheritance_rule=inheritance_rule,
+                    verdict_source=verdict_source,
                 )
             )
             result.imported += 1
 
+    if authoritative_objective_ids:
+        from ..poam.generator import prune_poam_links_for_objectives
+        prune_poam_links_for_objectives(
+            workbook_id,
+            authoritative_objective_ids,
+            session,
+        )
     session.commit()
     _log.info(
         "Narrative import wb=%s: %d new, %d updated, %d unmatched, "

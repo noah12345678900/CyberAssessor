@@ -22,6 +22,7 @@ from pathlib import Path
 
 from sqlmodel import Session, delete, select
 
+from ..baselines.scope_labels import ON_PREM_LABEL
 from ..db import chunked
 from ..excel.ccis_reader import (
     _ccis_to_oscal_control_id,
@@ -30,7 +31,10 @@ from ..excel.ccis_reader import (
 )
 from ..models import (
     Assessment,
+    AssessmentCitation,
+    AssessmentEvidenceShown,
     AssessmentImplementation,
+    AssessmentTrace,
     Baseline,
     BaselineControl,
     BaselineObjective,
@@ -40,7 +44,6 @@ from ..models import (
     VerdictSource,
     Workbook,
 )
-from ..baselines.scope_labels import ON_PREM_LABEL
 from . import rules
 from .assessor import Assessor, decision_to_verdict_source
 from .crm_context import CrmContext, build_crm_context
@@ -67,7 +70,7 @@ _SYSTEM_VERDICT_SOURCES = {
 }
 # CRM-DERIVED subset: rows the CRM backfill itself authored from CRM overlays.
 # These are the ONLY rows the CRM self-heal may delete/overwrite when the CRM
-# picture changes. RULE_* verdicts are workbook-INTRINSIC attestations (col-N
+# picture changes. RULE_* verdicts are workbook-INTRINSIC attestations (col-D/N
 # Not Applicable → 8b, col-M named inheritance → 8a) — written by
 # backfill_workbook_rules from the eMASS workbook itself, not from any CRM. A
 # CRM attach must NEVER delete or clobber a workbook attestation (PE-10 bug:
@@ -117,7 +120,7 @@ def _is_healable(assessment: Assessment) -> bool:
       cloud slices that now need assessment. The self-heal MUST be able to
       delete it so the control re-evaluates. (SC-7 bug: it survived a hybrid
       CRM attach and stayed a spurious Compliant.)
-    * RULE_8B (col-N Not Applicable) is a workbook scope-EXCLUSION attestation
+    * RULE_8B (col-D/N Not Applicable) is a workbook scope-EXCLUSION attestation
       — the control doesn't apply at all, regardless of CRM coverage. It must
       NEVER be healed (PE-10 bug: it was wrongly deleted on CRM attach).
     * CRM-derived rows are healable as before (stale inheritance / slice
@@ -378,6 +381,22 @@ def backfill_workbook_crm(
             deterministic = entry.responsibility in _DETERMINISTIC
         existing = existing_by_obj.get(obj.id)
 
+        # A populated, non-N/A Column D keeps the CCI in scope. Do not let a
+        # provider/not_applicable CRM shortcut materialize an N/A assessment;
+        # defer it to the normal assessment path instead.
+        responsibilities = [
+            value
+            for value in (entry.responsibility, entry.responsibility_onprem)
+            if value
+        ]
+        crm_would_be_na = (
+            deterministic
+            and flex_statuses is None
+            and "inherited" not in responsibilities
+        )
+        if rules.column_d_blocks_not_applicable(row) and crm_would_be_na:
+            deterministic = False
+
         if not deterministic:
             # Hybrid / customer (on any scope) — this control needs the LLM at
             # assess time. SELF-HEAL: if a PRIOR backfill (run when only one
@@ -526,6 +545,7 @@ class RuleBackfillResult:
     skipped_existing: int
     skipped_no_rule: int
     skipped_no_workbook_row: int
+    overridden_by_column_d: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -533,6 +553,7 @@ class RuleBackfillResult:
             "skipped_existing": self.skipped_existing,
             "skipped_no_rule": self.skipped_no_rule,
             "skipped_no_workbook_row": self.skipped_no_workbook_row,
+            "overridden_by_column_d": self.overridden_by_column_d,
         }
 
 
@@ -549,7 +570,7 @@ def backfill_workbook_rules(
     (``engine.rules.classify_row``) so workbook-intrinsic deterministic
     verdicts surface in the Controls grid the moment a workbook is opened or a
     CRM is attached — without waiting for the user to click Assess. The
-    motivating case: a control marked **Not Applicable** in workbook col N (with
+    motivating case: a control marked **Not Applicable** in workbook col D (with
     a scope-exclusion rationale) classifies as ``NOT_APPLICABLE_8B`` but had no
     auto-writer, so AC-18 showed a blank "—" chip until manually assessed.
 
@@ -561,9 +582,10 @@ def backfill_workbook_rules(
     slices, so ``persist_assessment_with_impls`` writes a parent-only row (the
     grid rollup reads ``Assessment.status`` directly).
 
-    Idempotent and non-stomping: skips any objective that already has an
-    Assessment (CRM-backfilled, rule-backfilled, user-edited, or LLM-assessed).
-    Caller owns the commit.
+    Idempotent for ordinary rules: existing assessments are preserved. Column D
+    ``Not Applicable`` is the one intentional exception because it is the
+    authoritative eMASS scope decision; a conflicting stored verdict is
+    replaced with rule-8b N/A when the workbook is reopened.
     """
     wb = session.get(Workbook, workbook_id)
     if wb is None or wb.baseline_id is None:
@@ -597,13 +619,12 @@ def backfill_workbook_rules(
     if not pairs:
         return RuleBackfillResult(0, 0, 0, 0)
 
-    existing_obj_ids: set[int] = set(
-        session.exec(
-            select(Assessment.objective_id).where(
-                Assessment.workbook_id == workbook_id
-            )
+    existing_by_obj = {
+        assessment.objective_id: assessment
+        for assessment in session.exec(
+            select(Assessment).where(Assessment.workbook_id == workbook_id)
         ).all()
-    )
+    }
 
     # CRM coverage map (SC-7 resurrection fix). A whole-control RULE_8A verdict
     # (col-L/M inheritance → Compliant) is only valid when the control has NO
@@ -613,7 +634,7 @@ def backfill_workbook_rules(
     # CRM-unaware), resurrecting the spurious Compliant. So we must NOT write a
     # rule_8a row for a control whose CRM picture is non-deterministic. We build
     # the CRM context once and mark every control whose cloud slices are not all
-    # inheritable. RULE_8B (col-N Not Applicable) is a scope exclusion that holds
+    # inheritable. RULE_8B (col-D/N Not Applicable) is a scope exclusion that holds
     # regardless of CRM coverage, so it is NEVER suppressed here.
     crm_ctx = build_crm_context(workbook_id, session)
     nondeterministic_crm_controls: set[str] = set()
@@ -639,6 +660,8 @@ def backfill_workbook_rules(
     skipped_existing = 0
     skipped_no_rule = 0
     skipped_no_row = 0
+    overridden_by_column_d = 0
+    overridden_objective_ids: set[int] = set()
     when = datetime.now(timezone.utc)
 
     _DETERMINISTIC_RULE_VERDICTS = {
@@ -651,10 +674,51 @@ def backfill_workbook_rules(
         if row is None:
             skipped_no_row += 1
             continue
-        if obj.id in existing_obj_ids:
+        auto = rules.classify_row(row)
+        existing = existing_by_obj.get(obj.id)
+        column_d_na = (
+            auto.verdict == rules.AutoStatusVerdict.NOT_APPLICABLE_8B
+            and auto.trigger_column == "D"
+        )
+        stale_rule_8b = bool(
+            existing is not None
+            and existing.verdict_source == VerdictSource.RULE_8B
+            and (not existing.tester or existing.tester == _SYSTEM_TESTER)
+        )
+        stale_na = bool(
+            existing is not None
+            and rules.column_d_blocks_not_applicable(row)
+            and existing.status == ComplianceStatus.NOT_APPLICABLE
+        )
+        if existing is not None and not column_d_na and (stale_rule_8b or stale_na):
+            if existing.id is not None:
+                session.exec(
+                    delete(AssessmentCitation).where(
+                        AssessmentCitation.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentTrace).where(
+                        AssessmentTrace.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentEvidenceShown).where(
+                        AssessmentEvidenceShown.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentImplementation).where(
+                        AssessmentImplementation.assessment_id == existing.id
+                    )
+                )
+            session.delete(existing)
+            session.flush()
+            existing_by_obj.pop(obj.id, None)
+            existing = None
+        if existing is not None and not column_d_na:
             skipped_existing += 1
             continue
-        auto = rules.classify_row(row)
         if auto.verdict not in _DETERMINISTIC_RULE_VERDICTS:
             skipped_no_rule += 1
             continue
@@ -662,7 +726,7 @@ def backfill_workbook_rules(
         # SC-7 resurrection guard: do NOT (re)write a whole-control RULE_8A
         # Compliant for a control the CRM has made hybrid/customer — that verdict
         # is only valid with no cloud slices, and writing it here would resurrect
-        # the stale Compliant the CRM self-heal just deleted. RULE_8B (col-N Not
+        # the stale Compliant the CRM self-heal just deleted. RULE_8B (col-D/N Not
         # Applicable) is a scope exclusion and is always written.
         if auto.verdict == rules.AutoStatusVerdict.COMPLIANT_8A:
             oscal = _ccis_to_oscal_control_id(_normalize_control(row.control_id))
@@ -678,6 +742,74 @@ def backfill_workbook_rules(
             skipped_no_rule += 1
             continue
 
+        verdict_source = decision_to_verdict_source(decision)
+        if existing is not None:
+            if (
+                existing.status == ComplianceStatus.NOT_APPLICABLE
+                and existing.inheritance_rule == "8b"
+                and existing.verdict_source == VerdictSource.RULE_8B
+                and not existing.needs_review
+                and existing.narrative_q == decision.narrative
+                and existing.run_id is None
+            ):
+                skipped_existing += 1
+                continue
+
+            existing.excel_row = decision.excel_row
+            existing.status = decision.status
+            existing.tester = tester
+            existing.narrative_q = decision.narrative
+            existing.narrative_on_prem = decision.narrative_on_prem
+            existing.narrative_cloud = decision.narrative_cloud
+            existing.narrative_class = decision.narrative_class
+            existing.inheritance_rule = decision.rule
+            existing.verdict_source = verdict_source
+            existing.date_tested = when
+            existing.needs_review = False
+            existing.review_reason = None
+            existing.confidence = None
+            existing.rewrite_requested = False
+            existing.rewrite_requested_refs = None
+            existing.dual_narrative_flagged = False
+            existing.dual_narrative_flag_reasons = None
+            existing.run_id = None
+            if existing.id is not None:
+                # The prior verdict may have been AI-derived. Its trace,
+                # evidence-shown, and citation children describe that old
+                # decision and must not remain attached to deterministic N/A.
+                session.exec(
+                    delete(AssessmentCitation).where(
+                        AssessmentCitation.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentTrace).where(
+                        AssessmentTrace.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentEvidenceShown).where(
+                        AssessmentEvidenceShown.assessment_id == existing.id
+                    )
+                )
+                session.exec(
+                    delete(AssessmentImplementation).where(
+                        AssessmentImplementation.assessment_id == existing.id
+                    )
+                )
+            persist_assessment_with_impls(
+                session,
+                assessment=existing,
+                decision=decision,
+                crm_context=empty_crm,
+                control_id=row.control_id,
+                is_new=False,
+            )
+            applied += 1
+            overridden_by_column_d += 1
+            overridden_objective_ids.add(obj.id)
+            continue
+
         new_row = Assessment(
             workbook_id=workbook_id,
             objective_id=obj.id,
@@ -689,7 +821,7 @@ def backfill_workbook_rules(
             narrative_cloud=decision.narrative_cloud,
             narrative_class=decision.narrative_class,
             inheritance_rule=decision.rule,
-            verdict_source=decision_to_verdict_source(decision),
+            verdict_source=verdict_source,
             date_tested=when,
         )
         persist_assessment_with_impls(
@@ -701,13 +833,25 @@ def backfill_workbook_rules(
             is_new=True,
         )
         applied += 1
-        existing_obj_ids.add(obj.id)
+        existing_by_obj[obj.id] = new_row
+
+    if overridden_by_column_d:
+        # Scope cleanup only to objectives repaired in this call. Running the
+        # workbook-wide pruning routine here could touch unrelated POAMs.
+        from ..poam.generator import prune_poam_links_for_objectives
+
+        prune_poam_links_for_objectives(
+            workbook_id,
+            overridden_objective_ids,
+            session,
+        )
 
     return RuleBackfillResult(
         applied=applied,
         skipped_existing=skipped_existing,
         skipped_no_rule=skipped_no_rule,
         skipped_no_workbook_row=skipped_no_row,
+        overridden_by_column_d=overridden_by_column_d,
     )
 
 
@@ -766,7 +910,6 @@ def purge_baseline_contribution(
     # Local imports to avoid widening the module's import surface; both are
     # module-level pure functions in the engine (no circular-import risk —
     # crm_backfill already imports Assessor from .assessor).
-    from .assessor import compose_rolled_narrative, compute_rollup_status
     from ..models import (
         AssessmentCitation,
         AssessmentEvidenceShown,
@@ -775,6 +918,7 @@ def purge_baseline_contribution(
         CrmShortCircuitEvent,
         CrmSuspicionLog,
     )
+    from .assessor import compose_rolled_narrative, compute_rollup_status
 
     susp_q = select(CrmSuspicionLog.id).where(
         CrmSuspicionLog.crm_baseline_id == baseline_id

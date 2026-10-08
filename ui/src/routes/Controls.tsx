@@ -487,9 +487,12 @@ export function Controls() {
       if (r.skipped_no_narrative.length > 0)
         skipBits.push(`${r.skipped_no_narrative.length} no narrative`);
       const skipTail = skipBits.length > 0 ? ` · skipped ${skipBits.join(", ")}` : "";
+      const authorityTail = r.overridden_by_column_d > 0
+        ? ` · ${r.overridden_by_column_d} set to N/A by Column D`
+        : "";
       toast.success(
         "Narrative import complete",
-        `${r.imported} new · ${r.updated} updated (of ${r.total_rows} file rows)${skipTail}`,
+        `${r.imported} new · ${r.updated} updated (of ${r.total_rows} file rows)${authorityTail}${skipTail}`,
       );
     },
     onError: (err) => toast.error("Narrative import failed", humanize(err)),
@@ -936,6 +939,14 @@ export function Controls() {
 
         for (const o of objectives) {
           const a = assessments.get(o.id);
+          const columnDNotApplicable = ["not applicable", "n/a", "na"].includes(
+            (o.implementation_status ?? "").trim().toLowerCase(),
+          );
+          const cciStatus = columnDNotApplicable
+            ? "Not Applicable"
+            : a?.status === "Not Applicable"
+              ? ""
+              : (a?.status ?? "");
           const mappings = o.mappings ?? [];
           // Row-explode: one CSV row per (control × CCI × overlay req).
           // A CCI cited by 5 SDA shall statements becomes 5 rows, each
@@ -955,7 +966,7 @@ export function Controls() {
                 "", // req_source
                 "", // req_number
                 "", // req_text
-                a?.status ?? "",
+                cciStatus,
                 a?.tester ?? "",
                 a?.date_tested ?? "",
                 a?.narrative_q ?? "",
@@ -979,7 +990,7 @@ export function Controls() {
                   m.source_name,
                   m.requirement_number,
                   m.requirement_text,
-                  a?.status ?? "",
+                  cciStatus,
                   a?.tester ?? "",
                   a?.date_tested ?? "",
                   a?.narrative_q ?? "",
@@ -1410,7 +1421,7 @@ export function Controls() {
                 const raw = r.value.trim() === "" ? "(blank)" : r.value.trim();
                 const title =
                   r.outcome === "na"
-                    ? `Control is Not Applicable (workbook Column N) — flex slice N/A`
+                    ? `Control is Not Applicable (workbook Column D) — flex slice N/A`
                     : `Workbook Column L: ${raw} — flex slice ${labelMap[r.outcome] ?? r.outcome}`;
                 return (
                   <Badge
@@ -1431,7 +1442,7 @@ export function Controls() {
         cell: (ctx) => {
           const s = ctx.row.original.status;
           if (!s) {
-            // Unassessed control. A wholly-Column-N Not Applicable control
+            // Unassessed control. A wholly-Column-D Not Applicable control
             // (rule 8b — every CCI marked N/A in the workbook) has a known
             // verdict before any kernel run: N/A. The col-L endpoint already
             // computes this (outcome === "na"), so surface "Not Applicable"
@@ -1450,7 +1461,7 @@ export function Controls() {
                   )}
                   aria-label="Filter controls by Not Applicable"
                   aria-pressed={statusFilter === "Not Applicable"}
-                  title={`Wholly Not Applicable per workbook Column N (rule 8b) - no assessment required. Click to ${
+                  title={`Wholly Not Applicable per workbook Column D (rule 8b) - no assessment required. Click to ${
                     statusFilter === "Not Applicable" ? "clear" : "filter by"
                   } this status.`}
                   onClick={(event) => {

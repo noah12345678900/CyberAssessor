@@ -120,19 +120,13 @@ def _crm(control_id: str, responsibility: str, baseline_id: int = 1) -> CrmConte
 @pytest.mark.parametrize(
     ("responsibility", "expected_status", "expected_source"),
     [
-        ("provider", ComplianceStatus.NOT_APPLICABLE, "crm_provider"),
         ("inherited", ComplianceStatus.COMPLIANT, "crm_inherited"),
-        ("not_applicable", ComplianceStatus.NOT_APPLICABLE, "crm_not_applicable"),
     ],
 )
 def test_each_short_circuit_responsibility_emits_event_with_expected_fields(
     session, workbook, responsibility, expected_status, expected_source
 ):
-    """provider/inherited/not_applicable each produce one CrmShortCircuit
-    whose fields match the source CrmEntry. Status/source on the Decision
-    are pinned in test_assessor_e2e — we re-pin here only as a sanity
-    check that the short_circuit is bound to the SAME path.
-    """
+    """Applicable inherited CRM coverage emits a CrmShortCircuit event."""
     recorder = RunRecorder.start(session, workbook_id=workbook.id)
     row = _row(control_id="AC-2")
     crm = _crm("AC-2", responsibility, baseline_id=7)
@@ -268,9 +262,9 @@ def test_three_short_circuits_in_one_run_are_all_recorded(session, workbook):
     """Plan B10 contract: "3 short-circuits → 3 events linked to one log".
 
     Run four CCIs through the assessor under one RunRecorder:
-      - AC-2  provider        → short-circuit
+      - AC-2  inherited       → short-circuit
       - AC-3  inherited       → short-circuit
-      - AC-4  not_applicable  → short-circuit
+      - AC-4  inherited       → short-circuit
       - AC-5  customer (LLM)  → no short-circuit
 
     After the batch, ``recorder.outcomes`` must yield 4 outcomes, of
@@ -284,9 +278,9 @@ def test_three_short_circuits_in_one_run_are_all_recorded(session, workbook):
     recorder = RunRecorder.start(session, workbook_id=workbook.id)
 
     spec = [
-        ("AC-2", "CCI-000001", "provider", 10),
+        ("AC-2", "CCI-000001", "inherited", 10),
         ("AC-3", "CCI-000002", "inherited", 11),
-        ("AC-4", "CCI-000003", "not_applicable", 12),
+        ("AC-4", "CCI-000003", "inherited", 12),
         ("AC-5", "CCI-000004", None, None),  # customer — LLM path, no short-circuit
     ]
 
@@ -348,7 +342,7 @@ def test_three_short_circuits_in_one_run_are_all_recorded(session, workbook):
     sc_by_cci = {o.crm_short_circuit.cci: o.crm_short_circuit for o in sc_outcomes}
     assert set(sc_by_cci.keys()) == {"CCI-000001", "CCI-000002", "CCI-000003"}
 
-    assert sc_by_cci["CCI-000001"].responsibility == "provider"
+    assert sc_by_cci["CCI-000001"].responsibility == "inherited"
     assert sc_by_cci["CCI-000001"].control_id == "ac-2"
     assert sc_by_cci["CCI-000001"].baseline_id == 10
 
@@ -356,7 +350,7 @@ def test_three_short_circuits_in_one_run_are_all_recorded(session, workbook):
     assert sc_by_cci["CCI-000002"].control_id == "ac-3"
     assert sc_by_cci["CCI-000002"].baseline_id == 11
 
-    assert sc_by_cci["CCI-000003"].responsibility == "not_applicable"
+    assert sc_by_cci["CCI-000003"].responsibility == "inherited"
     assert sc_by_cci["CCI-000003"].control_id == "ac-4"
     assert sc_by_cci["CCI-000003"].baseline_id == 12
 
@@ -377,11 +371,11 @@ def test_short_circuit_emitted_on_decision_even_when_recorder_is_none(session, w
     re-run-one-cci from the UI without re-running the whole workbook).
     """
     row = _row(control_id="AC-2")
-    crm = _crm("AC-2", "provider", baseline_id=5)
+    crm = _crm("AC-2", "inherited", baseline_id=5)
     assessor = Assessor(llm=StubLlmClient([]))
 
     decision = assessor.assess(row, crm_context=crm)  # no recorder
 
     assert decision.crm_short_circuit is not None
-    assert decision.crm_short_circuit.responsibility == "provider"
+    assert decision.crm_short_circuit.responsibility == "inherited"
     assert decision.crm_short_circuit.baseline_id == 5
